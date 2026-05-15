@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -55,5 +56,22 @@ describe("issue #973: legacy Pi plugin imports", () => {
 		expect(result.errors).toEqual([]);
 		expect(extension).toBeDefined();
 		expect(extension?.commands.has("legacy-pi-ext")).toBe(true);
+	});
+
+	it("does not depend on deleting a stable legacy mirror directory before loading", async () => {
+		const legacyRoot = path.join(
+			os.tmpdir(),
+			"omp-legacy-pi-file",
+			Bun.hash(path.resolve(extensionPath)).toString(36),
+		);
+		const sentinelPath = path.join(legacyRoot, "sentinel.txt");
+		fs.mkdirSync(legacyRoot, { recursive: true });
+		fs.writeFileSync(sentinelPath, "stale mirror artifact");
+
+		const result = await loadExtensions([extensionPath], projectDir.path());
+
+		expect(result.errors).toEqual([]);
+		expect(fs.existsSync(sentinelPath)).toBe(true);
+		fs.rmSync(legacyRoot, { recursive: true, force: true });
 	});
 });

@@ -192,8 +192,9 @@ async function mirrorLegacyPiFile(sourcePath: string, state: LegacyPiMirrorState
 }
 
 export async function loadLegacyPiModule(resolvedPath: string): Promise<unknown> {
-	const root = path.join(os.tmpdir(), "omp-legacy-pi-file", Bun.hash(resolvedPath).toString(36));
-	await fs.rm(root, { recursive: true, force: true });
+	const mirrorParent = path.join(os.tmpdir(), "omp-legacy-pi-file");
+	await fs.mkdir(mirrorParent, { recursive: true });
+	const root = await fs.mkdtemp(path.join(mirrorParent, `${Bun.hash(resolvedPath).toString(36)}-`));
 	const state: LegacyPiMirrorState = { root, seen: new Map() };
 	const mirroredEntry = await mirrorLegacyPiFile(resolvedPath, state);
 	return import(`${toImportSpecifier(mirroredEntry)}?mtime=${Date.now()}`);
