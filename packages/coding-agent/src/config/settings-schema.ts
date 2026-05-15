@@ -1713,6 +1713,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"python.sharedGateway": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "editing",
+			label: "Python Shared Gateway",
+			description: "Allow Python eval calls to reuse a shared kernel gateway when available",
+		},
+	},
+
 	// ────────────────────────────────────────────────────────────────────────
 	// Tools
 	// ────────────────────────────────────────────────────────────────────────

@@ -88,6 +88,100 @@ export interface PythonKernelAvailability {
 	reason?: string;
 }
 
+export interface JupyterMessageHeader {
+	msg_id: string;
+	session: string;
+	username: string;
+	date: string;
+	msg_type: string;
+	version: string;
+}
+
+export interface JupyterMessage {
+	channel?: string;
+	header: JupyterMessageHeader;
+	parent_header: Record<string, unknown>;
+	metadata: Record<string, unknown>;
+	content: Record<string, unknown>;
+	buffers?: Uint8Array[];
+}
+
+const JUPYTER_FRAME_OFFSET_BYTES = 4;
+const JUPYTER_FRAME_MIN_BYTES = JUPYTER_FRAME_OFFSET_BYTES * 2;
+
+function isJupyterMessage(value: unknown): value is Omit<JupyterMessage, "buffers"> {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as Partial<JupyterMessage>;
+	return (
+		typeof candidate.header === "object" &&
+		candidate.header !== null &&
+		typeof candidate.parent_header === "object" &&
+		candidate.parent_header !== null &&
+		typeof candidate.metadata === "object" &&
+		candidate.metadata !== null &&
+		typeof candidate.content === "object" &&
+		candidate.content !== null
+	);
+}
+
+export function deserializeWebSocketMessage(frame: ArrayBuffer): JupyterMessage | null {
+	if (frame.byteLength < JUPYTER_FRAME_MIN_BYTES) return null;
+	const view = new DataView(frame);
+	const offsetCount = view.getUint32(0, true);
+	if (offsetCount === 0) return null;
+	const offsetTableBytes = JUPYTER_FRAME_OFFSET_BYTES + offsetCount * JUPYTER_FRAME_OFFSET_BYTES;
+	if (frame.byteLength < offsetTableBytes) return null;
+
+	const offsets: number[] = [];
+	for (let index = 0; index < offsetCount; index++) {
+		const offset = view.getUint32(JUPYTER_FRAME_OFFSET_BYTES + index * JUPYTER_FRAME_OFFSET_BYTES, true);
+		if (offset < offsetTableBytes || offset > frame.byteLength) return null;
+		offsets.push(offset);
+	}
+
+	const messageEnd = offsets[1] ?? frame.byteLength;
+	if (messageEnd < offsets[0]) return null;
+	const bytes = new Uint8Array(frame);
+	const messageBytes = bytes.slice(offsets[0], messageEnd);
+	try {
+		const decoded = JSON.parse(new TextDecoder().decode(messageBytes)) as unknown;
+		if (!isJupyterMessage(decoded)) return null;
+		const buffers = offsets.slice(1).map((offset, index) => {
+			const end = offsets[index + 2] ?? frame.byteLength;
+			return bytes.slice(offset, end);
+		});
+		return { ...decoded, buffers };
+	} catch {
+		return null;
+	}
+}
+
+export function serializeWebSocketMessage(message: JupyterMessage): ArrayBuffer {
+	const buffers = message.buffers ?? [];
+	const payload = { ...message };
+	delete payload.buffers;
+	const messageBytes = new TextEncoder().encode(JSON.stringify(payload));
+	const offsetCount = 1 + buffers.length;
+	const headerSize = JUPYTER_FRAME_OFFSET_BYTES + offsetCount * JUPYTER_FRAME_OFFSET_BYTES;
+	const totalSize = headerSize + messageBytes.length + buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
+
+	const frame = new ArrayBuffer(totalSize);
+	const view = new DataView(frame);
+	const bytes = new Uint8Array(frame);
+	view.setUint32(0, offsetCount, true);
+	view.setUint32(JUPYTER_FRAME_OFFSET_BYTES, headerSize, true);
+	bytes.set(messageBytes, headerSize);
+
+	let offset = headerSize + messageBytes.length;
+	for (let index = 0; index < buffers.length; index++) {
+		view.setUint32(JUPYTER_FRAME_OFFSET_BYTES + (index + 1) * JUPYTER_FRAME_OFFSET_BYTES, offset, true);
+		bytes.set(buffers[index], offset);
+		offset += buffers[index].byteLength;
+	}
+
+	return frame;
+}
+
 function getRemainingTimeMs(deadlineMs?: number): number | undefined {
 	if (deadlineMs === undefined) return undefined;
 	return Math.max(0, deadlineMs - Date.now());
