@@ -1,7 +1,3 @@
-import { projfsOverlayProbe } from "@oh-my-pi/pi-natives";
-import { Snowflake } from "@oh-my-pi/pi-utils";
-import { cleanupProjfsOverlay, ensureProjfsOverlay, isProjfsUnavailableError } from "./worktree";
-
 export type TaskIsolationMode = "none" | "worktree" | "fuse-overlay" | "fuse-projfs";
 
 export interface IsolationBackendResolution {
@@ -50,44 +46,10 @@ export async function resolveIsolationBackendForTaskExecution(
 		return { effectiveIsolationMode, warning };
 	}
 
-	if (!(requestedMode === "fuse-projfs" && platform === "win32")) {
-		return { effectiveIsolationMode, warning };
-	}
-
-	if (isWindowsArm64HostUnderX64Emulation(platform, arch, env)) {
+	if (requestedMode === "fuse-projfs" && isWindowsArm64HostUnderX64Emulation(platform, arch, env)) {
 		effectiveIsolationMode = "worktree";
 		warning =
 			"<system-notification>ProjFS isolation is disabled on Windows ARM64 x64 emulation. Falling back to worktree isolation.</system-notification>";
-		return { effectiveIsolationMode, warning };
-	}
-
-	const probe = projfsOverlayProbe();
-	if (!probe.available) {
-		effectiveIsolationMode = "worktree";
-		const reason = probe.reason ? ` Reason: ${probe.reason}` : "";
-		warning = `<system-notification>ProjFS is unavailable on this host. Falling back to worktree isolation.${reason}</system-notification>`;
-		return { effectiveIsolationMode, warning };
-	}
-
-	const probeIsolationId = `probe-${Snowflake.next()}`;
-	let probeIsolationDir: string | null = null;
-	try {
-		probeIsolationDir = await ensureProjfsOverlay(repoRoot, probeIsolationId);
-	} catch (err) {
-		if (isProjfsUnavailableError(err)) {
-			effectiveIsolationMode = "worktree";
-			const raw = err instanceof Error ? err.message : String(err);
-			const reason = raw.replace(/^PROJFS_UNAVAILABLE:\s*/, "");
-			const detail = reason ? ` Reason: ${reason}` : "";
-			warning = `<system-notification>ProjFS prerequisites are unavailable for this repository. Falling back to worktree isolation.${detail}</system-notification>`;
-		} else {
-			const message = err instanceof Error ? err.message : String(err);
-			throw new Error(`ProjFS isolation initialization failed. ${message}`);
-		}
-	} finally {
-		if (probeIsolationDir) {
-			await cleanupProjfsOverlay(probeIsolationDir);
-		}
 	}
 
 	return { effectiveIsolationMode, warning };
