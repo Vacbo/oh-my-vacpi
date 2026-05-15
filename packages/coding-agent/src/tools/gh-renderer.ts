@@ -27,6 +27,7 @@ type GithubToolRenderArgs = {
 	run?: string;
 	branch?: string;
 	repo?: string;
+	issue?: string;
 	pr?: string | string[];
 	query?: string;
 };
@@ -46,6 +47,7 @@ const OP_TITLES: Record<string, string> = {
 	search_code: "GitHub Search Code",
 	search_commits: "GitHub Search Commits",
 	search_repos: "GitHub Search Repos",
+	issue_view: "GitHub Issue",
 	run_watch: "GitHub Run Watch",
 };
 
@@ -104,6 +106,12 @@ function buildOpMeta(args: GithubToolRenderArgs): string[] {
 		case "repo_view": {
 			if (args.repo) meta.push(args.repo);
 			if (args.branch) meta.push(args.branch);
+			break;
+		}
+		case "issue_view": {
+			const id = extractIssueId(args.issue);
+			if (id) meta.push(id);
+			if (args.repo) meta.push(args.repo);
 			break;
 		}
 		case "run_watch":

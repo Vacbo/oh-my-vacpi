@@ -25,6 +25,7 @@ describe("taskToolRenderer report_finding safety", () => {
 					recentOutput: [],
 					toolCount: 1,
 					tokens: 0,
+					cost: 0,
 					durationMs: 42,
 					extractedToolData: {
 						report_finding: [{}],
