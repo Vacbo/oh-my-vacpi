@@ -75,3 +75,19 @@ describe("EvalTool language resolution", () => {
 		expect(jsExecuteSpy).not.toHaveBeenCalled();
 	});
 });
+
+describe("EvalTool intent", () => {
+	it("does not show evaluating for malformed partial eval input", () => {
+		const tool = new EvalTool(makeSession());
+
+		expect(
+			tool.intent({ input: "*** Begin PY\nprint('ok')\n*** End PY\nmodel commentary outside a cell" }),
+		).toBeUndefined();
+	});
+
+	it("shows the parsed cell intent once eval input is complete", () => {
+		const tool = new EvalTool(makeSession());
+
+		expect(tool.intent({ input: "*** Begin PY\nprint('ok')\n*** End PY" })).toBe("running python");
+	});
+});

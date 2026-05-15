@@ -73,6 +73,11 @@ function hasVertexAdcCredentials(): boolean {
 
 type KeyResolver = string | (() => string | undefined);
 
+export const FIREWORKS_PASS_MODEL_IDS = new Set([
+	"routers/kimi-k2.6-turbo",
+	"accounts/fireworks/routers/kimi-k2p6-turbo",
+]);
+
 const serviceProviderMap: Record<string, KeyResolver> = {
 	"alibaba-coding-plan": "ALIBABA_CODING_PLAN_API_KEY",
 	openai: "OPENAI_API_KEY",
@@ -176,6 +181,13 @@ export function getEnvApiKey(provider: string): string | undefined {
 	return resolver?.();
 }
 
+export function getEnvApiKeyForModel(provider: string, modelId: string | undefined): string | undefined {
+	if (provider === "fireworks" && modelId && FIREWORKS_PASS_MODEL_IDS.has(modelId)) {
+		return $env.FIREWORKS_PASS_API_KEY;
+	}
+	return getEnvApiKey(provider);
+}
+
 export function stream<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
@@ -206,7 +218,7 @@ export function stream<TApi extends Api>(
 		return streamBedrock(model as Model<"bedrock-converse-stream">, context, (options || {}) as BedrockOptions);
 	}
 
-	const apiKey = options?.apiKey || getEnvApiKey(model.provider);
+	const apiKey = options?.apiKey || getEnvApiKeyForModel(model.provider, model.id);
 	if (!apiKey) {
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}
@@ -285,7 +297,7 @@ export function streamSimple<TApi extends Api>(
 		return stream(model, context, providerOptions);
 	}
 
-	const apiKey = options?.apiKey || getEnvApiKey(model.provider);
+	const apiKey = options?.apiKey || getEnvApiKeyForModel(model.provider, model.id);
 	if (!apiKey) {
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}

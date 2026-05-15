@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { MCPManager } from "../src/mcp/manager";
 import type { MCPReconnect } from "../src/mcp/tool-bridge";
 import { DeferredMCPTool, isRetriableConnectionError, MCPTool } from "../src/mcp/tool-bridge";
 import type { MCPServerConnection, MCPToolCallResult, MCPTransport } from "../src/mcp/types";
@@ -306,5 +307,32 @@ describe("reconnect abort propagation", () => {
 		controller.abort();
 
 		await expect(pending).rejects.toBeInstanceOf(ToolAbortError);
+	});
+});
+
+describe("MCP startup pending servers", () => {
+	it("does not block startup on a slow app-backed server without cached tools", async () => {
+		const manager = new MCPManager(process.cwd());
+		const startedAt = Date.now();
+
+		const result = await manager.connectServers(
+			{
+				slow_app: {
+					type: "stdio",
+					command: process.execPath,
+					args: ["-e", "setTimeout(() => {}, 2_000)"],
+					timeout: 1_000,
+				},
+			},
+			{},
+		);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(elapsedMs).toBeLessThan(700);
+		expect(result.tools).toEqual([]);
+		expect(result.connectedServers).toEqual([]);
+		expect(result.errors.size).toBe(0);
+
+		await manager.disconnectAll();
 	});
 });

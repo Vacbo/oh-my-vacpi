@@ -150,7 +150,7 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
 		"fireworks",
 		"kimi-k2.6",
 		config => fireworksModelManagerOptions(config),
-		catalog("Fireworks", ["FIREWORKS_API_KEY"]),
+		catalog("Fireworks", ["FIREWORKS_API_KEY", "FIREWORKS_PASS_API_KEY"]),
 	),
 	descriptor("xai", "grok-4-fast-non-reasoning", config => xaiModelManagerOptions(config)),
 	catalogDescriptor(

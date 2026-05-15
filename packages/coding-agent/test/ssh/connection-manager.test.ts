@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { buildRemoteCommand, supportsSshControlMaster } from "../../src/ssh/connection-manager";
+import { isMountedByDeviceBoundary } from "../../src/ssh/sshfs-mount";
 
 describe("buildRemoteCommand", () => {
 	it("includes -n and OpenSSH ControlMaster options on Unix-like platforms", async () => {
@@ -46,5 +47,30 @@ describe("supportsSshControlMaster", () => {
 	it("keeps OpenSSH connection multiplexing on Unix-like platforms", () => {
 		expect(supportsSshControlMaster("linux")).toBe(true);
 		expect(supportsSshControlMaster("darwin")).toBe(true);
+	});
+});
+
+describe("isMountedByDeviceBoundary", () => {
+	it("detects a mount when the path is on a different device than its parent", async () => {
+		const mountPath = "/Users/example/.omp/remote/spark";
+		const mounted = await isMountedByDeviceBoundary(mountPath, async currentPath => ({
+			dev: currentPath === mountPath ? 2 : 1,
+		}));
+
+		expect(mounted).toBe(true);
+	});
+
+	it("treats same-device paths as regular directories", async () => {
+		const mounted = await isMountedByDeviceBoundary("/Users/example/.omp/remote/spark", async () => ({ dev: 1 }));
+
+		expect(mounted).toBe(false);
+	});
+
+	it("treats stat failures as not mounted", async () => {
+		const mounted = await isMountedByDeviceBoundary("/missing", async () => {
+			throw new Error("missing");
+		});
+
+		expect(mounted).toBe(false);
 	});
 });

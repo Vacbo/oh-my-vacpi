@@ -1,6 +1,7 @@
 import {
 	type AutocompleteItem,
 	type AutocompleteProvider,
+	type AutocompleteRequestOptions,
 	CombinedAutocompleteProvider,
 	getKeybindings,
 	type SlashCommand,
@@ -99,6 +100,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		lines: string[],
 		cursorLine: number,
 		cursorCol: number,
+		options?: AutocompleteRequestOptions,
 	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
@@ -126,7 +128,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol);
+		return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, options);
 	}
 
 	applyCompletion(

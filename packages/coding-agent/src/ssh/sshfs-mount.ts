@@ -79,11 +79,28 @@ export function hasSshfs(): boolean {
 	return $which("sshfs") !== null;
 }
 
-export async function isMounted(path: string): Promise<boolean> {
+type StatPath = (path: string) => Promise<Pick<fs.Stats, "dev">>;
+
+export async function isMountedByDeviceBoundary(
+	mountPath: string,
+	statPath: StatPath = fs.promises.stat,
+): Promise<boolean> {
+	try {
+		const [stats, parentStats] = await Promise.all([statPath(mountPath), statPath(path.dirname(mountPath))]);
+		return stats.dev !== parentStats.dev;
+	} catch {
+		return false;
+	}
+}
+
+export async function isMounted(mountPath: string): Promise<boolean> {
 	const mountpoint = $which("mountpoint");
-	if (!mountpoint) return false;
-	const result = await $`${mountpoint} -q ${path}`.quiet().nothrow();
-	return result.exitCode === 0;
+	if (mountpoint) {
+		const result = await $`${mountpoint} -q ${mountPath}`.quiet().nothrow();
+		return result.exitCode === 0;
+	}
+
+	return isMountedByDeviceBoundary(mountPath);
 }
 
 let registered = false;

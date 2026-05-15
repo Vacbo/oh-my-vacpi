@@ -11,7 +11,7 @@ import { Database, type Statement } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
-import { getEnvApiKey } from "./stream";
+import { getEnvApiKey, getEnvApiKeyForModel } from "./stream";
 import type { Provider } from "./types";
 import type {
 	CredentialRankingStrategy,
@@ -2198,7 +2198,7 @@ export class AuthStorage {
 		// authenticate via env/fallback, not OAuth, so clear the sticky now so that
 		// getOAuthAccountId() correctly suppresses account_uuid for this session.
 		if (sessionId) this.#sessionLastCredential.get(provider)?.delete(sessionId);
-		const envKey = getEnvApiKey(provider);
+		const envKey = getEnvApiKeyForModel(provider, options?.modelId);
 		if (envKey) return envKey;
 
 		// Fall back to custom resolver (e.g., models.json custom providers)

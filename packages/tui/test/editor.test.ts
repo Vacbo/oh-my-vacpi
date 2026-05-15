@@ -13,6 +13,12 @@ describe("Editor component", () => {
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 	});
 
+	it("accepts the legacy Editor(tui, theme, options) constructor shape", () => {
+		const editor = new Editor({}, defaultEditorTheme, {});
+
+		expect(editor.render(20).join("\n")).toContain(defaultEditorTheme.symbols.boxRound.topLeft);
+	});
+
 	describe("Prompt history navigation", () => {
 		it("does nothing on Up arrow when history is empty", () => {
 			const editor = new Editor(defaultEditorTheme);
@@ -314,6 +320,30 @@ describe("Editor component", () => {
 			editor.handleInput("@");
 
 			await expect(promise).resolves.toBe("@");
+		});
+
+		it("passes an abort signal to autocomplete providers when typing at-sign", async () => {
+			const editor = new Editor(defaultEditorTheme);
+			const { promise, resolve, reject } = Promise.withResolvers<void>();
+
+			editor.setAutocompleteProvider({
+				async getSuggestions(_lines, _cursorLine, _cursorCol, options) {
+					if (!options) {
+						reject(new Error("autocomplete options were not provided"));
+						return null;
+					}
+					expect(options.signal.aborted).toBe(false);
+					resolve();
+					return { items: [{ label: "src/", value: "src/" }], prefix: "@" };
+				},
+				applyCompletion(lines, cursorLine, cursorCol) {
+					return { lines, cursorLine, cursorCol };
+				},
+			});
+
+			editor.handleInput("@");
+
+			await expect(promise).resolves.toBeUndefined();
 		});
 
 		it("chains into argument completions after tab-completing slash command names", async () => {

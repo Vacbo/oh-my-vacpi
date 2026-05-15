@@ -12,7 +12,7 @@ import type {
 import packageJson from "../../package.json" with { type: "json" };
 import type { Effort } from "../model-thinking";
 import { calculateCost } from "../models";
-import { getEnvApiKey } from "../stream";
+import { getEnvApiKeyForModel } from "../stream";
 import {
 	type AssistantMessage,
 	type Context,
@@ -346,7 +346,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 		const { requestAbortController, requestSignal } = abortTracker;
 
 		try {
-			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
+			const apiKey = options?.apiKey || getEnvApiKeyForModel(model.provider, model.id) || "";
 			const idleTimeoutMs = getOpenAIStreamIdleTimeoutMs();
 			const {
 				client,

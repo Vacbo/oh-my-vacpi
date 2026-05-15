@@ -224,14 +224,21 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	readonly concurrency = "exclusive";
 	readonly strict = true;
 	readonly intent = (args: Partial<Static<typeof evalSchema>>): string | undefined => {
-		const input = args.input;
-		if (input) {
-			try {
-				const cells = parseEvalInput(input).cells;
-				return cells.map(cell => cell.title || `running ${cell.language}`).join("\n");
-			} catch {}
+		if (!("input" in args)) {
+			return "evaluating";
 		}
-		return "evaluating";
+
+		const input = args.input;
+		if (!input) {
+			return undefined;
+		}
+
+		try {
+			const cells = parseEvalInput(input).cells;
+			return cells.map(cell => cell.title || `running ${cell.language}`).join("\n") || undefined;
+		} catch {
+			return undefined;
+		}
 	};
 
 	get customFormat(): { syntax: "lark"; definition: string } {

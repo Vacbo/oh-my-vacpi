@@ -5159,6 +5159,31 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"routers/kimi-k2.6-turbo": {
+			"id": "routers/kimi-k2.6-turbo",
+			"name": "Kimi K2.6 Turbo (Fire Pass)",
+			"api": "openai-completions",
+			"provider": "fireworks",
+			"baseUrl": "https://api.fireworks.ai/inference/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 256000,
+			"maxTokens": 256000,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
+		},
 		"minimax-m2.7": {
 			"id": "minimax-m2.7",
 			"name": "MiniMax M2.7",

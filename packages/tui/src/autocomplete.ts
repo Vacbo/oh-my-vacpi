@@ -169,12 +169,17 @@ export interface SlashCommand {
 	getInlineHint?(argumentText: string): string | null;
 }
 
+export interface AutocompleteRequestOptions {
+	signal: AbortSignal;
+}
+
 export interface AutocompleteProvider {
 	/** Get autocomplete suggestions for current text/cursor position */
 	getSuggestions(
 		lines: string[],
 		cursorLine: number,
 		cursorCol: number,
+		options?: AutocompleteRequestOptions,
 	): Promise<{
 		items: AutocompleteItem[];
 		prefix: string; // What we're matching against (e.g., "/" or "src/")
@@ -220,6 +225,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		lines: string[],
 		cursorLine: number,
 		cursorCol: number,
+		_options?: AutocompleteRequestOptions,
 	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
@@ -725,6 +731,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		lines: string[],
 		cursorLine: number,
 		cursorCol: number,
+		_options?: AutocompleteRequestOptions,
 	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);

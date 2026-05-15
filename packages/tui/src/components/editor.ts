@@ -299,6 +299,16 @@ export interface EditorTopBorder {
 	width: number;
 }
 
+function isEditorTheme(value: unknown): value is EditorTheme {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"borderColor" in value &&
+		"selectList" in value &&
+		"symbols" in value
+	);
+}
+
 interface HistoryEntry {
 	prompt: string;
 }
@@ -354,6 +364,7 @@ export class Editor implements Component, Focusable {
 	#autocompleteState: "regular" | "force" | null = null;
 	#autocompletePrefix: string = "";
 	#autocompleteRequestId: number = 0;
+	#autocompleteAbortController?: AbortController;
 	#autocompleteMaxVisible: number = 5;
 	onAutocompleteUpdate?: () => void;
 
@@ -386,7 +397,13 @@ export class Editor implements Component, Focusable {
 	#topBorderContent?: EditorTopBorder;
 	#borderVisible = true;
 
-	constructor(theme: EditorTheme) {
+	constructor(theme: EditorTheme);
+	constructor(tui: unknown, theme: EditorTheme, options?: unknown);
+	constructor(themeOrTui: EditorTheme | unknown, maybeTheme?: EditorTheme, _options?: unknown) {
+		const theme = isEditorTheme(themeOrTui) ? themeOrTui : maybeTheme;
+		if (!theme) {
+			throw new TypeError("Editor requires an EditorTheme.");
+		}
 		this.#theme = theme;
 		this.borderColor = theme.borderColor;
 	}
@@ -2431,13 +2448,17 @@ export class Editor implements Component, Focusable {
 		}
 
 		const requestId = ++this.#autocompleteRequestId;
+		this.#autocompleteAbortController?.abort();
+		const abortController = new AbortController();
+		this.#autocompleteAbortController = abortController;
 
 		const suggestions = await this.#autocompleteProvider.getSuggestions(
 			this.#state.lines,
 			this.#state.cursorLine,
 			this.#state.cursorCol,
+			{ signal: abortController.signal },
 		);
-		if (requestId !== this.#autocompleteRequestId) return;
+		if (requestId !== this.#autocompleteRequestId || abortController.signal.aborted) return;
 
 		if (suggestions && Array.isArray(suggestions.items) && suggestions.items.length > 0) {
 			this.#autocompletePrefix = suggestions.prefix;
@@ -2496,12 +2517,16 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 		}
 
 		const requestId = ++this.#autocompleteRequestId;
+		this.#autocompleteAbortController?.abort();
+		const abortController = new AbortController();
+		this.#autocompleteAbortController = abortController;
 		const suggestions = await provider.getForceFileSuggestions(
 			this.#state.lines,
 			this.#state.cursorLine,
 			this.#state.cursorCol,
+			{ signal: abortController.signal },
 		);
-		if (requestId !== this.#autocompleteRequestId) return;
+		if (requestId !== this.#autocompleteRequestId || abortController.signal.aborted) return;
 
 		if (suggestions && Array.isArray(suggestions.items) && suggestions.items.length > 0) {
 			// If there's exactly one suggestion and this was an explicit Tab press, apply it immediately
@@ -2538,6 +2563,8 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 	#cancelAutocomplete(notifyCancel: boolean = false): void {
 		const wasAutocompleting = this.#autocompleteState !== null;
 		this.#clearAutocompleteTimeout();
+		this.#autocompleteAbortController?.abort();
+		this.#autocompleteAbortController = undefined;
 		this.#autocompleteRequestId += 1;
 		this.#autocompleteState = null;
 		this.#autocompleteList = undefined;
@@ -2561,13 +2588,17 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 		}
 
 		const requestId = ++this.#autocompleteRequestId;
+		this.#autocompleteAbortController?.abort();
+		const abortController = new AbortController();
+		this.#autocompleteAbortController = abortController;
 
 		const suggestions = await this.#autocompleteProvider.getSuggestions(
 			this.#state.lines,
 			this.#state.cursorLine,
 			this.#state.cursorCol,
+			{ signal: abortController.signal },
 		);
-		if (requestId !== this.#autocompleteRequestId) return;
+		if (requestId !== this.#autocompleteRequestId || abortController.signal.aborted) return;
 
 		if (suggestions && Array.isArray(suggestions.items) && suggestions.items.length > 0) {
 			this.#autocompletePrefix = suggestions.prefix;

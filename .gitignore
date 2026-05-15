@@ -61,3 +61,7 @@ python/omp-rpc/src/omp_rpc.egg-info/
 # parallel-agent worktrees
 .wt/
 CPU*.md
+
+# Bun build cache
+*.bun-build
+.*.bun-build
