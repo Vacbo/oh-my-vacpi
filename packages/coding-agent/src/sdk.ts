@@ -2,11 +2,18 @@ import {
 	Agent,
 	type AgentEvent,
 	type AgentMessage,
+	type AgentTelemetryConfig,
 	type AgentTool,
 	INTENT_FIELD,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
-import type { CredentialDisabledEvent, Message, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import {
+	type CredentialDisabledEvent,
+	type Message,
+	type Model,
+	type SimpleStreamOptions,
+	streamSimple,
+} from "@oh-my-pi/pi-ai";
 import {
 	getOpenAICodexTransportDetails,
 	prewarmOpenAICodexResponses,
@@ -92,7 +99,8 @@ import {
 	SecretObfuscator,
 } from "./secrets";
 import { AgentSession } from "./session/agent-session";
-import { AuthStorage } from "./session/auth-storage";
+import { resolveAuthBrokerConfig } from "./session/auth-broker-config";
+import { AuthBrokerClient, AuthStorage, RemoteAuthCredentialStore } from "./session/auth-storage";
 import { convertToLlm } from "./session/messages";
 import { SessionManager } from "./session/session-manager";
 import { closeAllConnections } from "./ssh/connection-manager";
@@ -244,6 +252,17 @@ export interface CreateAgentSessionOptions {
 
 	/** Whether UI is available (enables interactive tools like ask). Default: false */
 	hasUI?: boolean;
+
+	/**
+	 * Opt-in OpenTelemetry instrumentation forwarded to the underlying Agent.
+	 * Passing `{}` enables the loop's GenAI-semantic-convention spans. See
+	 * {@link AgentTelemetryConfig} for the full surface (hooks, content capture,
+	 * cost estimator, agent identity).
+	 *
+	 * Safe to enable without an OTEL SDK registered in the host: the
+	 * `@opentelemetry/api` package returns a no-op tracer in that case.
+	 */
+	telemetry?: AgentTelemetryConfig;
 }
 
 /** Result from createAgentSession */
@@ -305,13 +324,37 @@ function getDefaultAgentDir(): string {
 // Discovery Functions
 
 /**
- * Create an AuthStorage instance with fallback support.
- * Reads from primary path first, then falls back to legacy paths (.pi, .claude).
+ * Create an AuthStorage instance.
+ *
+ * Default: local SQLite store at `<agentDir>/agent.db`.
+ *
+ * Broker mode: when `OMP_AUTH_BROKER_URL` is set, credentials are pulled from
+ * a remote auth-broker over the wire. Refresh tokens never leave the broker;
+ * the client receives access tokens with `refresh = "__remote__"` and calls
+ * back into the broker through the {@link AuthStorageOptions.refreshOAuthCredential}
+ * override to re-mint access tokens when needed.
  */
 export async function discoverAuthStorage(agentDir: string = getDefaultAgentDir()): Promise<AuthStorage> {
+	const brokerConfig = await resolveAuthBrokerConfig();
+	if (brokerConfig) {
+		const client = new AuthBrokerClient({ url: brokerConfig.url, token: brokerConfig.token });
+		const initialResult = await client.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("Auth broker returned no initial snapshot");
+		const store = new RemoteAuthCredentialStore({ client, initialSnapshot: initialResult.snapshot });
+		// Refresh + usage hooks live on RemoteAuthCredentialStore; AuthStorage
+		// discovers them automatically when no explicit option overrides them.
+		const storage = new AuthStorage(store, {
+			configValueResolver: resolveConfigValue,
+			sourceLabel: `broker ${brokerConfig.url}`,
+		});
+		await storage.reload();
+		return storage;
+	}
 	const dbPath = getAgentDbPath(agentDir);
-
-	const storage = await AuthStorage.create(dbPath, { configValueResolver: resolveConfigValue });
+	const storage = await AuthStorage.create(dbPath, {
+		configValueResolver: resolveConfigValue,
+		sourceLabel: `local ${dbPath}`,
+	});
 	await storage.reload();
 	return storage;
 }
@@ -873,6 +916,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
 			resolveThinkingLevelForModel(resolvedModel, thinkingLevel),
 		);
+		// Fire-and-forget TLS+H2 handshake to the model's host so it overlaps
+		// with the rest of session setup (extension/skill load, tool registry,
+		// system prompt build). Without this, the first `fetch(...)` pays the
+		// full handshake serially — 100–300 ms transcontinental for
+		// api.anthropic.com from a residential IP. Every mode benefits
+		// (interactive, print, rpc, acp).
+		preconnectModelHost(model.baseUrl);
 	}
 
 	let skills: Skill[];
@@ -920,18 +970,24 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// it. On timeout we forward `undefined` to ToolSession; buildSystemPromptInternal
 	// will re-race the same promise through its own withDeadline path. Background
 	// work continues so caches still warm.
-	const raceWithDeadline = <T>(name: string, work: Promise<T>): Promise<T | undefined> =>
-		Promise.race([
+	const raceWithDeadline = async <T>(name: string, work: Promise<T>): Promise<T | undefined> => {
+		let timedOut = false;
+		const result = await Promise.race([
 			work,
 			Bun.sleep(STARTUP_SCAN_DEADLINE_MS).then(() => {
-				logger.warn("Startup scan exceeded deadline; deferring to system prompt fallback", {
-					name,
-					timeoutMs: STARTUP_SCAN_DEADLINE_MS,
-					cwd,
-				});
+				timedOut = true;
 				return undefined;
 			}),
 		]);
+		if (timedOut) {
+			logger.warn("Startup scan exceeded deadline; deferring to system prompt fallback", {
+				name,
+				timeoutMs: STARTUP_SCAN_DEADLINE_MS,
+				cwd,
+			});
+		}
+		return result;
+	};
 	const [contextFiles, resolvedWorkspaceTree] = await Promise.all([
 		contextFilesPromise,
 		raceWithDeadline("buildWorkspaceTree", workspaceTreePromise),
@@ -1093,6 +1149,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			settings,
 			authStorage,
 			modelRegistry,
+			getTelemetry: () => agent?.telemetry,
 		};
 
 		// Wire process-wide internal URL singletons owned by their real classes.
@@ -1409,6 +1466,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 		}
 
+		const reloadSshTool = async (): Promise<AgentTool | null> => {
+			if (!requestedToolNameSet.has("ssh")) return null;
+			const sshTool = (await loadSshTool({
+				...toolSession,
+				cwd: sessionManager.getCwd(),
+			})) as unknown as AgentTool | null;
+			if (!sshTool) return null;
+			const wrapped = wrapToolWithMetaNotice(sshTool);
+			return (extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped) as AgentTool;
+		};
+
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
 		const cursorExecHandlers = new CursorExecHandlers({
 			cwd,
@@ -1513,6 +1581,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			(options.toolNames ? [...new Set(options.toolNames.map(name => name.toLowerCase()))] : undefined) ??
 			toolNamesFromRegistry;
 		const normalizedRequested = requestedToolNames.filter(name => toolRegistry.has(name));
+		const requestedToolNameSet = new Set(normalizedRequested);
 		// Effective discovery mode: tools.discoveryMode takes precedence; mcp.discoveryMode is back-compat alias.
 		const toolsDiscoveryModeSetting = settings.get("tools.discoveryMode");
 		const effectiveDiscoveryMode: "off" | "mcp-only" | "all" =
@@ -1732,6 +1801,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 				return key;
 			},
+			streamFn: (streamModel, context, streamOptions) =>
+				streamSimple(streamModel, context, {
+					...streamOptions,
+					onAuthError: async (provider, oldKey, error) => {
+						await modelRegistry.authStorage.invalidateCredentialMatching(provider, oldKey, streamOptions?.signal);
+						logger.debug("Retrying provider request after credential invalidation", {
+							provider,
+							error: error instanceof Error ? error.message : String(error),
+						});
+						return modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
+					},
+				}),
 			cursorExecHandlers,
 			transformToolCallArguments: (args, _toolName) => {
 				let result = args;
@@ -1746,6 +1827,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			},
 			intentTracing: !!intentField,
 			getToolChoice: () => session?.nextToolChoice(),
+			telemetry: options.telemetry,
 		});
 
 		cursorEventEmitter = event => agent.emitExternalEvent(event);
@@ -1754,11 +1836,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (hasExistingSession) {
 			agent.replaceMessages(existingSession.messages);
 		} else {
-			// Save initial model and thinking level for new sessions so they can be restored on resume
+			// Save initial model, thinking level, and service tier for new sessions so they can be restored on resume.
 			if (model) {
 				sessionManager.appendModelChange(`${model.provider}/${model.id}`);
 			}
 			sessionManager.appendThinkingLevelChange(thinkingLevel);
+			if (initialServiceTier) {
+				sessionManager.appendServiceTierChange(initialServiceTier);
+			}
 		}
 
 		session = new AgentSession({
@@ -1787,6 +1872,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			onResponse,
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,
+			reloadSshTool,
+			requestedToolNames: requestedToolNameSet,
 			getMcpServerInstructions: mcpManager
 				? () => {
 						const raw = mcpManager.getServerInstructions();
@@ -1862,8 +1949,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		// Start LSP warmup in the background so startup does not block on language server initialization.
+		// Print/script invocations (`hasUI=false`) don't render the warmup status indicator AND typically
+		// finish before LSP servers would have stabilized — warming them just spends CPU parsing big
+		// `initialize` responses concurrently with the LLM stream consumer, jittering perceived latency.
+		// Tools that need an LSP server still spin one up on demand through `getOrCreateClient`.
 		let lspServers: CreateAgentSessionResult["lspServers"];
-		if (enableLsp && settings.get("lsp.diagnosticsOnWrite")) {
+		if (enableLsp && options.hasUI && settings.get("lsp.diagnosticsOnWrite")) {
 			lspServers = discoverStartupLspServers(cwd);
 			if (lspServers.length > 0) {
 				void (async () => {
@@ -1978,5 +2069,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		}
 		throw error;
+	}
+}
+
+/**
+ * Best-effort preconnect to the model's API host. Bun's `fetch.preconnect`
+ * primes DNS + TCP + TLS + H2 so the first real request reuses the warm
+ * connection. Errors are swallowed: preconnect is an optimization, never a
+ * hard dependency.
+ */
+function preconnectModelHost(baseUrl: string | undefined): void {
+	if (!baseUrl) return;
+	const preconnect = (globalThis.fetch as typeof fetch & { preconnect?: (url: string) => void }).preconnect;
+	if (typeof preconnect !== "function") return;
+	try {
+		preconnect(baseUrl);
+	} catch {
+		// Best effort.
 	}
 }

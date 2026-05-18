@@ -1,4 +1,4 @@
-import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolChoice } from "@oh-my-pi/pi-ai";
 import { $env, $flag, logger } from "@oh-my-pi/pi-utils";
 import type { PromptTemplate } from "../config/prompt-templates";
@@ -250,6 +250,9 @@ export interface ToolSession {
 
 	/** Queue a hidden message to be injected at the next agent turn. */
 	queueDeferredMessage?(message: CustomMessage): void;
+	/** Get the active OpenTelemetry config so subagent dispatch can forward
+	 *  the parent's tracer/hooks with the subagent's own identity stamped. */
+	getTelemetry?: () => AgentTelemetryConfig | undefined;
 }
 
 export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
@@ -511,7 +514,14 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	// Injected unconditionally into every agent, regardless of requested tool list.
 	const autoQA = isAutoQaEnabled(session.settings);
 	if (autoQA && !tools.some(t => t.name === "report_tool_issue")) {
-		const qaTool = await HIDDEN_TOOLS.report_tool_issue(session);
+		// Build the enum from tools we just constructed via BUILTIN_TOOLS / HIDDEN_TOOLS.
+		// Extension overrides (e.g. a user's custom `bash`) get added later by
+		// other code paths, so they're absent here — exactly what we want; MCP /
+		// extension tools never end up in the report enum.
+		const activeBuiltinNames = tools
+			.map(t => t.name)
+			.filter(name => (name in BUILTIN_TOOLS || name in HIDDEN_TOOLS) && name !== "report_tool_issue");
+		const qaTool = createReportToolIssueTool(session, activeBuiltinNames);
 		if (qaTool) {
 			tools.push(wrapToolWithMetaNotice(qaTool));
 		}

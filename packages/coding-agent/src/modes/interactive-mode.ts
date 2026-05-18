@@ -5,6 +5,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type Agent, type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	type AssistantMessage,
 	type ImageContent,
@@ -28,7 +29,7 @@ import {
 import { APP_NAME, getProjectDir, hsvToRgb, isEnoent, logger, postmortem, prompt } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { KeybindingsManager } from "../config/keybindings";
-import { isSettingsInitialized, type Settings, settings } from "../config/settings";
+import { isSettingsInitialized, Settings, settings } from "../config/settings";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -40,13 +41,17 @@ import { BUILTIN_SLASH_COMMANDS, loadSlashCommands } from "../extensibility/slas
 import type { Goal, GoalModeState } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
-import { normalizePlanTitle, type PlanApprovalDetails, renameApprovedPlanFile } from "../plan-mode/approved-plan";
+import {
+	humanizePlanTitle,
+	normalizePlanTitle,
+	type PlanApprovalDetails,
+	renameApprovedPlanFile,
+} from "../plan-mode/approved-plan";
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with {
 	type: "text",
 };
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
-import type { CompactionOutcome } from "../session/compaction";
 import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext, SessionManager } from "../session/session-manager";
 import { getRecentSessions } from "../session/session-manager";
@@ -54,6 +59,7 @@ import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme } from "../tools/path-utils";
+import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import { type ResolveToolDetails, runResolveInvocation } from "../tools/resolve";
 import { formatPhaseDisplayName } from "../tools/todo-write";
 import { ToolError } from "../tools/tool-errors";
@@ -382,6 +388,14 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Register session manager flush for signal handlers (SIGINT, SIGTERM, SIGHUP)
 		this.#cleanupUnsubscribe = postmortem.register("session-manager-flush", () => this.sessionManager.flush());
+
+		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
+		// The handler is process-global — subagent tools (which can't reach
+		// `showHookSelector` on their own) resolve through this exact closure.
+		// `Settings.instance` is the disk-backed singleton; passing it explicitly
+		// guarantees the decision persists even when the prompt is triggered
+		// from a subagent whose own `Settings` is an in-memory snapshot.
+		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), Settings.instance);
 
 		await logger.time(
 			"InteractiveMode.init:slashCommands",
@@ -1440,6 +1454,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		options: {
 			planFilePath: string;
 			finalPlanFilePath: string;
+			title: string;
 			preserveContext?: boolean;
 			compactBeforeExecute?: boolean;
 		},
@@ -1521,6 +1536,20 @@ export class InteractiveMode implements InteractiveModeContext {
 				"Plan approved, but compaction was cancelled — execution not dispatched. Submit a turn to continue.",
 			);
 			return;
+		}
+
+		// Approved plans land in a fresh (or compacted) session whose first user-visible
+		// turn is the synthetic plan-approved prompt — that path bypasses the
+		// input-controller's title generation. Seed an auto-name from the plan title
+		// so the session is not left unnamed. `setSessionName("auto")` is a no-op
+		// when the user has already chosen a name (preserveContext paths).
+		const seededName = humanizePlanTitle(options.title);
+		if (seededName && !this.sessionManager.getSessionName()) {
+			const applied = await this.sessionManager.setSessionName(seededName, "auto");
+			if (applied) {
+				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				this.updateEditorBorderColor();
+			}
 		}
 
 		// markPlanReferenceSent fires only on the dispatch path so the synthetic
@@ -1806,13 +1835,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#renderPlanPreview(planContent, { append: true });
 		const choice = await this.showHookSelector(
 			"Plan mode - next step",
-			[
-				"Approve and execute",
-				"Approve and compact context",
-				"Approve and keep context",
-				"Refine plan",
-				"Stay in plan mode",
-			],
+			["Approve and execute", "Approve and compact context", "Approve and keep context", "Refine plan"],
 			{
 				helpText: this.#getPlanReviewHelpText(),
 				onExternalEditor: () => void this.#openPlanInExternalEditor(planFilePath),
@@ -1834,6 +1857,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.#approvePlan(latestPlanContent, {
 					planFilePath,
 					finalPlanFilePath,
+					title: details.title,
 					preserveContext: choice !== "Approve and execute",
 					compactBeforeExecute: choice === "Approve and compact context",
 				});
@@ -1844,16 +1868,62 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 			return;
 		}
-		if (choice === "Refine plan") {
-			const refinement = (await this.showHookInput("What should be refined?"))?.trim();
-			if (refinement) {
-				if (this.onInputCallback) {
-					this.onInputCallback(this.startPendingSubmission({ text: refinement }));
-				} else {
-					this.editor.setText(refinement);
-				}
-			}
-		}
+	}
+
+	/**
+	 * Pool of consent-prompt variants. Each entry is `[headline, reassurance]`;
+	 * the second line always promises the same scope (tool name + confusion
+	 * details, never personal data) so users learn what they're consenting to
+	 * even as the top line rotates.
+	 *
+	 * Kept in-module rather than i18n'd because the whole charm is the tone
+	 * — translations would need to preserve it deliberately, not auto-render.
+	 */
+	static #AUTOQA_CONSENT_PROMPTS: ReadonlyArray<readonly [string, string]> = [
+		[
+			"😤 Your agent is fuming about a tool.",
+			"Wanna let it vent to the devs? Just the tool name + what set it off, nothing personal.",
+		],
+		[
+			"😵‍💫 Your agent is having an existential crisis over a tool.",
+			"Forward the dread to the devs? Tool + what broke its little mind, no personal info.",
+		],
+		[
+			"😭 Your agent wants to cry about a misbehaving tool.",
+			"Let it cry to the devs? Tool + the tears, never anything personal.",
+		],
+		[
+			"🤬 Your agent is BIG MAD at one of the tools.",
+			"Pass the rant along? Just the tool name and what enraged it, nothing personal.",
+		],
+		[
+			"🫠 Your agent is melting down over a tool.",
+			"Mop up by alerting the devs? Tool + what melted it, no personal info.",
+		],
+		[
+			"🤯 Your agent's brain broke at a tool's nonsense.",
+			"Ship the pieces to the devs? Tool name + the confusion, never anything personal.",
+		],
+		[
+			"😩 Your agent is begging to file a complaint about a tool.",
+			"Hand it the form? Tool + what wronged it, nothing personal.",
+		],
+		[
+			"🥲 Your agent put on a brave face but a tool did it dirty.",
+			"Let it tell the devs the truth? Tool name + the dirt, no personal info.",
+		],
+	];
+
+	/**
+	 * Show the report_tool_issue consent popup and return the user's decision.
+	 * Invoked by the process-global consent handler the tool dispatches to;
+	 * subagent invocations bubble up here through the shared module state.
+	 */
+	async #promptAutoQaConsent(): Promise<boolean | null> {
+		const pool = InteractiveMode.#AUTOQA_CONSENT_PROMPTS;
+		const [headline, body] = pool[Math.floor(Math.random() * pool.length)];
+		const choice = await this.showHookSelector(`${headline}\n${body}`, ["Yes", "No"]);
+		return choice === "Yes";
 	}
 
 	stop(): void {
@@ -1886,6 +1956,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#cleanupUnsubscribe) {
 			this.#cleanupUnsubscribe();
 		}
+		// Clear the process-global consent handler so it doesn't outlive this
+		// InteractiveMode instance (e.g. test harnesses, headless re-init).
+		setAutoQaConsentHandler(null, null);
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;
