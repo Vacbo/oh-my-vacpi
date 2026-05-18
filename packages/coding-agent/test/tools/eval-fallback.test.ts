@@ -103,17 +103,22 @@ describe("EvalTool language dispatch", () => {
 });
 
 describe("EvalTool intent", () => {
-	it("does not show evaluating for malformed partial eval input", () => {
+	it("shows a generic intent when no cells are available", () => {
+		const tool = new EvalTool(makeSession());
+
+		expect(tool.intent({})).toBe("evaluating");
+	});
+
+	it("shows the first cell intent and remaining cell count", () => {
 		const tool = new EvalTool(makeSession());
 
 		expect(
-			tool.intent({ input: "*** Begin PY\nprint('ok')\n*** End PY\nmodel commentary outside a cell" }),
-		).toBeUndefined();
-	});
-
-	it("shows the parsed cell intent once eval input is complete", () => {
-		const tool = new EvalTool(makeSession());
-
-		expect(tool.intent({ input: "*** Begin PY\nprint('ok')\n*** End PY" })).toBe("running python");
+			tool.intent({
+				cells: [
+					{ language: "py", title: "prelude", code: "print('ok')" },
+					{ language: "js", code: "console.log('done')" },
+				],
+			}),
+		).toBe("prelude (+1)");
 	});
 });
