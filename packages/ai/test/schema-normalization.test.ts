@@ -8,6 +8,7 @@ import {
 	normalizeSchemaForCCA,
 	normalizeSchemaForGoogle,
 	normalizeSchemaForMCP,
+	sanitizeSchemaForOpenAIResponses,
 	sanitizeSchemaForStrictMode,
 	schemaNeedsDraft202012Upgrade,
 	stripResidualCombiners,
@@ -347,8 +348,249 @@ describe("normalizeSchemaForMCP", () => {
 			description: "ID",
 		});
 	});
+
+	// Regression: issue #1101. Some MCP servers ship `JSON.stringify(zodSchema)`
+	// directly as a tool's `inputSchema`. Zod 4 surfaces `.type`, `.enum`,
+	// `.options`, and `.def` on every schema instance — those keys collide with
+	// JSON Schema keywords, producing payloads that fail Anthropic's strict
+	// JSON Schema 2020-12 validator (`"type":"enum"`, `"enum":{...}` as object).
+	// `normalizeSchemaForMCP` must rewrite the offending nodes into clean JSON
+	// Schema so the tool list still ships.
+	it("rewrites a Zod-enum instance leaked as inputSchema", () => {
+		const leaked = {
+			def: { type: "enum", entries: { upstream: "upstream", downstream: "downstream" } },
+			type: "enum",
+			enum: { upstream: "upstream", downstream: "downstream" },
+			options: ["upstream", "downstream"],
+		};
+		expect(normalizeSchemaForMCP(leaked)).toEqual({
+			type: "string",
+			enum: ["upstream", "downstream"],
+		});
+	});
+
+	it("rewrites a numeric Zod-enum (integer values keep integer type)", () => {
+		const leaked = {
+			def: { type: "enum", entries: { ONE: 1, TWO: 2 } },
+			type: "enum",
+			enum: { ONE: 1, TWO: 2 },
+			options: [1, 2],
+		};
+		expect(normalizeSchemaForMCP(leaked)).toEqual({
+			type: "integer",
+			enum: [1, 2],
+		});
+	});
+
+	it("rewrites a Zod-literal instance to a single-element enum", () => {
+		const leaked = {
+			def: { type: "literal", values: ["only"] },
+			type: "literal",
+			values: ["only"],
+		};
+		// Decontamination emits `{const:"only"}`; downstream normalizer collapses
+		// it to the equivalent enum form. End-to-end contract is what callers see.
+		expect(normalizeSchemaForMCP(leaked)).toEqual({ type: "string", enum: ["only"] });
+	});
+
+	it("rewrites a Zod-union of literals (downstream collapses anyOf-of-consts to enum)", () => {
+		const leaked = {
+			def: {
+				type: "union",
+				options: [
+					{ def: { type: "literal", values: ["on"] }, type: "literal", values: ["on"] },
+					{ def: { type: "literal", values: ["off"] }, type: "literal", values: ["off"] },
+				],
+			},
+			type: "union",
+		};
+		expect(normalizeSchemaForMCP(leaked)).toEqual({
+			type: "string",
+			enum: ["on", "off"],
+		});
+	});
+
+	it("strips null-valued JSON Schema keywords that Zod scalars leak (format: null, minLength: null)", () => {
+		const leaked = {
+			def: { type: "string", checks: [] },
+			type: "string",
+			format: null,
+			minLength: null,
+			maxLength: null,
+		};
+		expect(normalizeSchemaForMCP(leaked)).toEqual({ type: "string" });
+	});
+
+	it("drops invalid `type` for unmodelled Zod kinds so the residue stays valid", () => {
+		const leaked = {
+			def: { type: "any" },
+			type: "any",
+			description: "anything",
+		};
+		expect(normalizeSchemaForMCP(leaked)).toEqual({ description: "anything" });
+	});
+
+	it("leaves a genuine JSON Schema that happens to have a `def` property alone", () => {
+		// `def` is not a JSON Schema keyword but it's also not reserved. The
+		// detoxifier must only fire when `def.type` is a known Zod kind AND
+		// `node.type === def.type`, otherwise it would corrupt real schemas.
+		const schema = {
+			type: "object",
+			properties: { def: { type: "string" } },
+			required: ["def"],
+		};
+		expect(normalizeSchemaForMCP(schema)).toEqual(schema);
+	});
 });
 
+// ---------------------------------------------------------------------------
+// sanitizeSchemaForOpenAIResponses
+// ---------------------------------------------------------------------------
+
+describe("sanitizeSchemaForOpenAIResponses", () => {
+	it("adds empty properties to object schemas without rewriting literal payloads", () => {
+		const literal = { type: "object", oneOf: [{ const: "literal" }] };
+		const schema = {
+			type: "object",
+			properties: {
+				nested: { type: "object" },
+				union: {
+					oneOf: [{ type: "object" }],
+				},
+			},
+			oneOf: [{ type: "object" }],
+			enum: [literal],
+			const: literal,
+			default: literal,
+			examples: [literal],
+		};
+
+		expect(sanitizeSchemaForOpenAIResponses(schema)).toEqual({
+			type: "object",
+			properties: {
+				nested: { type: "object", properties: {} },
+				union: {
+					anyOf: [{ type: "object", properties: {} }],
+				},
+			},
+			enum: [literal],
+			const: literal,
+			default: literal,
+			examples: [literal],
+			anyOf: [{ type: "object", properties: {} }],
+		});
+	});
+
+	it("adds empty properties under draft-07 dependencies and draft 2019-09 contentSchema", () => {
+		const schema = {
+			type: "object",
+			properties: {
+				body: {
+					type: "string",
+					contentSchema: { type: "object" },
+				},
+			},
+			dependencies: {
+				body: { type: "object" },
+				other: ["body"],
+			},
+		};
+
+		expect(sanitizeSchemaForOpenAIResponses(schema)).toEqual({
+			type: "object",
+			properties: {
+				body: {
+					type: "string",
+					contentSchema: { type: "object", properties: {} },
+				},
+			},
+			dependencies: {
+				body: { type: "object", properties: {} },
+				other: ["body"],
+			},
+		});
+	});
+
+	it("adds empty properties when `type` is a draft 2020-12 array including object", () => {
+		expect(sanitizeSchemaForOpenAIResponses({ type: ["object", "null"] })).toEqual({
+			type: ["object", "null"],
+			properties: {},
+		});
+	});
+
+	it("preserves non-array oneOf payloads verbatim instead of dropping them", () => {
+		const malformed = { type: "object", oneOf: { type: "object" } } as unknown as Record<string, unknown>;
+
+		expect(sanitizeSchemaForOpenAIResponses(malformed)).toEqual({
+			type: "object",
+			oneOf: { type: "object" },
+			properties: {},
+		});
+	});
+
+	it("does not recurse infinitely on self-referential object schemas", () => {
+		const circular: Record<string, unknown> = { type: "object", properties: {} };
+		(circular.properties as Record<string, unknown>).self = circular;
+
+		const sanitized = sanitizeSchemaForOpenAIResponses(circular);
+		const properties = (sanitized as { properties: Record<string, unknown> }).properties;
+		expect(properties.self).toBe(sanitized as unknown as object);
+		expect((sanitized as { type: unknown }).type).toBe("object");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeSchemaForOpenAIResponses — empty-schema normalization (issue #1179)
+// ---------------------------------------------------------------------------
+
+describe("sanitizeSchemaForOpenAIResponses — empty-schema normalization", () => {
+	it("normalizes {} (empty schema = z.unknown()) to `true` in additionalProperties (issue #1179)", () => {
+		// z.record(z.string(), z.unknown()) produces additionalProperties: {}
+		const schema = { type: "object", additionalProperties: {} };
+		expect(sanitizeSchemaForOpenAIResponses(schema)).toEqual({
+			type: "object",
+			additionalProperties: true,
+			properties: {},
+		});
+	});
+
+	it("normalizes {} in items to `true` (z.array(z.unknown()))", () => {
+		const schema = { type: "array", items: {} };
+		expect(sanitizeSchemaForOpenAIResponses(schema)).toEqual({ type: "array", items: true });
+	});
+
+	it("normalizes {} in nested property schemas (z.unknown() as a property value)", () => {
+		const schema = {
+			type: "object",
+			properties: { meta: {} },
+			required: ["meta"],
+		};
+		expect(sanitizeSchemaForOpenAIResponses(schema)).toEqual({
+			type: "object",
+			properties: { meta: true },
+			required: ["meta"],
+		});
+	});
+
+	it("normalizes {} in anyOf branches", () => {
+		const schema = { anyOf: [{}, { type: "string" }] };
+		expect(sanitizeSchemaForOpenAIResponses(schema)).toEqual({ anyOf: [true, { type: "string" }] });
+	});
+
+	it("does not normalize non-empty schemas or boolean schemas", () => {
+		const schema = {
+			type: "object",
+			additionalProperties: { type: "string" },
+			unevaluatedProperties: false,
+		};
+		expect(sanitizeSchemaForOpenAIResponses(schema)).toEqual({
+			type: "object",
+			properties: {},
+			additionalProperties: { type: "string" },
+			unevaluatedProperties: false,
+		});
+	});
+});
 // ---------------------------------------------------------------------------
 // enforceStrictSchema and tryEnforceStrictSchema
 // ---------------------------------------------------------------------------

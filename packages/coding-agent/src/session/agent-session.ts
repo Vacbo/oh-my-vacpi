@@ -65,11 +65,13 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import {
 	calculateRateLimitBackoffMs,
+	clearAnthropicFastModeFallback,
 	getSupportedEfforts,
 	isContextOverflow,
 	isUsageLimitError,
 	modelsAreEqual,
 	parseRateLimitReason,
+	resolveServiceTier,
 	streamSimple,
 } from "@oh-my-pi/pi-ai";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
@@ -81,7 +83,7 @@ import {
 	prompt,
 	Snowflake,
 } from "@oh-my-pi/pi-utils";
-import { type AsyncJob, AsyncJobManager } from "../async";
+import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
 import type { Rule } from "../capability/rule";
 import { MODEL_ROLE_IDS, type ModelRegistry } from "../config/model-registry";
@@ -97,7 +99,7 @@ import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-temp
 import type { Settings, SkillsSettings } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { loadCapability } from "../discovery";
-import { normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
+import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import {
 	disposeKernelSessionsByOwner,
 	executePython as executePythonCommand,
@@ -236,6 +238,7 @@ export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "la
 export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
+	delivery: AsyncJobDeliveryState;
 }
 
 // ============================================================================
@@ -442,6 +445,44 @@ function todoClearKey(phaseName: string, taskContent: string): string {
 	return `${phaseName}\u0000${taskContent}`;
 }
 
+const IRC_REPLY_MAX_BYTES = 4096;
+
+/**
+ * Collapse degenerate IRC ephemeral replies before they hit the relay.
+ * Models occasionally loop on a single line (~16 reports of N-times-repeated
+ * replies); compress runs longer than 3 down to one instance + `[…N×]`, then
+ * cap at 4 KiB so a runaway reply can't flood the channel.
+ */
+function dedupeIrcReply(text: string): string {
+	if (!text) return text;
+	const lines = text.split("\n");
+	const out: string[] = [];
+	let i = 0;
+	while (i < lines.length) {
+		let j = i + 1;
+		while (j < lines.length && lines[j] === lines[i]) j++;
+		const runLen = j - i;
+		if (runLen > 3) {
+			out.push(lines[i], `[…${runLen}×]`);
+		} else {
+			for (let k = 0; k < runLen; k++) out.push(lines[i]);
+		}
+		i = j;
+	}
+	let result = out.join("\n");
+	if (Buffer.byteLength(result, "utf8") > IRC_REPLY_MAX_BYTES) {
+		// Trim by characters until we're under the byte budget — handles multi-byte
+		// glyphs at the boundary without splitting them.
+		const suffix = "\n[…truncated]";
+		const budget = IRC_REPLY_MAX_BYTES - Buffer.byteLength(suffix, "utf8");
+		while (Buffer.byteLength(result, "utf8") > budget) {
+			result = result.slice(0, -1);
+		}
+		result += suffix;
+	}
+	return result;
+}
+
 /**
  * Build the per-request `metadata` payload for the Anthropic provider, shaped
  * like real Claude Code's `getAPIMetadata` output (`{ session_id, account_uuid,
@@ -534,7 +575,7 @@ function createHandoffFileName(date = new Date()): string {
 // ============================================================================
 
 /** Tools that require user permission before execution when an ACP client is connected. */
-const PERMISSION_REQUIRED_TOOLS = new Set(["bash", "edit", "write", "ast_edit", "delete", "move"]);
+const PERMISSION_REQUIRED_TOOLS = new Set(["bash", "edit", "delete", "move"]);
 
 /** Permission options presented to the client on each gated tool call. */
 const PERMISSION_OPTIONS: ClientBridgePermissionOption[] = [
@@ -546,46 +587,106 @@ const PERMISSION_OPTIONS: ClientBridgePermissionOption[] = [
 
 const PERMISSION_OPTIONS_BY_ID = new Map(PERMISSION_OPTIONS.map(option => [option.optionId, option]));
 
-function derivePermissionTitle(toolName: string, args: unknown): string {
-	const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-	if (toolName === "bash") {
-		const cmd = typeof a.command === "string" ? a.command.slice(0, 80) : undefined;
-		if (cmd) return cmd;
-	} else if (toolName === "edit" || toolName === "write" || toolName === "delete") {
-		const p = typeof a.path === "string" ? a.path : undefined;
-		if (p) {
-			const verb = toolName === "edit" ? "Edit" : toolName === "write" ? "Write" : "Delete";
-			return `${verb} ${p}`;
-		}
-	} else if (toolName === "move") {
-		const from =
-			typeof a.oldPath === "string"
-				? a.oldPath
-				: typeof a.path === "string"
-					? a.path
-					: typeof a.from === "string"
-						? a.from
-						: undefined;
-		const to =
-			typeof a.newPath === "string"
-				? a.newPath
-				: typeof a.to === "string"
-					? a.to
-					: typeof a.destination === "string"
-						? a.destination
-						: undefined;
-		if (from && to) return `Move ${from} to ${to}`;
-		if (from) return `Move ${from}`;
-	} else if (toolName === "ast_edit") {
-		const paths = Array.isArray(a.paths)
-			? (a.paths as unknown[]).filter(x => typeof x === "string").join(", ")
-			: undefined;
-		if (paths) return `AST edit ${paths}`;
-	}
-	return toolName;
+function getStringProperty(value: Record<string, unknown>, key: string): string | undefined {
+	const candidate = value[key];
+	return typeof candidate === "string" ? candidate : undefined;
 }
 
-function extractPermissionLocations(args: unknown, cwd: string): { path: string; line?: number }[] {
+function collectStringPaths(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function getEditDestructiveIntent(args: unknown): { kind: "delete" | "move"; paths: string[] } | undefined {
+	if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+	const a = args as Record<string, unknown>;
+
+	const edits = Array.isArray(a.edits) ? a.edits : undefined;
+	if (edits) {
+		const path = getStringProperty(a, "path");
+		if (path) {
+			for (const edit of edits) {
+				if (!edit || typeof edit !== "object" || Array.isArray(edit)) continue;
+				const op = getStringProperty(edit as Record<string, unknown>, "op");
+				if (op === "delete") return { kind: "delete", paths: [path] };
+			}
+		}
+		for (const edit of edits) {
+			if (!edit || typeof edit !== "object" || Array.isArray(edit)) continue;
+			const entry = edit as Record<string, unknown>;
+			const op = getStringProperty(entry, "op");
+			const rename = getStringProperty(entry, "rename");
+			if (op !== "create" && rename) return { kind: "move", paths: path ? [path, rename] : [rename] };
+		}
+	}
+
+	const input = getStringProperty(a, "input");
+	if (input) {
+		try {
+			const entries = expandApplyPatchToEntries({ input });
+			const deleteEntry = entries.find(entry => entry.op === "delete");
+			if (deleteEntry) return { kind: "delete", paths: [deleteEntry.path] };
+			const moveEntry = entries.find(entry => entry.rename);
+			if (moveEntry?.rename) return { kind: "move", paths: [moveEntry.path, moveEntry.rename] };
+		} catch {
+			// If the edit input is not an apply_patch envelope, it is not a delete/move operation.
+		}
+	}
+
+	return undefined;
+}
+
+function getPermissionIntent(
+	toolName: string,
+	args: unknown,
+): { toolName: string; title: string; paths?: string[]; cacheKey: string } | undefined {
+	const a = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+	if (toolName === "bash") {
+		const cmd = getStringProperty(a, "command")?.slice(0, 80);
+		return { toolName, title: cmd || toolName, cacheKey: toolName };
+	}
+	if (toolName === "delete") {
+		const p = getStringProperty(a, "path");
+		return { toolName, title: p ? `Delete ${p}` : toolName, paths: p ? [p] : undefined, cacheKey: toolName };
+	}
+	if (toolName === "move") {
+		const from = getStringProperty(a, "oldPath") ?? getStringProperty(a, "path") ?? getStringProperty(a, "from");
+		const to = getStringProperty(a, "newPath") ?? getStringProperty(a, "to") ?? getStringProperty(a, "destination");
+		if (from && to) return { toolName, title: `Move ${from} to ${to}`, paths: [from, to], cacheKey: toolName };
+		return {
+			toolName,
+			title: from ? `Move ${from}` : toolName,
+			paths: from ? [from] : undefined,
+			cacheKey: toolName,
+		};
+	}
+	if (toolName === "edit") {
+		const intent = getEditDestructiveIntent(args);
+		if (!intent) return undefined;
+		if (intent.kind === "delete") {
+			return {
+				toolName,
+				title: `Delete ${intent.paths[0] ?? "edit target"}`,
+				paths: intent.paths,
+				cacheKey: "edit:delete",
+			};
+		}
+		const from = intent.paths[0];
+		const to = intent.paths[1];
+		return {
+			toolName,
+			title: from && to ? `Move ${from} to ${to}` : `Move ${from ?? to ?? "edit target"}`,
+			paths: intent.paths,
+			cacheKey: "edit:move",
+		};
+	}
+	return undefined;
+}
+
+function extractPermissionLocations(
+	args: unknown,
+	cwd: string,
+	explicitPaths?: string[],
+): { path: string; line?: number }[] {
 	if (!args || typeof args !== "object") return [];
 	const a = args as Record<string, unknown>;
 	const out: { path: string; line?: number }[] = [];
@@ -603,12 +704,16 @@ function extractPermissionLocations(args: unknown, cwd: string): { path: string;
 		if (out.some(location => location.path === resolved)) return;
 		out.push({ path: resolved });
 	};
-	pushPath(a.path);
-	pushPath(a.file);
-	if (Array.isArray(a.paths)) {
-		for (const p of a.paths) {
+	if (explicitPaths) {
+		for (const p of explicitPaths) {
 			pushPath(p);
 		}
+		return out;
+	}
+	pushPath(a.path);
+	pushPath(a.file);
+	for (const p of collectStringPaths(a.paths)) {
+		pushPath(p);
 	}
 	pushPath(a.oldPath);
 	pushPath(a.newPath);
@@ -667,6 +772,7 @@ export class AgentSession {
 	#planReferenceSent = false;
 	#planReferencePath = "local://PLAN.md";
 	#clientBridge: ClientBridge | undefined;
+	#allowAcpAgentInitiatedTurns = false;
 	/** Per-session memory of allow_always / reject_always decisions for gated tools. */
 	#acpPermissionDecisions: Map<string, "allow_always" | "reject_always"> = new Map();
 
@@ -804,6 +910,15 @@ export class AgentSession {
 
 	#streamingEditFileCache = new Map<string, string>();
 	#promptInFlightCount = 0;
+	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
+	// Internal extension hooks and post-emit work (auto-retry, auto-compaction, todo
+	// checks in #handleAgentEvent) still fire on the original schedule — only the
+	// `#emit(event)` that reaches external subscribers (rpc-mode stdout, ACP bridge,
+	// Cursor exec, TUI listeners) is held back. Without this, a client that resumes
+	// on `agent_end` can fire its next `prompt` before #promptWithMessage's finally
+	// has decremented #promptInFlightCount, hitting AgentBusyError. Flushed from
+	// both #endInFlight (normal) and #resetInFlight (abort).
+	#pendingAgentEndEmit: AgentSessionEvent | undefined;
 	#obfuscator: SecretObfuscator | undefined;
 	#checkpointState: CheckpointState | undefined = undefined;
 	#pendingRewindReport: string | undefined = undefined;
@@ -857,12 +972,21 @@ export class AgentSession {
 		this.#promptInFlightCount = Math.max(0, this.#promptInFlightCount - 1);
 		if (this.#promptInFlightCount === 0) {
 			this.#releasePowerAssertion();
+			this.#flushPendingAgentEnd();
 		}
 	}
 
 	#resetInFlight(): void {
 		this.#promptInFlightCount = 0;
 		this.#releasePowerAssertion();
+		this.#flushPendingAgentEnd();
+	}
+
+	#flushPendingAgentEnd(): void {
+		const pending = this.#pendingAgentEndEmit;
+		if (!pending) return;
+		this.#pendingAgentEndEmit = undefined;
+		this.#emit(pending);
 	}
 
 	constructor(config: AgentSessionConfig) {
@@ -1126,21 +1250,23 @@ export class AgentSession {
 	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null {
 		const manager = AsyncJobManager.instance();
 		if (!manager) return null;
-		const running = manager.getRunningJobs().map(job => ({
+		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
+		const running = manager.getRunningJobs(ownerFilter).map(job => ({
 			id: job.id,
 			type: job.type,
 			status: job.status,
 			label: job.label,
 			startTime: job.startTime,
 		}));
-		const recent = manager.getRecentJobs(options?.recentLimit ?? 5).map(job => ({
+		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, ownerFilter).map(job => ({
 			id: job.id,
 			type: job.type,
 			status: job.status,
 			label: job.label,
 			startTime: job.startTime,
 		}));
-		return { running, recent };
+		const delivery = manager.getDeliveryState(ownerFilter);
+		return { running, recent, delivery };
 	}
 
 	/**
@@ -1198,6 +1324,18 @@ export class AgentSession {
 			return;
 		}
 		await this.#emitExtensionEvent(event);
+		// Hold the wire-level agent_end until in-flight prompts unwind. Subscribers
+		// (rpc-mode, ACP, Cursor) treat agent_end as the "session is idle" signal;
+		// emitting while #promptInFlightCount > 0 lets a client fire its next
+		// `prompt` into a session that still reports isStreaming === true. Flush
+		// happens in #endInFlight / #resetInFlight. A later agent_end (e.g. from
+		// an auto-compaction turn that starts before the original prompt unwinds)
+		// supersedes the pending one, which is what subscribers want — they only
+		// care about the final settle.
+		if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
+			this.#pendingAgentEndEmit = event;
+			return;
+		}
 		this.#emit(event);
 	}
 
@@ -1480,6 +1618,16 @@ export class AgentSession {
 			if (event.message.role === "assistant") {
 				this.#lastAssistantMessage = event.message;
 				const assistantMsg = event.message as AssistantMessage;
+				const currentGrantsAnthropicPriority =
+					this.serviceTier === "priority" || this.serviceTier === "claude-only";
+				if (assistantMsg.disabledFeatures?.includes("priority") && currentGrantsAnthropicPriority) {
+					this.setServiceTier(undefined);
+					this.emitNotice(
+						"warning",
+						"Priority/fast mode rejected for this model; retried without it. Fast mode is now off.",
+						"priority",
+					);
+				}
 				// Resolve TTSR resume gate before checking for new deferred injections.
 				// Gate on #ttsrAbortPending, not stopReason: a non-TTSR abort (e.g. streaming
 				// edit) also produces stopReason === "aborted" but has no continuation coming.
@@ -1615,10 +1763,6 @@ export class AgentSession {
 			}
 			this.#resolveRetry();
 
-			if (msg.stopReason === "aborted" && this.#checkpointState) {
-				this.#checkpointState = undefined;
-				this.#pendingRewindReport = undefined;
-			}
 			const compactionTask = this.#checkCompaction(msg);
 			this.#trackPostPromptTask(compactionTask);
 			await compactionTask;
@@ -2674,6 +2818,23 @@ export class AgentSession {
 		await this.#waitForPostPromptRecovery();
 	}
 
+	async drainAsyncJobDeliveriesForAcp(options?: { timeoutMs?: number }): Promise<boolean> {
+		const manager = AsyncJobManager.instance();
+		if (!manager) return false;
+		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
+		const before = manager.getDeliveryState(ownerFilter);
+		if (before.queued === 0 && !before.delivering) return false;
+		const previousAllowAcpAgentInitiatedTurns = this.#allowAcpAgentInitiatedTurns;
+		this.#allowAcpAgentInitiatedTurns = true;
+		try {
+			const drained = await manager.drainDeliveries({ timeoutMs: options?.timeoutMs, filter: ownerFilter });
+			const after = manager.getDeliveryState(ownerFilter);
+			return drained && (before.queued !== after.queued || before.delivering !== after.delivering);
+		} finally {
+			this.#allowAcpAgentInitiatedTurns = previousAllowAcpAgentInitiatedTurns;
+		}
+	}
+
 	/** Most recent assistant message in agent state. */
 	getLastAssistantMessage(): AssistantMessage | undefined {
 		return this.#findLastAssistantMessage();
@@ -2973,8 +3134,8 @@ export class AgentSession {
 		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return tool;
 		if (!PERMISSION_REQUIRED_TOOLS.has(tool.name)) return tool;
 		return new Proxy(tool, {
-			get: (target, prop, receiver) => {
-				if (prop !== "execute") return Reflect.get(target, prop, receiver);
+			get: (target, prop) => {
+				if (prop !== "execute") return Reflect.get(target, prop, target);
 				return async (
 					toolCallId: string,
 					args: unknown,
@@ -2982,8 +3143,19 @@ export class AgentSession {
 					onUpdate: never,
 					ctx: never,
 				) => {
+					const permissionIntent = getPermissionIntent(target.name, args);
+					if (!permissionIntent) {
+						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
+					}
+					const command =
+						target.name === "bash" && args && typeof args === "object" && !Array.isArray(args)
+							? getStringProperty(args as Record<string, unknown>, "command")
+							: undefined;
+					const commandContent = command
+						? [{ type: "content" as const, content: { type: "text" as const, text: `$ ${command}` } }]
+						: undefined;
 					// Short-circuit on persisted decisions.
-					const persisted = this.#acpPermissionDecisions.get(target.name);
+					const persisted = this.#acpPermissionDecisions.get(permissionIntent.cacheKey);
 					if (persisted === "allow_always") {
 						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
 					}
@@ -3005,9 +3177,16 @@ export class AgentSession {
 							{
 								toolCallId,
 								toolName: target.name,
-								title: derivePermissionTitle(target.name, args),
+								title: permissionIntent.title,
+								...(target.name === "bash" ? { kind: "execute" } : {}),
+								status: "pending",
 								rawInput: args,
-								locations: extractPermissionLocations(args, this.sessionManager.getCwd()),
+								...(commandContent ? { content: commandContent } : {}),
+								locations: extractPermissionLocations(
+									args,
+									this.sessionManager.getCwd(),
+									permissionIntent.paths,
+								),
 							},
 							PERMISSION_OPTIONS,
 							signal,
@@ -3028,9 +3207,9 @@ export class AgentSession {
 						throw new ToolError(`Tool permission response used unknown option ID: ${outcome.optionId}`);
 					}
 					if (selectedOption.kind === "allow_always") {
-						this.#acpPermissionDecisions.set(target.name, "allow_always");
+						this.#acpPermissionDecisions.set(permissionIntent.cacheKey, "allow_always");
 					} else if (selectedOption.kind === "reject_always") {
-						this.#acpPermissionDecisions.set(target.name, "reject_always");
+						this.#acpPermissionDecisions.set(permissionIntent.cacheKey, "reject_always");
 					}
 					if (selectedOption.kind === "reject_once" || selectedOption.kind === "reject_always") {
 						throw new ToolError(`Tool call rejected by user (${target.name})`);
@@ -4270,7 +4449,7 @@ export class AgentSession {
 	 *
 	 * Handles three cases:
 	 * - Streaming: queue as steer/follow-up or store for next turn
-	 * - Not streaming + triggerTurn: appends to state/session, starts new turn
+	 * - Not streaming + triggerTurn: appends to state/session, starts new turn unless the client cannot own it
 	 * - Not streaming + no trigger: appends to state/session, no turn
 	 */
 	async sendCustomMessage<T = unknown>(
@@ -4302,6 +4481,10 @@ export class AgentSession {
 
 		if (options?.deliverAs === "nextTurn") {
 			if (options?.triggerTurn) {
+				if (this.#clientBridge?.deferAgentInitiatedTurns && !this.#allowAcpAgentInitiatedTurns) {
+					this.#queueHiddenNextTurnMessage(appMessage, false);
+					return;
+				}
 				await this.agent.prompt(appMessage);
 				return;
 			}
@@ -4317,6 +4500,10 @@ export class AgentSession {
 		}
 
 		if (options?.triggerTurn) {
+			if (this.#clientBridge?.deferAgentInitiatedTurns && !this.#allowAcpAgentInitiatedTurns) {
+				this.#queueHiddenNextTurnMessage(appMessage, false);
+				return;
+			}
 			await this.agent.prompt(appMessage);
 			return;
 		}
@@ -4467,7 +4654,12 @@ export class AgentSession {
 
 	/** Schedule auto-removal of completed/abandoned tasks after a delay. */
 	#scheduleTodoAutoClear(phases: TodoPhase[]): void {
-		const delaySec = this.settings.get("tasks.todoClearDelay") ?? 60;
+		// Default bumped from 60s to 30 min: the prior 60s splice mutated canonical
+		// state mid-turn, so the model observed phase totals shrinking ("6 → 5")
+		// between tool calls. Surviving the turn matches user expectations; a
+		// render-time filter in the UI consumer would be cleaner but lives in a
+		// different package and is out of scope for this fix.
+		const delaySec = this.settings.get("tasks.todoClearDelay") ?? 1800;
 		if (delaySec < 0) return; // "Never" — no auto-clear
 		const delayMs = delaySec * 1000;
 		const doneKeys = new Set<string>();
@@ -4978,17 +5170,50 @@ export class AgentSession {
 		return nextLevel;
 	}
 
+	/**
+	 * True when *any* fast-mode-granting service tier is configured, regardless
+	 * of whether the active model's provider actually realizes it. Used by the
+	 * toggle (`/fast on|off`) so re-toggling a scoped tier (`openai-only`,
+	 * `claude-only`) doesn't silently broaden it to unscoped `priority`.
+	 *
+	 * For "is fast mode actually applied to the next request?" use
+	 * {@link isFastModeActive} instead — that one respects the model's provider.
+	 */
 	isFastModeEnabled(): boolean {
-		return this.serviceTier === "priority";
+		return (
+			this.serviceTier === "priority" || this.serviceTier === "claude-only" || this.serviceTier === "openai-only"
+		);
+	}
+
+	/**
+	 * True when the configured `serviceTier` resolves to `"priority"` for the
+	 * *currently selected model's provider*. Returns false for scoped tiers
+	 * that don't match (e.g. `"openai-only"` on an anthropic model) and when
+	 * no model is selected.
+	 */
+	isFastModeActive(): boolean {
+		return resolveServiceTier(this.serviceTier, this.model?.provider) === "priority";
 	}
 
 	setServiceTier(serviceTier: ServiceTier | undefined): void {
 		if (this.serviceTier === serviceTier) return;
+		// Re-arming priority on Anthropic? Clear the per-session auto-fallback
+		// sticky disable so the next request actually carries `speed: "fast"`
+		// again. Without this, `/fast on` (or user switching to a tier that
+		// grants anthropic priority) after an auto-disable is a silent no-op
+		// and the warning notice fires every turn.
+		if (serviceTier === "priority" || serviceTier === "claude-only") {
+			clearAnthropicFastModeFallback(this.#providerSessionState);
+		}
 		this.agent.serviceTier = serviceTier;
 		this.sessionManager.appendServiceTierChange(serviceTier ?? null);
 	}
 
 	setFastMode(enabled: boolean): void {
+		if (enabled && this.isFastModeEnabled()) {
+			// Already on under any scope — keep the user's scoped value.
+			return;
+		}
 		this.setServiceTier(enabled ? "priority" : undefined);
 	}
 
@@ -7442,6 +7667,11 @@ export class AgentSession {
 		const context: Context = {
 			systemPrompt: this.systemPrompt,
 			messages: llmMessages,
+			// Empty tools array: with toolChoice="none" some encoders still serialize the
+			// recipient's tool catalog and the model leaks raw call markup
+			// (<function_calls>, DSML envelopes) into IRC replies. Stripping tools here
+			// removes the surface entirely.
+			tools: [],
 		};
 		const options = this.prepareSimpleStreamOptions(
 			{
@@ -7477,7 +7707,7 @@ export class AgentSession {
 		if (!assistantMessage) {
 			throw new Error("Ephemeral turn ended without a final message");
 		}
-		return { replyText: replyText.trim(), assistantMessage };
+		return { replyText: dedupeIrcReply(replyText.trim()), assistantMessage };
 	}
 
 	/**
@@ -7490,14 +7720,24 @@ export class AgentSession {
 		const messages = [...this.messages];
 		const streaming = this.agent.state.streamMessage;
 		if (streaming && streaming.role === "assistant") {
+			const preservedBlocks: AssistantMessage["content"] = [];
+			// Preserve thinking blocks: DeepSeek-class encoders replay them as
+			// `reasoning_content` and reject the request (HTTP 400) when the field
+			// goes missing on a turn that previously emitted thinking.
+			for (const c of streaming.content) {
+				if (c.type === "thinking") preservedBlocks.push(c);
+			}
 			const streamingText = streaming.content
 				.filter((c): c is TextContent => c.type === "text")
 				.map(c => c.text)
 				.join("");
 			if (streamingText) {
+				preservedBlocks.push({ type: "text", text: streamingText });
+			}
+			if (preservedBlocks.length > 0) {
 				const normalized: AssistantMessage = {
 					...streaming,
-					content: [{ type: "text", text: streamingText }],
+					content: preservedBlocks,
 				};
 				const lastMessage = messages.at(-1);
 				if (lastMessage?.role === "assistant") {

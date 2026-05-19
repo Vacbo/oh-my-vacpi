@@ -22,11 +22,11 @@ import {
 	type Model,
 	type OpenAICompat,
 	type ProviderSessionState,
+	resolveServiceTier,
 	type ServiceTier,
 	type StopReason,
 	type StreamFunction,
 	type StreamOptions,
-	shouldSendServiceTier,
 	type TextContent,
 	type ThinkingContent,
 	type Tool,
@@ -860,6 +860,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			for (const block of output.content) delete (block as any).index;
 			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
 			output.stopReason = abortTracker.wasCallerAbort() ? "aborted" : "error";
+			output.errorStatus = extractHttpStatusFromError(error) ?? getCapturedErrorResponse?.()?.status;
 			output.errorMessage =
 				firstEventTimeoutError?.message ??
 				(await finalizeErrorMessage(error, rawRequestDump, getCapturedErrorResponse?.()));
@@ -1091,8 +1092,9 @@ function buildParams(
 	if (options?.frequencyPenalty !== undefined) {
 		params.frequency_penalty = options.frequencyPenalty;
 	}
-	if (shouldSendServiceTier(options?.serviceTier, model.provider)) {
-		params.service_tier = options.serviceTier;
+	const resolvedServiceTier = resolveServiceTier(options?.serviceTier, model.provider);
+	if (resolvedServiceTier === "flex" || resolvedServiceTier === "scale" || resolvedServiceTier === "priority") {
+		params.service_tier = resolvedServiceTier;
 	}
 
 	if (context.tools) {

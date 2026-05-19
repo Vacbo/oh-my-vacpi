@@ -1,6 +1,15 @@
 import * as os from "node:os";
 import { scheduler } from "node:timers/promises";
-import { $env, $flag, asRecord, fetchWithRetry, logger, readSseJson, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	$flag,
+	asRecord,
+	extractHttpStatusFromError,
+	fetchWithRetry,
+	logger,
+	readSseJson,
+	structuredCloneJSON,
+} from "@oh-my-pi/pi-utils";
 import type OpenAI from "openai";
 import type {
 	ResponseCustomToolCall,
@@ -20,10 +29,10 @@ import {
 	type FetchImpl,
 	type Model,
 	type ProviderSessionState,
+	resolveServiceTier,
 	type ServiceTier,
 	type StreamFunction,
 	type StreamOptions,
-	shouldSendServiceTier,
 	type TextContent,
 	type ThinkingContent,
 	type Tool,
@@ -40,7 +49,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
 import { getOpenAIStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
 import { parseStreamingJson } from "../utils/json-parse";
-import { adaptSchemaForStrict, NO_STRICT, toolWireSchema } from "../utils/schema";
+import { adaptSchemaForStrict, NO_STRICT, sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
 import { compactGrammarDefinition } from "./grammar";
 import { CODEX_BASE_URL, getCodexAccountId, OPENAI_HEADER_VALUES, OPENAI_HEADERS } from "./openai-codex/constants";
 import {
@@ -581,8 +590,9 @@ async function buildTransformedCodexRequestBody(
 	if (options?.repetitionPenalty !== undefined) {
 		params.repetition_penalty = options.repetitionPenalty;
 	}
-	if (shouldSendServiceTier(options?.serviceTier, model.provider)) {
-		params.service_tier = options.serviceTier;
+	const resolvedServiceTier = resolveServiceTier(options?.serviceTier, model.provider);
+	if (resolvedServiceTier === "flex" || resolvedServiceTier === "scale" || resolvedServiceTier === "priority") {
+		params.service_tier = resolvedServiceTier;
 	}
 	if (context.tools && context.tools.length > 0) {
 		params.tools = convertOpenAICodexResponsesTools(context.tools, model);
@@ -1505,6 +1515,7 @@ async function handleCodexStreamFailure(
 		resetCodexSessionMetadata(context.requestContext.websocketState);
 	}
 	output.stopReason = context.options?.signal?.aborted ? "aborted" : "error";
+	output.errorStatus = extractHttpStatusFromError(error);
 	output.errorMessage = await finalizeErrorMessage(error, context.requestContext.rawRequestDump);
 	output.duration = Date.now() - context.startTime;
 	if (context.firstTokenTime) {
@@ -2485,7 +2496,7 @@ export function convertOpenAICodexResponsesTools(
 			};
 		}
 		const strict = !!(!NO_STRICT && tool.strict);
-		const baseParameters = toolWireSchema(tool);
+		const baseParameters = sanitizeSchemaForOpenAIResponses(toolWireSchema(tool));
 		const { schema: parameters, strict: effectiveStrict } = adaptSchemaForStrict(baseParameters, strict);
 		return {
 			type: "function",

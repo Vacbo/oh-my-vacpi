@@ -62,7 +62,13 @@ import {
 	resolveOutputMaxColumns,
 	stripOutputNotice,
 } from "./output-meta";
-import { expandPath, formatPathRelativeToCwd, resolveReadPath, splitPathAndSel } from "./path-utils";
+import {
+	expandPath,
+	formatPathRelativeToCwd,
+	resolveReadPath,
+	splitInternalUrlSel,
+	splitPathAndSel,
+} from "./path-utils";
 import { formatBytes, replaceTabs, shortenPath, wrapBrackets } from "./render-utils";
 import {
 	executeReadQuery,
@@ -794,10 +800,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		// context (added below if offset is explicit).
 		const requestedStart = offset ? Math.max(0, offset - 1) : 0;
 		const ignoreResultLimits = options.ignoreResultLimits ?? false;
-		const requestedEnd =
-			limit !== undefined && !ignoreResultLimits
-				? Math.min(requestedStart + limit, allLines.length)
-				: allLines.length;
+		const requestedEnd = limit !== undefined ? Math.min(requestedStart + limit, allLines.length) : allLines.length;
 		// Expand only on sides the user actually constrained: leading context
 		// when offset>1, trailing context when a finite limit was set.
 		const expanded = expandRangeWithContext(
@@ -805,7 +808,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			requestedEnd,
 			allLines.length,
 			offset !== undefined && offset > 1,
-			limit !== undefined && !ignoreResultLimits,
+			limit !== undefined,
 		);
 		const startLine = expanded.startLine;
 		const endLineExpanded = expanded.endLine;
@@ -836,7 +839,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		const endLine = endLineExpanded;
 		const selectedContent = allLines.slice(startLine, endLine).join("\n");
-		const userLimitedLines = limit !== undefined && !ignoreResultLimits ? endLine - startLine : undefined;
+		const userLimitedLines = limit !== undefined ? endLine - startLine : undefined;
 		const truncation = ignoreResultLimits ? noTruncResult(selectedContent) : truncateHead(selectedContent);
 
 		const shouldAddHashLines = displayMode.hashLines;
@@ -1474,10 +1477,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			return executeReadUrl(this.session, { path: parsedUrlTarget.path, raw: parsedUrlTarget.raw }, signal);
 		}
 
-		// Handle internal URLs (agent://, artifact://, memory://, skill://, rule://, local://, mcp://)
-		const internalTarget = splitPathAndSel(readPath);
+		// Handle internal URLs (agent://, artifact://, memory://, skill://, rule://, local://, mcp://, omp://, issue://, pr://).
+		// Use the internal-URL-aware splitter so malformed selectors are peeled
+		// off the URL and surfaced via parseSel rather than confusing handlers.
 		const internalRouter = InternalUrlRouter.instance();
-		if (internalRouter.canHandle(internalTarget.path)) {
+		if (internalRouter.canHandle(readPath)) {
+			const internalTarget = splitInternalUrlSel(readPath);
 			const parsed = parseSel(internalTarget.sel);
 			return this.#handleInternalUrl(internalTarget.path, parsed, signal);
 		}
