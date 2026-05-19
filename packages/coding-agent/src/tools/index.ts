@@ -2,7 +2,7 @@ import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolChoice } from "@oh-my-pi/pi-ai";
 import { $env, $flag, logger } from "@oh-my-pi/pi-utils";
 import type { PromptTemplate } from "../config/prompt-templates";
-import type { Settings } from "../config/settings";
+import { Settings } from "../config/settings";
 import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { Skill } from "../extensibility/skills";
@@ -97,6 +97,45 @@ export * from "./yield";
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any, any, any>;
+
+function createLegacyToolSession(cwd: string): ToolSession {
+	return {
+		cwd,
+		hasUI: false,
+		enableLsp: false,
+		settings: Settings.isolated(),
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+	};
+}
+
+export function createReadTool(cwd: string): Tool {
+	return new ReadTool(createLegacyToolSession(cwd));
+}
+
+export function createBashTool(cwd: string): Tool {
+	return new BashTool(createLegacyToolSession(cwd));
+}
+
+export function createEditTool(cwd: string): Tool {
+	return new EditTool(createLegacyToolSession(cwd));
+}
+
+export function createWriteTool(cwd: string): Tool {
+	return new WriteTool(createLegacyToolSession(cwd));
+}
+
+export function createGrepTool(cwd: string): Tool {
+	return new SearchTool(createLegacyToolSession(cwd));
+}
+
+export function createFindTool(cwd: string): Tool {
+	return new FindTool(createLegacyToolSession(cwd));
+}
+
+export function createLsTool(cwd: string): Tool {
+	return new ReadTool(createLegacyToolSession(cwd));
+}
 
 export type ContextFileEntry = {
 	path: string;

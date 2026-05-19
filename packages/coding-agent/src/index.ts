@@ -6,6 +6,38 @@ import { HookEditorComponent, HookInputComponent, HookSelectorComponent } from "
 export { Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 // Logging
 export { getAgentDir, logger, VERSION } from "@oh-my-pi/pi-utils";
+export { truncateHead } from "./session/streaming-output";
+
+interface DefaultResourceLoaderOptions {
+	cwd: string;
+	agentDir?: string;
+	noContextFiles?: boolean;
+	appendSystemPromptOverride?: (base: string[]) => string[];
+}
+
+export class DefaultResourceLoader {
+	readonly #options: DefaultResourceLoaderOptions;
+
+	constructor(options: DefaultResourceLoaderOptions) {
+		this.#options = options;
+	}
+
+	async reload(): Promise<void> {
+		void this.#options;
+	}
+}
+
+export function formatSize(bytes: number): string {
+	const units = ["B", "KB", "MB", "GB", "TB"] as const;
+	let value = bytes;
+	let unitIndex = 0;
+	while (value >= 1024 && unitIndex < units.length - 1) {
+		value /= 1024;
+		unitIndex += 1;
+	}
+	return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
 export * from "./config/keybindings";
 export * from "./config/model-registry";
 // Prompt templates
