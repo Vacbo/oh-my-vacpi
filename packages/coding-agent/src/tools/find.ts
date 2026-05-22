@@ -11,7 +11,7 @@ import { InternalUrlRouter } from "../internal-urls";
 import type { Theme } from "../modes/theme/theme";
 import findDescription from "../prompts/tools/find.md" with { type: "text" };
 import { type TruncationResult, truncateHead } from "../session/streaming-output";
-import { Ellipsis, renderFileList, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
+import { Ellipsis, fileHyperlink, renderFileList, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
 import { applyListLimit } from "./list-limit";
 import { formatFullOutputReference, type OutputMeta } from "./output-meta";
@@ -84,6 +84,9 @@ export interface FindToolDetails {
 	files?: string[];
 	truncated?: boolean;
 	error?: string;
+	/** Working directory at search time. Used by the renderer to resolve relative
+	 * file paths to absolute paths for OSC 8 hyperlinks. */
+	cwd?: string;
 	/** User-supplied paths whose base directory was missing on disk. The tool
 	 * skipped these and continued with the surviving entries; surfaced as a
 	 * non-fatal warning in the renderer and in the model-facing text. */
@@ -221,6 +224,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 						fileCount: 0,
 						files: [],
 						truncated: forceTruncated,
+						cwd: this.session.cwd,
 						missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
 					};
 					const parts = ["No files found matching pattern"];
@@ -246,6 +250,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 					truncated: Boolean(forceTruncated || limitMeta.resultLimit || truncation.truncated),
 					resultLimitReached: limitMeta.resultLimit?.reached,
 					truncation: truncation.truncated ? truncation : undefined,
+					cwd: this.session.cwd,
 					missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
 				};
 
@@ -513,11 +518,17 @@ export const findToolRenderer = {
 		return createCachedComponent(
 			() => options.expanded,
 			width => {
+				const cwd = details?.cwd;
 				const fileLines = renderFileList(
 					{
-						files: files.map(entry => ({ path: entry, isDirectory: entry.endsWith("/") })),
+						files: files.map(entry => ({
+							path: entry,
+							isDirectory: entry.endsWith("/"),
+							absPath: cwd && !entry.endsWith("/") ? path.resolve(cwd, entry) : undefined,
+						})),
 						expanded: options.expanded,
 						maxCollapsed: COLLAPSED_LIST_LIMIT,
+						hyperlinkFn: fileHyperlink,
 					},
 					uiTheme,
 				);

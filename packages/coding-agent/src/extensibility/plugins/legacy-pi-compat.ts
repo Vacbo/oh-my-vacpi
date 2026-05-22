@@ -154,7 +154,7 @@ interface LegacyPiMirrorState {
 function getMirrorPath(sourcePath: string, state: LegacyPiMirrorState): string {
 	const extension = path.extname(sourcePath) || ".js";
 	const digest = Bun.hash(sourcePath).toString(36);
-	return path.join(state.root, `${digest}${extension}`);
+	return path.join(state.root, `module-${digest}${extension}`);
 }
 
 async function rewriteRelativeImportsForLegacyExtension(

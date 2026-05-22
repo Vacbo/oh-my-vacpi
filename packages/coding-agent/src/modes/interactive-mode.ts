@@ -98,6 +98,7 @@ import {
 } from "./loop-limit";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { SessionObserverRegistry } from "./session-observer-registry";
+import { type ShimmerPalette, shimmerSegments, shimmerText } from "./theme/shimmer";
 import type { Theme } from "./theme/theme";
 import {
 	getEditorTheme,
@@ -109,6 +110,20 @@ import {
 } from "./theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext, SubmittedUserInput, TodoItem, TodoPhase } from "./types";
 import { UiHelpers } from "./utils/ui-helpers";
+
+const WORKING_INTERRUPT_HINT = " (esc to interrupt)";
+
+const HINT_SHIMMER_PALETTE: ShimmerPalette = {
+	low: "dim",
+	mid: "muted",
+	high: "borderAccent",
+};
+
+function renderWorkingMessage(message: string): string {
+	if (!message.endsWith(WORKING_INTERRUPT_HINT)) return shimmerText(message, theme);
+	const header = message.slice(0, -WORKING_INTERRUPT_HINT.length);
+	return shimmerSegments([{ text: header }, { text: WORKING_INTERRUPT_HINT, palette: HINT_SHIMMER_PALETTE }], theme);
+}
 
 const EDITOR_MAX_HEIGHT_MIN = 6;
 const EDITOR_MAX_HEIGHT_MAX = 18;
@@ -584,11 +599,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.loopModeEnabled || !this.loopPrompt) return;
 		const prompt = this.loopPrompt;
 		const loopAction = settings.get("loop.mode");
+		this.#deferLoopAutoSubmit(() => {
+			void this.#runLoopIteration(loopAction, prompt);
+		});
+	}
+
+	#deferLoopAutoSubmit(callback: () => void): void {
 		// Brief delay so the user has a chance to press Esc between iterations.
 		this.#loopAutoSubmitTimer = setTimeout(() => {
 			this.#loopAutoSubmitTimer = undefined;
 			if (!this.loopModeEnabled || !this.onInputCallback) return;
-			void this.#runLoopIteration(loopAction, prompt);
+			callback();
 		}, 800);
 	}
 
@@ -641,7 +662,32 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	#isLoopAutoSubmitBlocked(): boolean {
+		return this.session.isStreaming || this.session.isCompacting;
+	}
+
+	#submitLoopPromptWhenReady(prompt: string): void {
+		if (!this.loopModeEnabled || this.loopPrompt !== prompt || !this.onInputCallback) return;
+		if (isLoopDurationExpired(this.loopLimit)) {
+			this.disableLoopMode("Loop time limit reached. Loop mode disabled.");
+			return;
+		}
+		if (this.#isLoopAutoSubmitBlocked()) {
+			this.#deferLoopAutoSubmit(() => this.#submitLoopPromptWhenReady(prompt));
+			return;
+		}
+		this.onInputCallback(this.startPendingSubmission({ text: prompt }));
+	}
+
 	async #runLoopIteration(action: "prompt" | "compact" | "reset", prompt: string): Promise<void> {
+		if (!this.loopModeEnabled || this.loopPrompt !== prompt || !this.onInputCallback) return;
+		if (this.#isLoopAutoSubmitBlocked()) {
+			this.#deferLoopAutoSubmit(() => {
+				void this.#runLoopIteration(action, prompt);
+			});
+			return;
+		}
+
 		if (!consumeLoopLimitIteration(this.loopLimit)) {
 			this.disableLoopMode("Loop limit reached. Loop mode disabled.");
 			return;
@@ -652,12 +698,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else if (action === "reset") {
 			await this.handleClearCommand();
 		}
-		if (!this.loopModeEnabled || !this.onInputCallback) return;
-		if (isLoopDurationExpired(this.loopLimit)) {
-			this.disableLoopMode("Loop time limit reached. Loop mode disabled.");
-			return;
-		}
-		this.onInputCallback(this.startPendingSubmission({ text: prompt }));
+		this.#submitLoopPromptWhenReady(prompt);
 	}
 
 	disableLoopMode(message = "Loop mode disabled."): void {
@@ -1037,6 +1078,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		if (event.type === "goal_updated") {
+			// Handle drop before clearing goalModeEnabled so #exitGoalMode can
+			// still restore the previous tool set while the flag is true.
+			if (event.state?.goal?.status === "dropped") {
+				await this.#exitGoalMode({ reason: "dropped", silent: true });
+				return;
+			}
 			this.goalModeEnabled = event.state?.enabled === true;
 			this.goalModePaused = event.state?.enabled !== true && event.state?.goal?.status === "paused";
 			if (!event.state?.enabled) {
@@ -1124,6 +1171,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			const restored = await this.session.goalRuntime.onThreadResumed();
 			this.goalModeEnabled = restored?.enabled === true;
 			this.goalModePaused = restored?.enabled !== true && restored?.goal.status === "paused";
+			// sdk.ts excludes "goal" from the initial active tool set unconditionally.
+			// Re-add it now so the agent can call resume, complete, or drop on this goal.
+			if (restored?.goal) {
+				const previousTools = this.session.getActiveToolNames().filter(name => name !== "goal");
+				this.#goalModePreviousTools = previousTools;
+				await this.session.setActiveToolsByName([...new Set([...previousTools, "goal"])]);
+			}
 			this.#updateGoalModeStatus();
 			return;
 		}
@@ -2141,7 +2195,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.loadingAnimation = new Loader(
 				this.ui,
 				spinner => theme.fg("accent", spinner),
-				text => theme.fg("muted", text),
+				renderWorkingMessage,
 				this.#defaultWorkingMessage,
 				getSymbolTheme().spinnerFrames,
 			);

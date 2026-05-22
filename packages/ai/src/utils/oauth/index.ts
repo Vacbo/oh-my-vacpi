@@ -56,6 +56,11 @@ const builtInOAuthProviders: OAuthProviderInfo[] = [
 		available: true,
 	},
 	{
+		id: "firepass",
+		name: "Fire Pass (Fireworks Kimi K2.6 Turbo subscription)",
+		available: true,
+	},
+	{
 		id: "github-copilot",
 		name: "GitHub Copilot",
 		available: true,
@@ -301,6 +306,7 @@ export async function refreshOAuthToken(
 		case "opencode-go":
 		case "cerebras":
 		case "fireworks":
+		case "firepass":
 		case "nvidia":
 		case "nanogpt":
 		case "synthetic":
@@ -363,10 +369,14 @@ export async function getOAuthApiKey(
 	}
 
 	if (provider === "perplexity") {
+		// Perplexity JWTs usually omit `exp` (server-side sessions). Trust the JWT
+		// claim when present; otherwise treat the credential as non-expiring rather
+		// than honoring a stale stored `expires` (older logins wrote loginTime+1h).
+		const NEVER_EXPIRES = 8.64e15;
 		const normalizedExpires =
 			creds.expires > 0 && creds.expires < 10_000_000_000 ? creds.expires * 1000 : creds.expires;
 		const jwtExpiry = getPerplexityJwtExpiryMs(creds.access);
-		const expires = jwtExpiry && jwtExpiry > normalizedExpires ? jwtExpiry : normalizedExpires;
+		const expires = jwtExpiry ?? Math.max(normalizedExpires, NEVER_EXPIRES);
 		if (expires !== creds.expires) {
 			creds = { ...creds, expires };
 		}
