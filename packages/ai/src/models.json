@@ -430,7 +430,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic.claude-opus-4-7": {
@@ -455,7 +462,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"au.anthropic.claude-haiku-4-5-20251001-v1:0": {
@@ -505,7 +519,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"au.anthropic.claude-sonnet-4-5-20250929-v1:0": {
@@ -930,7 +951,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"eu.anthropic.claude-opus-4-7": {
@@ -955,7 +983,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"eu.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -1125,7 +1160,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"global.anthropic.claude-opus-4-7": {
@@ -1150,7 +1192,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"global.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -1290,7 +1339,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"jp.anthropic.claude-sonnet-4-5-20250929-v1:0": {
@@ -2253,7 +2309,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"us.anthropic.claude-opus-4-7": {
@@ -2278,7 +2341,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"us.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -2921,7 +2991,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"claude-opus-4-7": {
@@ -2946,7 +3023,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-sonnet-4-0": {
@@ -3439,7 +3516,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic/claude-opus-4-7": {
@@ -3464,7 +3548,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-sonnet-4": {
@@ -5301,6 +5385,30 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"minimax-m2.7": {
+			"id": "minimax-m2.7",
+			"name": "MiniMax M2.7",
+			"api": "openai-completions",
+			"provider": "fireworks",
+			"baseUrl": "https://api.fireworks.ai/inference/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.3,
+				"output": 1.2,
+				"cacheRead": 0.06,
+				"cacheWrite": 0
+			},
+			"contextWindow": 196608,
+			"maxTokens": 131072,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
+		},
 		"routers/kimi-k2.6-turbo": {
 			"id": "routers/kimi-k2.6-turbo",
 			"name": "Kimi K2.6 Turbo (Fire Pass)",
@@ -5320,30 +5428,6 @@
 			},
 			"contextWindow": 256000,
 			"maxTokens": 256000,
-			"thinking": {
-				"mode": "effort",
-				"minLevel": "minimal",
-				"maxLevel": "xhigh"
-			}
-		},
-		"minimax-m2.7": {
-			"id": "minimax-m2.7",
-			"name": "MiniMax M2.7",
-			"api": "openai-completions",
-			"provider": "fireworks",
-			"baseUrl": "https://api.fireworks.ai/inference/v1",
-			"reasoning": true,
-			"input": [
-				"text"
-			],
-			"cost": {
-				"input": 0.3,
-				"output": 1.2,
-				"cacheRead": 0.06,
-				"cacheWrite": 0
-			},
-			"contextWindow": 196608,
-			"maxTokens": 131072,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -5435,7 +5519,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"claude-opus-4.7": {
@@ -5463,7 +5554,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-sonnet-4": {
@@ -7375,7 +7466,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 250000,
 			"maxTokens": 64000,
 			"thinking": {
 				"mode": "budget",
@@ -7450,7 +7541,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 250000,
 			"maxTokens": 64000,
 			"thinking": {
 				"mode": "budget",
@@ -7501,7 +7592,32 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 1048576,
-			"maxTokens": 65536,
+			"maxTokens": 65535,
+			"thinking": {
+				"mode": "budget",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-2.5-flash-lite": {
+			"id": "gemini-2.5-flash-lite",
+			"name": "Gemini 2.5 Flash-Lite",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65535,
 			"thinking": {
 				"mode": "budget",
 				"minLevel": "minimal",
@@ -7583,6 +7699,31 @@
 				"maxLevel": "high"
 			}
 		},
+		"gemini-3-flash-agent": {
+			"id": "gemini-3-flash-agent",
+			"name": "Gemini 3.5 Flash (High) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
 		"gemini-3-pro-high": {
 			"id": "gemini-3-pro-high",
 			"name": "Gemini 3 Pro (High) (Antigravity)",
@@ -7639,6 +7780,50 @@
 					"low",
 					"high"
 				]
+			}
+		},
+		"gemini-3.1-flash-image": {
+			"id": "gemini-3.1-flash-image",
+			"name": "Gemini 3.1 Flash Image (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 200000,
+			"maxTokens": 64000
+		},
+		"gemini-3.1-flash-lite": {
+			"id": "gemini-3.1-flash-lite",
+			"name": "Gemini 3.1 Flash Lite",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65535,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "minimal",
+				"maxLevel": "high"
 			}
 		},
 		"gemini-3.1-pro-high": {
@@ -7699,6 +7884,81 @@
 				]
 			}
 		},
+		"gemini-3.5-flash-extra-low": {
+			"id": "gemini-3.5-flash-extra-low",
+			"name": "Gemini 3.5 Flash (Low) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-3.5-flash-low": {
+			"id": "gemini-3.5-flash-low",
+			"name": "Gemini 3.5 Flash (Medium) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-pro-agent": {
+			"id": "gemini-pro-agent",
+			"name": "Gemini 3.1 Pro (High) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65535,
+			"thinking": {
+				"mode": "budget",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
 		"gpt-oss-120b-medium": {
 			"id": "gpt-oss-120b-medium",
 			"name": "GPT-OSS 120B (Medium) (Antigravity)",
@@ -7715,13 +7975,51 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 114000,
+			"contextWindow": 131072,
 			"maxTokens": 32768,
 			"thinking": {
 				"mode": "budget",
 				"minLevel": "minimal",
 				"maxLevel": "high"
 			}
+		},
+		"tab_flash_lite_preview": {
+			"id": "tab_flash_lite_preview",
+			"name": "tab_flash_lite_preview",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 16384,
+			"maxTokens": 4096
+		},
+		"tab_jump_flash_lite_preview": {
+			"id": "tab_jump_flash_lite_preview",
+			"name": "tab_jump_flash_lite_preview",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 16384,
+			"maxTokens": 4096
 		}
 	},
 	"google-gemini-cli": {
@@ -49193,6 +49491,25 @@
 		}
 	},
 	"nvidia": {
+		"01-ai/yi-large": {
+			"id": "01-ai/yi-large",
+			"name": "01-ai/yi-large",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"abacusai/dracarys-llama-3_1-70b-instruct": {
 			"id": "abacusai/dracarys-llama-3_1-70b-instruct",
 			"name": "dracarys-llama-3.1-70b-instruct",
@@ -49212,6 +49529,120 @@
 			"contextWindow": 128000,
 			"maxTokens": 8192
 		},
+		"abacusai/dracarys-llama-3.1-70b-instruct": {
+			"id": "abacusai/dracarys-llama-3.1-70b-instruct",
+			"name": "abacusai/dracarys-llama-3.1-70b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"adept/fuyu-8b": {
+			"id": "adept/fuyu-8b",
+			"name": "adept/fuyu-8b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"ai21labs/jamba-1.5-large-instruct": {
+			"id": "ai21labs/jamba-1.5-large-instruct",
+			"name": "ai21labs/jamba-1.5-large-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"aisingapore/sea-lion-7b-instruct": {
+			"id": "aisingapore/sea-lion-7b-instruct",
+			"name": "aisingapore/sea-lion-7b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"baai/bge-m3": {
+			"id": "baai/bge-m3",
+			"name": "baai/bge-m3",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"bigcode/starcoder2-15b": {
+			"id": "bigcode/starcoder2-15b",
+			"name": "bigcode/starcoder2-15b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"bytedance/seed-oss-36b-instruct": {
 			"id": "bytedance/seed-oss-36b-instruct",
 			"name": "ByteDance-Seed/Seed-OSS-36B-Instruct",
@@ -49230,6 +49661,25 @@
 			},
 			"contextWindow": 262000,
 			"maxTokens": 262000
+		},
+		"databricks/dbrx-instruct": {
+			"id": "databricks/dbrx-instruct",
+			"name": "databricks/dbrx-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"deepseek-ai/deepseek-coder-6.7b-instruct": {
 			"id": "deepseek-ai/deepseek-coder-6.7b-instruct",
@@ -49394,6 +49844,63 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"google/codegemma-1.1-7b": {
+			"id": "google/codegemma-1.1-7b",
+			"name": "google/codegemma-1.1-7b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"google/codegemma-7b": {
+			"id": "google/codegemma-7b",
+			"name": "google/codegemma-7b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"google/deplot": {
+			"id": "google/deplot",
+			"name": "google/deplot",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"google/gemma-2-27b-it": {
 			"id": "google/gemma-2-27b-it",
 			"name": "Gemma 2 27b It",
@@ -49431,6 +49938,25 @@
 			},
 			"contextWindow": 128000,
 			"maxTokens": 4096
+		},
+		"google/gemma-2b": {
+			"id": "google/gemma-2b",
+			"name": "google/gemma-2b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"google/gemma-3-12b-it": {
 			"id": "google/gemma-3-12b-it",
@@ -49496,6 +50022,25 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"google/gemma-3-4b-it": {
+			"id": "google/gemma-3-4b-it",
+			"name": "google/gemma-3-4b-it",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"google/gemma-3n-e2b-it": {
 			"id": "google/gemma-3n-e2b-it",
 			"name": "Gemma 3n E2b It",
@@ -49560,6 +50105,120 @@
 				"minLevel": "minimal",
 				"maxLevel": "xhigh"
 			}
+		},
+		"google/recurrentgemma-2b": {
+			"id": "google/recurrentgemma-2b",
+			"name": "google/recurrentgemma-2b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"ibm/granite-3.0-3b-a800m-instruct": {
+			"id": "ibm/granite-3.0-3b-a800m-instruct",
+			"name": "ibm/granite-3.0-3b-a800m-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"ibm/granite-3.0-8b-instruct": {
+			"id": "ibm/granite-3.0-8b-instruct",
+			"name": "ibm/granite-3.0-8b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"ibm/granite-34b-code-instruct": {
+			"id": "ibm/granite-34b-code-instruct",
+			"name": "ibm/granite-34b-code-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"ibm/granite-8b-code-instruct": {
+			"id": "ibm/granite-8b-code-instruct",
+			"name": "ibm/granite-8b-code-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"meta/codellama-70b": {
+			"id": "meta/codellama-70b",
+			"name": "meta/codellama-70b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"meta/llama-3.1-405b-instruct": {
 			"id": "meta/llama-3.1-405b-instruct",
@@ -49657,6 +50316,25 @@
 			"contextWindow": 128000,
 			"maxTokens": 4096
 		},
+		"meta/llama-3.2-3b-instruct": {
+			"id": "meta/llama-3.2-3b-instruct",
+			"name": "meta/llama-3.2-3b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"meta/llama-3.2-90b-vision-instruct": {
 			"id": "meta/llama-3.2-90b-vision-instruct",
 			"name": "Llama-3.2-90B-Vision-Instruct",
@@ -49736,6 +50414,44 @@
 			"contextWindow": 128000,
 			"maxTokens": 4096
 		},
+		"meta/llama-guard-4-12b": {
+			"id": "meta/llama-guard-4-12b",
+			"name": "meta/llama-guard-4-12b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"meta/llama2-70b": {
+			"id": "meta/llama2-70b",
+			"name": "meta/llama2-70b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"meta/llama3-70b-instruct": {
 			"id": "meta/llama3-70b-instruct",
 			"name": "Llama3 70b Instruct",
@@ -49773,6 +50489,25 @@
 			},
 			"contextWindow": 128000,
 			"maxTokens": 4096
+		},
+		"microsoft/kosmos-2": {
+			"id": "microsoft/kosmos-2",
+			"name": "microsoft/kosmos-2",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"microsoft/phi-3-medium-128k-instruct": {
 			"id": "microsoft/phi-3-medium-128k-instruct",
@@ -49938,6 +50673,25 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"microsoft/phi-4-multimodal-instruct": {
+			"id": "microsoft/phi-4-multimodal-instruct",
+			"name": "microsoft/phi-4-multimodal-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"minimaxai/minimax-m2": {
 			"id": "minimaxai/minimax-m2",
 			"name": "MiniMax-M2",
@@ -50097,6 +50851,25 @@
 			"contextWindow": 262144,
 			"maxTokens": 262144
 		},
+		"mistralai/mistral-7b-instruct-v0.3": {
+			"id": "mistralai/mistral-7b-instruct-v0.3",
+			"name": "mistralai/mistral-7b-instruct-v0.3",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"mistralai/mistral-7b-instruct-v03": {
 			"id": "mistralai/mistral-7b-instruct-v03",
 			"name": "Mistral-7B-Instruct-v0.3",
@@ -50115,6 +50888,25 @@
 			},
 			"contextWindow": 65536,
 			"maxTokens": 65536
+		},
+		"mistralai/mistral-large": {
+			"id": "mistralai/mistral-large",
+			"name": "mistralai/mistral-large",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"mistralai/mistral-large-2-instruct": {
 			"id": "mistralai/mistral-large-2-instruct",
@@ -50256,6 +51048,25 @@
 			"contextWindow": 65536,
 			"maxTokens": 13108
 		},
+		"mistralai/mixtral-8x22b-v0.1": {
+			"id": "mistralai/mixtral-8x22b-v0.1",
+			"name": "mistralai/mixtral-8x22b-v0.1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"mistralai/mixtral-8x7b-instruct": {
 			"id": "mistralai/mixtral-8x7b-instruct",
 			"name": "Mistral: Mixtral 8x7B Instruct",
@@ -50274,6 +51085,25 @@
 			},
 			"contextWindow": 32768,
 			"maxTokens": 16384
+		},
+		"mistralai/mixtral-8x7b-instruct-v0.1": {
+			"id": "mistralai/mixtral-8x7b-instruct-v0.1",
+			"name": "mistralai/mixtral-8x7b-instruct-v0.1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"moonshotai/kimi-k2-instruct": {
 			"id": "moonshotai/kimi-k2-instruct",
@@ -50392,6 +51222,120 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"nv-mistralai/mistral-nemo-12b-instruct": {
+			"id": "nv-mistralai/mistral-nemo-12b-instruct",
+			"name": "nv-mistralai/mistral-nemo-12b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/ai-synthetic-video-detector": {
+			"id": "nvidia/ai-synthetic-video-detector",
+			"name": "nvidia/ai-synthetic-video-detector",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/cosmos-reason2-8b": {
+			"id": "nvidia/cosmos-reason2-8b",
+			"name": "nvidia/cosmos-reason2-8b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/embed-qa-4": {
+			"id": "nvidia/embed-qa-4",
+			"name": "nvidia/embed-qa-4",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/gliner-pii": {
+			"id": "nvidia/gliner-pii",
+			"name": "nvidia/gliner-pii",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/ising-calibration-1-35b-a3b": {
+			"id": "nvidia/ising-calibration-1-35b-a3b",
+			"name": "nvidia/ising-calibration-1-35b-a3b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"nvidia/llama-3_3-nemotron-super-49b-v1": {
 			"id": "nvidia/llama-3_3-nemotron-super-49b-v1",
 			"name": "Llama 3.3 Nemotron Super 49B v1",
@@ -50440,6 +51384,44 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"nvidia/llama-3.1-nemoguard-8b-content-safety": {
+			"id": "nvidia/llama-3.1-nemoguard-8b-content-safety",
+			"name": "nvidia/llama-3.1-nemoguard-8b-content-safety",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/llama-3.1-nemoguard-8b-topic-control": {
+			"id": "nvidia/llama-3.1-nemoguard-8b-topic-control",
+			"name": "nvidia/llama-3.1-nemoguard-8b-topic-control",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"nvidia/llama-3.1-nemotron-51b-instruct": {
 			"id": "nvidia/llama-3.1-nemotron-51b-instruct",
 			"name": "Llama 3.1 Nemotron 51b Instruct",
@@ -50478,6 +51460,63 @@
 			"contextWindow": 128000,
 			"maxTokens": 4096
 		},
+		"nvidia/llama-3.1-nemotron-nano-8b-v1": {
+			"id": "nvidia/llama-3.1-nemotron-nano-8b-v1",
+			"name": "nvidia/llama-3.1-nemotron-nano-8b-v1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/llama-3.1-nemotron-nano-vl-8b-v1": {
+			"id": "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+			"name": "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/llama-3.1-nemotron-safety-guard-8b-v3": {
+			"id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+			"name": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"nvidia/llama-3.1-nemotron-ultra-253b-v1": {
 			"id": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
 			"name": "Llama-3.1-Nemotron-Ultra-253B-v1",
@@ -50501,6 +51540,120 @@
 				"minLevel": "minimal",
 				"maxLevel": "xhigh"
 			}
+		},
+		"nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1": {
+			"id": "nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1",
+			"name": "nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/llama-3.2-nv-embedqa-1b-v1": {
+			"id": "nvidia/llama-3.2-nv-embedqa-1b-v1",
+			"name": "nvidia/llama-3.2-nv-embedqa-1b-v1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/llama-3.3-nemotron-super-49b-v1": {
+			"id": "nvidia/llama-3.3-nemotron-super-49b-v1",
+			"name": "nvidia/llama-3.3-nemotron-super-49b-v1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/llama-3.3-nemotron-super-49b-v1.5": {
+			"id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+			"name": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/llama-nemotron-embed-1b-v2": {
+			"id": "nvidia/llama-nemotron-embed-1b-v2",
+			"name": "nvidia/llama-nemotron-embed-1b-v2",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/llama-nemotron-embed-vl-1b-v2": {
+			"id": "nvidia/llama-nemotron-embed-vl-1b-v2",
+			"name": "nvidia/llama-nemotron-embed-vl-1b-v2",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"nvidia/llama3-chatqa-1.5-70b": {
 			"id": "nvidia/llama3-chatqa-1.5-70b",
@@ -50539,6 +51692,44 @@
 			},
 			"contextWindow": 131072,
 			"maxTokens": 4096
+		},
+		"nvidia/nemoretriever-parse": {
+			"id": "nvidia/nemoretriever-parse",
+			"name": "nvidia/nemoretriever-parse",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nemotron-3-content-safety": {
+			"id": "nvidia/nemotron-3-content-safety",
+			"name": "nvidia/nemotron-3-content-safety",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"nvidia/nemotron-3-nano-30b-a3b": {
 			"id": "nvidia/nemotron-3-nano-30b-a3b",
@@ -50632,6 +51823,44 @@
 			"contextWindow": 128000,
 			"maxTokens": 4096
 		},
+		"nvidia/nemotron-4-340b-reward": {
+			"id": "nvidia/nemotron-4-340b-reward",
+			"name": "nvidia/nemotron-4-340b-reward",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nemotron-content-safety-reasoning-4b": {
+			"id": "nvidia/nemotron-content-safety-reasoning-4b",
+			"name": "nvidia/nemotron-content-safety-reasoning-4b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"nvidia/nemotron-mini-4b-instruct": {
 			"id": "nvidia/nemotron-mini-4b-instruct",
 			"name": "nemotron-mini-4b-instruct",
@@ -50650,6 +51879,63 @@
 			},
 			"contextWindow": 128000,
 			"maxTokens": 8192
+		},
+		"nvidia/nemotron-nano-12b-v2-vl": {
+			"id": "nvidia/nemotron-nano-12b-v2-vl",
+			"name": "nvidia/nemotron-nano-12b-v2-vl",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nemotron-nano-3-30b-a3b": {
+			"id": "nvidia/nemotron-nano-3-30b-a3b",
+			"name": "nvidia/nemotron-nano-3-30b-a3b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nemotron-parse": {
+			"id": "nvidia/nemotron-parse",
+			"name": "nvidia/nemotron-parse",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"nvidia/nemotron-voicechat": {
 			"id": "nvidia/nemotron-voicechat",
@@ -50670,6 +51956,120 @@
 			"contextWindow": 128000,
 			"maxTokens": 8192
 		},
+		"nvidia/neva-22b": {
+			"id": "nvidia/neva-22b",
+			"name": "nvidia/neva-22b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nv-embed-v1": {
+			"id": "nvidia/nv-embed-v1",
+			"name": "nvidia/nv-embed-v1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nv-embedcode-7b-v1": {
+			"id": "nvidia/nv-embedcode-7b-v1",
+			"name": "nvidia/nv-embedcode-7b-v1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nv-embedqa-e5-v5": {
+			"id": "nvidia/nv-embedqa-e5-v5",
+			"name": "nvidia/nv-embedqa-e5-v5",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nv-embedqa-mistral-7b-v2": {
+			"id": "nvidia/nv-embedqa-mistral-7b-v2",
+			"name": "nvidia/nv-embedqa-mistral-7b-v2",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/nvclip": {
+			"id": "nvidia/nvclip",
+			"name": "nvidia/nvclip",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"nvidia/nvidia-nemotron-nano-9b-v2": {
 			"id": "nvidia/nvidia-nemotron-nano-9b-v2",
 			"name": "nvidia-nemotron-nano-9b-v2",
@@ -50688,6 +52088,87 @@
 			},
 			"contextWindow": 131072,
 			"maxTokens": 131072,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
+		},
+		"nvidia/riva-translate-4b-instruct": {
+			"id": "nvidia/riva-translate-4b-instruct",
+			"name": "nvidia/riva-translate-4b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/riva-translate-4b-instruct-v1.1": {
+			"id": "nvidia/riva-translate-4b-instruct-v1.1",
+			"name": "nvidia/riva-translate-4b-instruct-v1.1",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"nvidia/vila": {
+			"id": "nvidia/vila",
+			"name": "nvidia/vila",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"openai/gpt-oss-120b": {
+			"id": "openai/gpt-oss-120b",
+			"name": "GPT OSS 120B",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 131072,
+			"maxTokens": 65536,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -50911,6 +52392,25 @@
 			"contextWindow": 128000,
 			"maxTokens": 8192
 		},
+		"snowflake/arctic-embed-l": {
+			"id": "snowflake/arctic-embed-l",
+			"name": "snowflake/arctic-embed-l",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"stepfun-ai/step-3.5-flash": {
 			"id": "stepfun-ai/step-3.5-flash",
 			"name": "Step 3.5 Flash",
@@ -50935,6 +52435,25 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"stockmark/stockmark-2-100b-instruct": {
+			"id": "stockmark/stockmark-2-100b-instruct",
+			"name": "stockmark/stockmark-2-100b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"upstage/solar-10_7b-instruct": {
 			"id": "upstage/solar-10_7b-instruct",
 			"name": "solar-10.7b-instruct",
@@ -50953,6 +52472,101 @@
 			},
 			"contextWindow": 128000,
 			"maxTokens": 8192
+		},
+		"upstage/solar-10.7b-instruct": {
+			"id": "upstage/solar-10.7b-instruct",
+			"name": "upstage/solar-10.7b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"writer/palmyra-creative-122b": {
+			"id": "writer/palmyra-creative-122b",
+			"name": "writer/palmyra-creative-122b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"writer/palmyra-fin-70b-32k": {
+			"id": "writer/palmyra-fin-70b-32k",
+			"name": "writer/palmyra-fin-70b-32k",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"writer/palmyra-med-70b": {
+			"id": "writer/palmyra-med-70b",
+			"name": "writer/palmyra-med-70b",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"writer/palmyra-med-70b-32k": {
+			"id": "writer/palmyra-med-70b-32k",
+			"name": "writer/palmyra-med-70b-32k",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		},
 		"z-ai/glm-5.1": {
 			"id": "z-ai/glm-5.1",
@@ -51025,6 +52639,25 @@
 				"minLevel": "minimal",
 				"maxLevel": "xhigh"
 			}
+		},
+		"zyphra/zamba2-7b-instruct": {
+			"id": "zyphra/zamba2-7b-instruct",
+			"name": "zyphra/zamba2-7b-instruct",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
 		}
 	},
 	"ollama-cloud": {
@@ -53238,7 +54871,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"claude-opus-4-7": {
@@ -53263,7 +54903,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-sonnet-4": {
@@ -55631,13 +57271,13 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.32,
-				"output": 0.8899999999999999,
+				"input": 0.2288,
+				"output": 0.9144,
 				"cacheRead": 0.15,
 				"cacheWrite": 0
 			},
-			"contextWindow": 163840,
-			"maxTokens": 16384
+			"contextWindow": 131072,
+			"maxTokens": 16000
 		},
 		"deepseek/deepseek-chat-v3-0324": {
 			"id": "deepseek/deepseek-chat-v3-0324",
@@ -62722,7 +64362,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 1000000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -62959,7 +64599,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 64000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -62981,7 +64621,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 32000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -63201,7 +64841,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 32000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -63223,7 +64863,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 128000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -63311,7 +64951,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 1000000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -63664,7 +65304,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 256000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -64373,7 +66013,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 1000000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -65530,7 +67170,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic/claude-opus-4.7": {
@@ -65555,7 +67202,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-sonnet-4": {
@@ -70224,7 +71871,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic/claude-opus-4.7": {
@@ -70249,7 +71903,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-sonnet-4": {

@@ -8,6 +8,7 @@ export const enum Effort {
 	Medium = "medium",
 	High = "high",
 	XHigh = "xhigh",
+	Max = "max",
 }
 
 export const THINKING_EFFORTS: readonly Effort[] = [
@@ -16,6 +17,7 @@ export const THINKING_EFFORTS: readonly Effort[] = [
 	Effort.Medium,
 	Effort.High,
 	Effort.XHigh,
+	Effort.Max,
 ];
 
 const DEFAULT_REASONING_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
@@ -25,6 +27,26 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: readonly Effort[] = [
 	Effort.Medium,
 	Effort.High,
 	Effort.XHigh,
+];
+// Opus 4.6 adaptive thinking exposes `low`, `medium`, `high`, `max` — no in-between `xhigh` level.
+// Internally we still expose Minimal/Low for symmetry with the rest of the catalog; clamping handles
+// the Minimal -> low collapse at the mapper layer.
+const ANTHROPIC_OPUS_46_EFFORTS: readonly Effort[] = [
+	Effort.Minimal,
+	Effort.Low,
+	Effort.Medium,
+	Effort.High,
+	Effort.Max,
+];
+// Opus 4.7+ adds a dedicated `xhigh` level between `high` and `max` (Messages API only).
+// Bedrock Converse mirrors the same set because we translate to budgets per-level downstream.
+const ANTHROPIC_OPUS_47_PLUS_EFFORTS: readonly Effort[] = [
+	Effort.Minimal,
+	Effort.Low,
+	Effort.Medium,
+	Effort.High,
+	Effort.XHigh,
+	Effort.Max,
 ];
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
@@ -281,6 +303,7 @@ export function mapEffortToGoogleThinkingLevel<TApi extends Api>(
 			return "MEDIUM";
 		case Effort.High:
 		case Effort.XHigh:
+		case Effort.Max:
 			return "HIGH";
 	}
 }
@@ -299,10 +322,12 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 		case Effort.High:
 			return "high";
 		case Effort.XHigh:
-			// Opus 4.7+ introduced a distinct "xhigh" effort level (between "high" and "max").
-			// The Anthropic docs scope this to the Messages API only, so Bedrock Converse and
-			// older adaptive-thinking Opus 4.6 models keep the legacy "max" alias.
+			// Opus 4.7+ exposes a dedicated "xhigh" API level between "high" and "max".
+			// Opus 4.6 has no equivalent; Bedrock Converse uses budgets, not adaptive effort,
+			// so callers that ever reach this branch on those backends fall back to "max".
 			return anthropicModelHasRealXHighEffort(model) ? "xhigh" : "max";
+		case Effort.Max:
+			return "max";
 	}
 }
 
@@ -516,7 +541,14 @@ function inferAnthropicSupportedEfforts<TApi extends Api>(
 		(model.api === "anthropic-messages" || model.api === "bedrock-converse-stream") &&
 		semverGte(parsedModel.version, "4.6")
 	) {
-		return parsedModel.kind === "opus" ? DEFAULT_REASONING_EFFORTS_WITH_XHIGH : DEFAULT_REASONING_EFFORTS;
+		if (parsedModel.kind !== "opus") {
+			return DEFAULT_REASONING_EFFORTS;
+		}
+		// Opus 4.7+ on the Messages API adds a dedicated "xhigh" tier between "high" and "max".
+		// Bedrock Converse's adaptive output_config.effort does not accept "xhigh" — both
+		// Opus 4.6 and 4.7 on Bedrock collapse to the same ladder [minimal..high, max].
+		const opus47OnMessages = semverGte(parsedModel.version, "4.7") && model.api === "anthropic-messages";
+		return opus47OnMessages ? ANTHROPIC_OPUS_47_PLUS_EFFORTS : ANTHROPIC_OPUS_46_EFFORTS;
 	}
 	return inferFallbackEfforts(model);
 }

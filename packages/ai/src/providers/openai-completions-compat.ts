@@ -1,6 +1,6 @@
 import type { Model, OpenAICompat } from "../types";
 
-type OpenAIReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+type OpenAIReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 type ResolvedToolStrictMode = NonNullable<OpenAICompat["toolStrictMode"]> | "mixed";
 
 export type ResolvedOpenAICompat = Required<

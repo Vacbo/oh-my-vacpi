@@ -16,6 +16,7 @@ const ReasoningEffortMapSchema = z.object({
 	medium: z.string().optional(),
 	high: z.string().optional(),
 	xhigh: z.string().optional(),
+	max: z.string().optional(),
 });
 
 export const OpenAICompatSchema = z.object({
@@ -45,7 +46,7 @@ export const OpenAICompatSchema = z.object({
 	toolStrictMode: z.enum(["all_strict", "none"]).optional(),
 });
 
-const EffortSchema = z.enum(["minimal", "low", "medium", "high", "xhigh"]);
+const EffortSchema = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
 
 const ThinkingControlModeSchema = z.enum([
 	"effort",

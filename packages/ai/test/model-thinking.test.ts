@@ -102,6 +102,11 @@ describe("model thinking metadata", () => {
 			api: "bedrock-converse-stream",
 			provider: "amazon-bedrock",
 		});
+		const opus46Bedrock = createModel({
+			id: "us.anthropic.claude-opus-4-6-v1",
+			api: "bedrock-converse-stream",
+			provider: "amazon-bedrock",
+		});
 		const sonnet46 = createModel({
 			id: "claude-sonnet-4.6",
 			api: "anthropic-messages",
@@ -111,23 +116,51 @@ describe("model thinking metadata", () => {
 		expect(opus45.thinking?.mode).toBe("anthropic-budget-effort");
 		expect(opus46.thinking?.mode).toBe("anthropic-adaptive");
 		expect(sonnet46.thinking?.mode).toBe("anthropic-adaptive");
+		// Opus 4.6 ladder is [minimal, low, medium, high, max] — no in-between "xhigh" API level.
 		expect(opus46.thinking).toEqual({
 			mode: "anthropic-adaptive",
 			minLevel: Effort.Minimal,
-			maxLevel: Effort.XHigh,
+			maxLevel: Effort.Max,
+			levels: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.Max],
+		});
+		// Opus 4.7 Messages API adds the full [minimal..xhigh, max] ladder.
+		expect(opus47.thinking).toEqual({
+			mode: "anthropic-adaptive",
+			minLevel: Effort.Minimal,
+			maxLevel: Effort.Max,
+		});
+		// Bedrock Opus 4.7 reuses the 4.6 ladder because output_config.effort does not accept "xhigh".
+		expect(opus47Bedrock.thinking).toEqual({
+			mode: "anthropic-adaptive",
+			minLevel: Effort.Minimal,
+			maxLevel: Effort.Max,
+			levels: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.Max],
+		});
+		expect(opus46Bedrock.thinking).toEqual({
+			mode: "anthropic-adaptive",
+			minLevel: Effort.Minimal,
+			maxLevel: Effort.Max,
+			levels: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.Max],
 		});
 		expect(sonnet46.thinking).toEqual({
 			mode: "anthropic-adaptive",
 			minLevel: Effort.Minimal,
 			maxLevel: Effort.High,
 		});
-		// Opus 4.6 has no real xhigh level — pi-ai aliases XHigh to Anthropic's "max".
-		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.XHigh)).toBe("max");
-		// Opus 4.7 on Messages API sends the new literal "xhigh" level.
+		// Opus 4.6 has no xhigh API level — requireSupportedEffort throws.
+		expect(() => mapEffortToAnthropicAdaptiveEffort(opus46, Effort.XHigh)).toThrow(/not supported/);
+		// Opus 4.7 Messages API sends the literal "xhigh" between "high" and "max".
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.XHigh)).toBe("xhigh");
-		// Bedrock Converse is not the Messages API, so xhigh is not available there yet.
-		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.XHigh)).toBe("max");
+		// Bedrock Opus 4.7 has no xhigh — requireSupportedEffort throws there too.
+		expect(() => mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.XHigh)).toThrow(/not supported/);
+		// Max maps to "max" on every Opus 4.6+ adaptive backend.
+		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.Max)).toBe("max");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Max)).toBe("max");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.Max)).toBe("max");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus46Bedrock, Effort.Max)).toBe("max");
+		// Sonnet 4.6 caps at high — Max is not in the supported set.
 		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.XHigh)).toThrow(/not supported/);
+		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.Max)).toThrow(/not supported/);
 	});
 });
 
@@ -202,7 +235,8 @@ describe("generated model policies", () => {
 		expect(models[1]?.thinking).toEqual({
 			mode: "anthropic-adaptive",
 			minLevel: Effort.Minimal,
-			maxLevel: Effort.XHigh,
+			maxLevel: Effort.Max,
+			levels: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.Max],
 		});
 		expect(models[1]?.cost.cacheRead).toBe(0.5);
 		expect(models[1]?.cost.cacheWrite).toBe(6.25);
@@ -478,5 +512,66 @@ describe("model thinking runtime helpers", () => {
 		} satisfies Model<"openai-responses">);
 
 		expect(model.thinking).toBeUndefined();
+	});
+});
+
+describe("Effort.Max clamping and mapping invariants", () => {
+	it("clamps Effort.Max down for OpenAI/Gemini models that do not support it", () => {
+		const gpt52 = createModel({
+			id: "gpt-5.2-codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+		});
+		const gemini3 = createModel({
+			id: "gemini-3-pro-preview",
+			api: "google-generative-ai",
+			provider: "google",
+		});
+		const sonnet46 = createModel({
+			id: "claude-sonnet-4.6",
+			api: "anthropic-messages",
+			provider: "anthropic",
+		});
+
+		// GPT-5.2 tops at XHigh; Max clamps down to XHigh.
+		expect(clampThinkingLevelForModel(gpt52, Effort.Max)).toBe(Effort.XHigh);
+		// Gemini 3 Pro only exposes [Low, High]; Max clamps to High.
+		expect(clampThinkingLevelForModel(gemini3, Effort.Max)).toBe(Effort.High);
+		// Sonnet 4.6 caps at High; Max clamps to High.
+		expect(clampThinkingLevelForModel(sonnet46, Effort.Max)).toBe(Effort.High);
+	});
+
+	it("passes Effort.Max through unchanged for Opus 4.6+ adaptive models", () => {
+		const opus46 = createModel({
+			id: "claude-opus-4.6",
+			api: "anthropic-messages",
+			provider: "anthropic",
+		});
+		const opus47 = createModel({
+			id: "claude-opus-4.7",
+			api: "anthropic-messages",
+			provider: "anthropic",
+		});
+		const opus47Bedrock = createModel({
+			id: "us.anthropic.claude-opus-4-7",
+			api: "bedrock-converse-stream",
+			provider: "amazon-bedrock",
+		});
+
+		expect(clampThinkingLevelForModel(opus46, Effort.Max)).toBe(Effort.Max);
+		expect(clampThinkingLevelForModel(opus47, Effort.Max)).toBe(Effort.Max);
+		expect(clampThinkingLevelForModel(opus47Bedrock, Effort.Max)).toBe(Effort.Max);
+	});
+
+	it("clamps Opus 4.6 XHigh requests up to Max since XHigh is unavailable there", () => {
+		const opus46 = createModel({
+			id: "claude-opus-4.6",
+			api: "anthropic-messages",
+			provider: "anthropic",
+		});
+		// Opus 4.6's ladder is [Minimal, Low, Medium, High, Max]. XHigh isn't in the set,
+		// so clampThinkingLevelForModel walks down to the nearest supported level <= XHigh,
+		// which is High.
+		expect(clampThinkingLevelForModel(opus46, Effort.XHigh)).toBe(Effort.High);
 	});
 });

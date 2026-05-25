@@ -1018,7 +1018,7 @@ describe("Anthropic request fingerprint alignment", () => {
 				thinking: {
 					mode: "anthropic-adaptive",
 					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					maxLevel: Effort.Max,
 				},
 			},
 			{

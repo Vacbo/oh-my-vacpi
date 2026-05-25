@@ -766,6 +766,10 @@ function buildAdditionalModelRequestFields(
 		medium: 8192,
 		high: 16384,
 		xhigh: 32768,
+		// Mirror ANTHROPIC_THINKING.max so Bedrock-Converse callers that ever reach Effort.Max
+		// get a budget step above xhigh. Anthropic adaptive-mode users on Messages API never hit
+		// this branch — `mode === "anthropic-adaptive"` returns earlier.
+		max: 64000,
 	};
 	const budget = options.thinkingBudgets?.[level] ?? defaultBudgets[level];
 

@@ -470,6 +470,10 @@ export const ANTHROPIC_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 32768,
+	// Opus 4.7 adaptive thinking with effort=max is API-budgeted; the value here is only used by
+	// legacy budget-mode callers (gitlab-duo, openai-anthropic-shim) and the auth-gateway when no
+	// explicit budget is provided. Pick a generous ceiling so "max" is observably bigger than xhigh.
+	max: 64000,
 };
 
 const GOOGLE_THINKING: Record<Effort, number> = {
@@ -478,6 +482,9 @@ const GOOGLE_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 24575,
+	// Google models never expose Effort.Max via getSupportedEfforts(); this entry exists only so the
+	// Record<Effort, number> type remains exhaustive.
+	max: 24575,
 };
 
 const BEDROCK_CLAUDE_THINKING: Record<Effort, number> = {
@@ -486,6 +493,9 @@ const BEDROCK_CLAUDE_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 16384,
+	// Bedrock Converse caps Claude thinking budgets lower than Anthropic Messages. Pick 32768 for
+	// `max` to give users a meaningful step above `xhigh` while staying well under model limits.
+	max: 32768,
 };
 
 function resolveBedrockThinkingBudget(

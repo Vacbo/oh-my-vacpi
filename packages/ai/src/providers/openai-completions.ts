@@ -10,7 +10,7 @@ import type {
 	ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions";
 import packageJson from "../../package.json" with { type: "json" };
-import { type Effort, getSupportedEfforts } from "../model-thinking";
+import { getSupportedEfforts } from "../model-thinking";
 import { calculateCost } from "../models";
 import { getEnvApiKeyForModel } from "../stream";
 import {
@@ -218,7 +218,7 @@ export function isOpenAICompletionsProgressChunk(chunk: unknown): boolean {
 
 export interface OpenAICompletionsOptions extends StreamOptions {
 	toolChoice?: ToolChoice;
-	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh";
+	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	/** Force-disable reasoning where supported, or request the lowest effort on generic effort endpoints. */
 	disableReasoning?: boolean;
 	serviceTier?: ServiceTier;
@@ -1176,7 +1176,10 @@ function buildParams(
 		compat.supportsReasoningEffort
 	) {
 		// OpenAI-style reasoning_effort
-		params.reasoning_effort = mapReasoningEffort(options.reasoning, compat.reasoningEffortMap) as Effort;
+		params.reasoning_effort = mapReasoningEffort(
+			options.reasoning,
+			compat.reasoningEffortMap,
+		) as typeof params.reasoning_effort;
 	} else if (
 		supportsReasoningParams &&
 		options?.disableReasoning &&
@@ -1191,7 +1194,10 @@ function buildParams(
 		if (minEffort === undefined) {
 			throw new Error(`Model ${model.provider}/${model.id} has no supported reasoning efforts`);
 		}
-		params.reasoning_effort = mapReasoningEffort(minEffort, compat.reasoningEffortMap) as Effort;
+		params.reasoning_effort = mapReasoningEffort(
+			minEffort,
+			compat.reasoningEffortMap,
+		) as typeof params.reasoning_effort;
 	}
 
 	if (compat.disableReasoningOnToolChoice && params.tool_choice !== undefined) {
