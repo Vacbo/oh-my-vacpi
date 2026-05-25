@@ -11,6 +11,7 @@ const currentPiExtensionsPath = Bun.resolveSync("@oh-my-pi/pi-coding-agent/exten
 describe("plugin extension discovery", () => {
 	let projectDir: TempDir;
 	let tempXdgDataHome = "";
+	let pluginsDir = "";
 	let originalXdgDataHome: string | undefined;
 	const originalAgentDir = getAgentDir();
 
@@ -23,7 +24,20 @@ describe("plugin extension discovery", () => {
 		// Rebuild path caches after changing XDG env so plugin discovery resolves into the temp root.
 		setAgentDir(originalAgentDir);
 
-		const pluginsDir = getPluginsDir();
+		pluginsDir = getPluginsDir();
+		const tempPrefix = `${tempXdgDataHome}${path.sep}`;
+		if (!pluginsDir.startsWith(tempPrefix)) {
+			// Guard: the XDG redirect silently falls back to the real ~/.omp/plugins
+			// if `${XDG_DATA_HOME}/omp` does not exist on disk (see DirResolver in
+			// packages/utils/src/dirs.ts). Refuse to proceed before any destructive
+			// fs.rmSync / fs.writeFileSync touches a real plugins directory.
+			throw new Error(
+				`Test isolation failure: getPluginsDir() returned ${pluginsDir}, ` +
+					`outside tempXdgDataHome ${tempXdgDataHome}. ` +
+					`Refusing to write fixture data to a real plugins directory.`,
+			);
+		}
+
 		const pluginDir = path.join(pluginsDir, "node_modules", "@demo", "plugin");
 		fs.mkdirSync(path.join(pluginDir, "dist"), { recursive: true });
 		fs.writeFileSync(
@@ -77,7 +91,6 @@ describe("plugin extension discovery", () => {
 	});
 
 	it("loads installed legacy Pi plugin extensions from Windows drive-letter paths", async () => {
-		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "legacy-pi-plugin");
 		const extensionPath = path.join(pluginDir, "dist", "extension.ts");
 		fs.rmSync(path.join(pluginsDir, "node_modules"), { recursive: true, force: true });
@@ -140,7 +153,6 @@ describe("plugin extension discovery", () => {
 	});
 
 	it("loads installed plugin extensions whose manifest entry points at a directory with index.ts", async () => {
-		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "dir-entry-plugin");
 		const extensionDir = path.join(pluginDir, ".pi", "extensions", "dir-entry");
 		const extensionPath = path.join(extensionDir, "index.ts");
