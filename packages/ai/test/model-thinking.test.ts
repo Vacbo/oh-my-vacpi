@@ -147,12 +147,12 @@ describe("model thinking metadata", () => {
 			minLevel: Effort.Minimal,
 			maxLevel: Effort.High,
 		});
-		// Opus 4.6 has no xhigh API level — requireSupportedEffort throws.
-		expect(() => mapEffortToAnthropicAdaptiveEffort(opus46, Effort.XHigh)).toThrow(/not supported/);
+		// Opus 4.6 has no xhigh API level; legacy xhigh requests still map to max.
+		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.XHigh)).toBe("max");
 		// Opus 4.7 Messages API sends the literal "xhigh" between "high" and "max".
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.XHigh)).toBe("xhigh");
-		// Bedrock Opus 4.7 has no xhigh — requireSupportedEffort throws there too.
-		expect(() => mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.XHigh)).toThrow(/not supported/);
+		// Bedrock Opus 4.7 has no xhigh API level; legacy xhigh requests still map to max.
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.XHigh)).toBe("max");
 		// Max maps to "max" on every Opus 4.6+ adaptive backend.
 		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.Max)).toBe("max");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Max)).toBe("max");
@@ -563,15 +563,14 @@ describe("Effort.Max clamping and mapping invariants", () => {
 		expect(clampThinkingLevelForModel(opus47Bedrock, Effort.Max)).toBe(Effort.Max);
 	});
 
-	it("clamps Opus 4.6 XHigh requests up to Max since XHigh is unavailable there", () => {
+	it("promotes legacy Opus 4.6 XHigh requests to Max since XHigh is unavailable there", () => {
 		const opus46 = createModel({
 			id: "claude-opus-4.6",
 			api: "anthropic-messages",
 			provider: "anthropic",
 		});
 		// Opus 4.6's ladder is [Minimal, Low, Medium, High, Max]. XHigh isn't in the set,
-		// so clampThinkingLevelForModel walks down to the nearest supported level <= XHigh,
-		// which is High.
-		expect(clampThinkingLevelForModel(opus46, Effort.XHigh)).toBe(Effort.High);
+		// but pre-Max configs used XHigh as the top tier, so preserve that intent.
+		expect(clampThinkingLevelForModel(opus46, Effort.XHigh)).toBe(Effort.Max);
 	});
 });

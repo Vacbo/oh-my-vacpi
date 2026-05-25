@@ -38,8 +38,8 @@ const ANTHROPIC_OPUS_46_EFFORTS: readonly Effort[] = [
 	Effort.High,
 	Effort.Max,
 ];
-// Opus 4.7+ adds a dedicated `xhigh` level between `high` and `max` (Messages API only).
-// Bedrock Converse mirrors the same set because we translate to budgets per-level downstream.
+// Opus 4.7+ adds a dedicated `xhigh` level between `high` and `max` on the Messages API.
+// Bedrock Converse still uses the 4.6 shape because its adaptive effort field does not accept `xhigh`.
 const ANTHROPIC_OPUS_47_PLUS_EFFORTS: readonly Effort[] = [
 	Effort.Minimal,
 	Effort.Low,
@@ -260,6 +260,10 @@ export function clampThinkingLevelForModel<TApi extends Api>(
 		return requested;
 	}
 
+	if (shouldPromoteLegacyXHighRequestToMax(levels, requested)) {
+		return Effort.Max;
+	}
+
 	const requestedIndex = THINKING_EFFORTS.indexOf(requested);
 	if (requestedIndex === -1) {
 		return undefined;
@@ -274,6 +278,10 @@ export function clampThinkingLevelForModel<TApi extends Api>(
 	}
 
 	return clamped ?? levels[0];
+}
+
+function shouldPromoteLegacyXHighRequestToMax(levels: readonly Effort[], requested: Effort): boolean {
+	return requested === Effort.XHigh && levels.includes(Effort.Max) && !levels.includes(Effort.XHigh);
 }
 
 export function requireSupportedEffort<TApi extends Api>(model: ApiModel<TApi>, effort: Effort): Effort {
@@ -313,7 +321,13 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 	model: ApiModel<TApi>,
 	effort: Effort,
 ): "low" | "medium" | "high" | "xhigh" | "max" {
-	switch (requireSupportedEffort(model, effort)) {
+	const levels = getSupportedEfforts(model);
+	const supportedEffort = levels.includes(effort)
+		? effort
+		: shouldPromoteLegacyXHighRequestToMax(levels, effort)
+			? Effort.Max
+			: requireSupportedEffort(model, effort);
+	switch (supportedEffort) {
 		case Effort.Minimal:
 		case Effort.Low:
 			return "low";
@@ -323,9 +337,9 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 			return "high";
 		case Effort.XHigh:
 			// Opus 4.7+ exposes a dedicated "xhigh" API level between "high" and "max".
-			// Opus 4.6 has no equivalent; Bedrock Converse uses budgets, not adaptive effort,
-			// so callers that ever reach this branch on those backends fall back to "max".
-			return anthropicModelHasRealXHighEffort(model) ? "xhigh" : "max";
+			// Opus 4.6 and Bedrock Opus models omit that level from metadata; legacy XHigh
+			// requests are promoted to Effort.Max before this branch.
+			return "xhigh";
 		case Effort.Max:
 			return "max";
 	}
@@ -340,13 +354,6 @@ export function hasOpus47ApiRestrictions(modelId: string): boolean {
 	const parsed = parseAnthropicModel(getCanonicalModelId(modelId));
 	if (!parsed) return false;
 	return semverGte(parsed.version, "4.7") && parsed.kind === "opus";
-}
-
-function anthropicModelHasRealXHighEffort<TApi extends Api>(model: ApiModel<TApi>): boolean {
-	if (model.api !== "anthropic-messages") return false;
-	const parsedModel = parseKnownModel(model.id);
-	if (parsedModel.family !== "anthropic" || parsedModel.kind !== "opus") return false;
-	return semverGte(parsedModel.version, "4.7");
 }
 
 function applyGeneratedModelPolicy(model: ApiModel<Api>): void {
