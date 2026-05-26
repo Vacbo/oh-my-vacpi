@@ -1,5 +1,5 @@
 import { readModelCache, writeModelCache } from "./model-cache";
-import { enrichModelThinking } from "./model-thinking";
+import { enrichModelThinking, refreshModelThinking } from "./model-thinking";
 import { type GeneratedProvider, getBundledModels } from "./models";
 import type { Api, Model, Provider } from "./types";
 import { isRecord } from "./utils";
@@ -134,7 +134,7 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 		cache.staticFingerprint === staticFingerprint &&
 		cache.staticFingerprint.length > 0
 	) {
-		return { models: passModelList<TApi>(cache.models), stale: false };
+		return { models: cache.models.map(refreshModelThinking) as Model<TApi>[], stale: false };
 	}
 
 	const [fetchedModelsDevModels, fetchedDynamicModels] = shouldFetchFromNetwork
@@ -144,7 +144,9 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 	const shouldUseFreshCacheAsAuthoritative =
 		strategy === "online-if-uncached" && (cache?.fresh ?? false) && hasAuthoritativeCache;
 	const dynamicFetchSucceeded = fetchedDynamicModels !== null;
-	const cacheModels = dynamicFetchSucceeded ? [] : normalizeModelList<TApi>(cache?.models ?? []);
+	const cacheModels = dynamicFetchSucceeded
+		? []
+		: normalizeModelList<TApi>(cache?.models ?? []).map(refreshModelThinking);
 	const dynamicModels = fetchedDynamicModels ?? [];
 	const mergedWithCache = mergeDynamicModels(mergeModelSources(staticModels, modelsDevModels), cacheModels);
 	const models = mergeDynamicModels(mergedWithCache, dynamicModels);
@@ -157,13 +159,13 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 			// Dynamic fetch failed — update cache with a non-authoritative snapshot so
 			// stale state remains visible while retry backoff still applies.
 			const latestCache = readModelCache<TApi>(options.providerId, ttlMs, now, dbPath);
+			const latestCacheModels = normalizeModelList<TApi>(latestCache?.models ?? cache?.models ?? []).map(
+				refreshModelThinking,
+			);
 			writeModelCache(
 				options.providerId,
 				now(),
-				mergeDynamicModels(
-					mergeModelSources(staticModels, modelsDevModels),
-					normalizeModelList<TApi>(latestCache?.models ?? cache?.models ?? []),
-				),
+				mergeDynamicModels(mergeModelSources(staticModels, modelsDevModels), latestCacheModels),
 				false,
 				staticFingerprint,
 				dbPath,

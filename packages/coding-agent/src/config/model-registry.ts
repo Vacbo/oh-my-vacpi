@@ -15,6 +15,7 @@ import {
 	openaiCodexModelManagerOptions,
 	PROVIDER_DESCRIPTORS,
 	readModelCache,
+	refreshModelThinking,
 	registerCustomApi,
 	type SimpleStreamOptions,
 	type ThinkingConfig,
@@ -994,7 +995,9 @@ export class ModelRegistry {
 				continue;
 			}
 			const models = cache.models.map(model =>
-				model.provider === descriptor.providerId ? model : { ...model, provider: descriptor.providerId },
+				refreshModelThinking(
+					model.provider === descriptor.providerId ? model : { ...model, provider: descriptor.providerId },
+				),
 			);
 			const providerOverride = this.#providerOverrides.get(descriptor.providerId);
 			const withTransport = providerOverride
@@ -1026,7 +1029,7 @@ export class ModelRegistry {
 				providerConfig.provider,
 				this.#normalizeDiscoverableModels(
 					providerConfig,
-					this.#applyProviderCompat(providerConfig.compat, cache.models),
+					this.#applyProviderCompat(providerConfig.compat, cache.models).map(refreshModelThinking),
 				),
 			);
 			cachedModels.push(...models);
@@ -1256,7 +1259,7 @@ export class ModelRegistry {
 					models: cached?.models.map(model => model.id) ?? [],
 				});
 				this.#lastDiscoveryWarnings.delete(providerConfig.provider);
-				return cached?.models ?? [];
+				return cached?.models.map(refreshModelThinking) ?? [];
 			}
 		}
 

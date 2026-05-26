@@ -260,7 +260,7 @@ export function clampThinkingLevelForModel<TApi extends Api>(
 		return requested;
 	}
 
-	if (shouldPromoteLegacyXHighRequestToMax(levels, requested)) {
+	if (shouldPromoteLegacyXHighRequestToMax(model, levels, requested)) {
 		return Effort.Max;
 	}
 
@@ -280,8 +280,21 @@ export function clampThinkingLevelForModel<TApi extends Api>(
 	return clamped ?? levels[0];
 }
 
-function shouldPromoteLegacyXHighRequestToMax(levels: readonly Effort[], requested: Effort): boolean {
-	return requested === Effort.XHigh && levels.includes(Effort.Max) && !levels.includes(Effort.XHigh);
+function shouldPromoteLegacyXHighRequestToMax<TApi extends Api>(
+	model: ApiModel<TApi>,
+	levels: readonly Effort[],
+	requested: Effort,
+): boolean {
+	// Only legitimate caller shape: Anthropic adaptive Opus 4.6 / Bedrock Opus, where
+	// the API's `max` slot replaces the old `xhigh` slot. A custom ladder like
+	// `[Low, Max]` must NOT promote XHigh to Max — it has to clamp downward instead.
+	return (
+		requested === Effort.XHigh &&
+		model.thinking?.mode === "anthropic-adaptive" &&
+		levels.includes(Effort.High) &&
+		levels.includes(Effort.Max) &&
+		!levels.includes(Effort.XHigh)
+	);
 }
 
 export function requireSupportedEffort<TApi extends Api>(model: ApiModel<TApi>, effort: Effort): Effort {
@@ -324,7 +337,7 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 	const levels = getSupportedEfforts(model);
 	const supportedEffort = levels.includes(effort)
 		? effort
-		: shouldPromoteLegacyXHighRequestToMax(levels, effort)
+		: shouldPromoteLegacyXHighRequestToMax(model, levels, effort)
 			? Effort.Max
 			: requireSupportedEffort(model, effort);
 	switch (supportedEffort) {

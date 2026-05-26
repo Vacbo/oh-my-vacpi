@@ -573,4 +573,27 @@ describe("Effort.Max clamping and mapping invariants", () => {
 		// but pre-Max configs used XHigh as the top tier, so preserve that intent.
 		expect(clampThinkingLevelForModel(opus46, Effort.XHigh)).toBe(Effort.Max);
 	});
+
+	it("does not promote XHigh to Max for non-Opus or non-adaptive ladders that happen to expose Max", () => {
+		const sparseCustom: Model<"openai-responses"> = {
+			id: "custom-sparse-max",
+			name: "custom-sparse-max",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			thinking: {
+				mode: "effort",
+				levels: [Effort.Low, Effort.Max],
+				minLevel: Effort.Low,
+				maxLevel: Effort.Max,
+			},
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 32_000,
+		};
+		// Non-adaptive mode: legacy-xhigh promotion must not fire; clamp down to Low instead.
+		expect(clampThinkingLevelForModel(sparseCustom, Effort.XHigh)).toBe(Effort.Low);
+	});
 });
