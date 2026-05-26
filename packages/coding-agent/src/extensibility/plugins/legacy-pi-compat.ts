@@ -1,7 +1,107 @@
 import * as fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
+
+import * as PiAgentCore from "@oh-my-pi/pi-agent-core";
+import * as PiAi from "@oh-my-pi/pi-ai";
+import * as PiAiOauth from "@oh-my-pi/pi-ai/utils/oauth";
+import * as PiNatives from "@oh-my-pi/pi-natives";
+import * as PiTui from "@oh-my-pi/pi-tui";
+import * as PiUtils from "@oh-my-pi/pi-utils";
+import { ModelRegistry } from "../../config/model-registry";
+import { BorderedLoader } from "../../modes/components/bordered-loader";
+import { CustomEditor } from "../../modes/components/custom-editor";
+import { AuthStorage } from "../../session/auth-storage";
+import { SessionManager } from "../../session/session-manager";
+import { truncateHead } from "../../session/streaming-output";
+import * as PiCodingAgentExtensions from "../extensions/types";
+import * as TypeBoxShim from "../typebox";
+
+const requireFromHere = createRequire(import.meta.url);
+
+interface DefaultResourceLoaderOptions {
+	cwd: string;
+	agentDir?: string;
+	noContextFiles?: boolean;
+	appendSystemPromptOverride?: (base: string[]) => string[];
+}
+
+class DefaultResourceLoader {
+	readonly #options: DefaultResourceLoaderOptions;
+
+	constructor(options: DefaultResourceLoaderOptions) {
+		this.#options = options;
+	}
+
+	async reload(): Promise<void> {
+		void this.#options;
+	}
+}
+
+function formatSize(bytes: number): string {
+	const units = ["B", "KB", "MB", "GB", "TB"] as const;
+	let value = bytes;
+	let unitIndex = 0;
+	while (value >= 1024 && unitIndex < units.length - 1) {
+		value /= 1024;
+		unitIndex += 1;
+	}
+	return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function createLegacyToolSession(cwd: string) {
+	const { Settings } = requireFromHere("../../config/settings") as typeof import("../../config/settings");
+	return {
+		cwd,
+		hasUI: false,
+		enableLsp: false,
+		settings: Settings.isolated(),
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+	};
+}
+
+function createReadTool(cwd: string): unknown {
+	const { ReadTool } = requireFromHere("../../tools/read") as typeof import("../../tools/read");
+	return new ReadTool(createLegacyToolSession(cwd));
+}
+
+function createBashTool(cwd: string): unknown {
+	const { BashTool } = requireFromHere("../../tools/bash") as typeof import("../../tools/bash");
+	return new BashTool(createLegacyToolSession(cwd));
+}
+
+function createEditTool(cwd: string): unknown {
+	const { EditTool } = requireFromHere("../../edit") as typeof import("../../edit");
+	return new EditTool(createLegacyToolSession(cwd));
+}
+
+function createWriteTool(cwd: string): unknown {
+	const { WriteTool } = requireFromHere("../../tools/write") as typeof import("../../tools/write");
+	return new WriteTool(createLegacyToolSession(cwd));
+}
+
+function createGrepTool(cwd: string): unknown {
+	const { SearchTool } = requireFromHere("../../tools/search") as typeof import("../../tools/search");
+	return new SearchTool(createLegacyToolSession(cwd));
+}
+
+function createFindTool(cwd: string): unknown {
+	const { FindTool } = requireFromHere("../../tools/find") as typeof import("../../tools/find");
+	return new FindTool(createLegacyToolSession(cwd));
+}
+
+function createLsTool(cwd: string): unknown {
+	const { ReadTool } = requireFromHere("../../tools/read") as typeof import("../../tools/read");
+	return new ReadTool(createLegacyToolSession(cwd));
+}
+
+async function createAgentSession(...args: Parameters<typeof import("../../sdk").createAgentSession>) {
+	const sdk = await import("../../sdk");
+	return sdk.createAgentSession(...args);
+}
 
 // Canonical scope for in-process pi packages. Plugins published against any of
 // the aliased scopes below (mariozechner's original publish, earendil-works'
@@ -46,6 +146,9 @@ const LEGACY_PI_IMPORT_SPECIFIER_REGEX = new RegExp(
 const LEGACY_PI_FILE_PREFIX = "omp-legacy-pi-file:";
 const LEGACY_PI_FILE_NAMESPACE = "omp-legacy-pi-file";
 const resolvedSpecifierFallbacks = new Map<string, string>();
+const LEGACY_PI_MODULE_REGISTRY_KEY = "omp.legacyPiModules";
+const EXPORTED_IDENTIFIER_REGEX = /^[$A-Z_a-z][$\w]*$/;
+const NODE_MODULES_SEGMENT = `${path.sep}node_modules${path.sep}`;
 
 // Extensions that imported `@sinclair/typebox` directly used to resolve against a
 // real `@sinclair/typebox` install. The runtime dep was replaced with the Zod-backed
@@ -56,9 +159,10 @@ const resolvedSpecifierFallbacks = new Map<string, string>();
 // relying on them must vendor `@sinclair/typebox` directly.
 const TYPEBOX_SPECIFIER = "@sinclair/typebox";
 const TYPEBOX_SPECIFIER_FILTER = /^@sinclair\/typebox$/;
-const TYPEBOX_SHIM_PATH = path.resolve(import.meta.dir, "../typebox.ts");
+const TYPEBOX_SHIM_RELATIVE_SPECIFIER = "../typebox.ts";
+const TYPEBOX_SHIM_REGISTRY_SPECIFIER = "omp:typebox-shim";
 
-let isLegacyPiSpecifierShimInstalled = false;
+var isLegacyPiSpecifierShimInstalled = false;
 
 function remapLegacyPiSpecifier(specifier: string): string | null {
 	if (!LEGACY_PI_SPECIFIER_FILTER.test(specifier)) {
@@ -85,29 +189,136 @@ function getResolvedSpecifier(specifier: string): string {
 	return resolved;
 }
 
+function getLegacyPiModuleRegistry(): Map<string, Record<string, unknown>> {
+	const symbol = Symbol.for(LEGACY_PI_MODULE_REGISTRY_KEY);
+	const global = globalThis as typeof globalThis & { [symbol]?: Map<string, Record<string, unknown>> };
+	let registry = global[symbol];
+	if (!registry) {
+		registry = new Map();
+		global[symbol] = registry;
+	}
+	return registry;
+}
+
+function getShimPathForSpecifier(specifier: string, state: LegacyPiMirrorState): string {
+	const digest = Bun.hash(specifier).toString(36);
+	return path.join(state.root, `shim-${digest}.mjs`);
+}
+
+async function writeModuleShim(
+	specifier: string,
+	module: Record<string, unknown>,
+	state: LegacyPiMirrorState,
+): Promise<string> {
+	const shimPath = getShimPathForSpecifier(specifier, state);
+	if (state.seen.has(shimPath)) {
+		return shimPath;
+	}
+
+	getLegacyPiModuleRegistry().set(specifier, module);
+	const exportedNames = Object.keys(module)
+		.filter(name => name !== "default" && EXPORTED_IDENTIFIER_REGEX.test(name))
+		.sort();
+
+	const lines = [
+		`const registry = globalThis[Symbol.for(${JSON.stringify(LEGACY_PI_MODULE_REGISTRY_KEY)})];`,
+		`const module = registry?.get(${JSON.stringify(specifier)});`,
+		`if (!module) throw new Error(${JSON.stringify(`Legacy Pi shim registry missing ${specifier}`)});`,
+		"const defaultExport = module.default;",
+		"export { defaultExport as default };",
+		...exportedNames.map(name => `export const ${name} = module[${JSON.stringify(name)}];`),
+	];
+
+	state.seen.set(shimPath, shimPath);
+	await Bun.write(shimPath, lines.join("\n"));
+	return shimPath;
+}
+
+function getBundledLegacyPiModule(specifier: string): Record<string, unknown> | null {
+	switch (specifier) {
+		case "@oh-my-pi/pi-agent-core":
+			return PiAgentCore;
+		case "@oh-my-pi/pi-ai":
+			return PiAi;
+		case "@oh-my-pi/pi-ai/utils/oauth":
+			return PiAiOauth;
+		case "@oh-my-pi/pi-coding-agent":
+			return {
+				...PiCodingAgentExtensions,
+				createBashTool,
+				createEditTool,
+				createFindTool,
+				createGrepTool,
+				createLsTool,
+				createReadTool,
+				createWriteTool,
+				Container: PiTui.Container,
+				Markdown: PiTui.Markdown,
+				Spacer: PiTui.Spacer,
+				Text: PiTui.Text,
+				getAgentDir: PiUtils.getAgentDir,
+				logger: PiUtils.logger,
+				VERSION: PiUtils.VERSION,
+				AuthStorage,
+				BorderedLoader,
+				CustomEditor,
+				DefaultResourceLoader,
+				ModelRegistry,
+				SessionManager,
+				createAgentSession,
+				formatSize,
+				truncateHead,
+			};
+		case "@oh-my-pi/pi-coding-agent/extensibility/extensions":
+			return PiCodingAgentExtensions;
+		case "@oh-my-pi/pi-natives":
+			return PiNatives;
+		case "@oh-my-pi/pi-tui":
+			return PiTui;
+		case "@oh-my-pi/pi-utils":
+			return PiUtils;
+		default:
+			return null;
+	}
+}
+
+async function writeLegacyPiModuleShim(remappedSpecifier: string, state: LegacyPiMirrorState): Promise<string> {
+	const module =
+		getBundledLegacyPiModule(remappedSpecifier) ?? ((await import(remappedSpecifier)) as Record<string, unknown>);
+	return writeModuleShim(remappedSpecifier, module, state);
+}
+
+async function writeTypeBoxShim(state: LegacyPiMirrorState): Promise<string> {
+	const module = TypeBoxShim as Record<string, unknown>;
+	return writeModuleShim(TYPEBOX_SHIM_REGISTRY_SPECIFIER, module, state);
+}
+
 function toImportSpecifier(resolvedPath: string): string {
 	return url.pathToFileURL(resolvedPath).href;
 }
 
-function rewriteLegacyPiImports(source: string): string {
+async function rewriteLegacyPiImports(source: string, state: LegacyPiMirrorState): Promise<string> {
+	const replacements = new Map<string, string>();
+
+	for (const match of source.matchAll(LEGACY_PI_IMPORT_SPECIFIER_REGEX)) {
+		const specifier = match[2];
+		const remappedSpecifier = remapLegacyPiSpecifier(specifier);
+		if (!remappedSpecifier || replacements.has(specifier)) {
+			continue;
+		}
+		const shimPath = await writeLegacyPiModuleShim(remappedSpecifier, state);
+		replacements.set(specifier, toImportSpecifier(shimPath));
+	}
+
+	if (replacements.size === 0) {
+		return source;
+	}
+
 	return source.replace(
 		LEGACY_PI_IMPORT_SPECIFIER_REGEX,
 		(match, prefix: string, specifier: string, suffix: string) => {
-			const remappedSpecifier = remapLegacyPiSpecifier(specifier);
-			if (!remappedSpecifier) {
-				return match;
-			}
-
-			try {
-				return `${prefix}${toImportSpecifier(getResolvedSpecifier(remappedSpecifier))}${suffix}`;
-			} catch {
-				// Resolution failed — typically in compiled binary mode where
-				// Bun.resolveSync cannot walk up from /$bunfs/root to find the
-				// bundled node_modules. Return the original specifier unchanged so
-				// rewriteBareImportsForLegacyExtension can resolve it against the
-				// plugin's own installed peer deps instead.
-				return match;
-			}
+			const replacement = replacements.get(specifier);
+			return replacement ? `${prefix}${replacement}${suffix}` : match;
 		},
 	);
 }
@@ -116,6 +327,8 @@ function rewriteLegacyPiImports(source: string): string {
 const STATIC_IMPORT_SPECIFIER_REGEX = /(from\s+["'])([^"']+)(["'])/g;
 // Match static imports plus dynamic `import("...")` / `import('...')` specifiers.
 const ANY_IMPORT_SPECIFIER_REGEX = /((?:from\s+|import\s*\(\s*)["'])([^"']+)(["'])/g;
+// Match CommonJS `require("...")` / `require('...')` specifiers.
+const REQUIRE_SPECIFIER_REGEX = /(require\s*\(\s*["'])([^"']+)(["']\s*\))/g;
 
 /** Resolve bare imports against the extension directory before loading mirrored legacy Pi files. */
 function isUrlLikeSpecifier(specifier: string): boolean {
@@ -136,22 +349,156 @@ function toRewrittenImportSpecifier(resolvedPath: string): string {
 	return isUrlLikeSpecifier(resolvedPath) ? resolvedPath : toImportSpecifier(resolvedPath);
 }
 
-function rewriteBareImportsForLegacyExtension(source: string, importerPath: string): string {
+function shouldMirrorResolvedBareImport(resolvedPath: string): boolean {
+	return (
+		path.isAbsolute(resolvedPath) &&
+		resolvedPath.includes(NODE_MODULES_SEGMENT) &&
+		/\.[cm]?[jt]sx?$/.test(resolvedPath)
+	);
+}
+
+async function toRewrittenBareImportSpecifier(resolvedPath: string, state: LegacyPiMirrorState): Promise<string> {
+	if (shouldMirrorResolvedBareImport(resolvedPath)) {
+		return toImportSpecifier(await mirrorLegacyPiFile(resolvedPath, state));
+	}
+	return toRewrittenImportSpecifier(resolvedPath);
+}
+
+async function getPackageDirForBareSpecifier(
+	specifier: string,
+	importerDir: string,
+): Promise<{ packageDir: string; subpath: string } | null> {
+	if (specifier.startsWith(".") || specifier.startsWith("/") || isUrlLikeSpecifier(specifier)) {
+		return null;
+	}
+
+	const parts = specifier.split("/");
+	const packageName = specifier.startsWith("@") ? `${parts[0]}/${parts[1]}` : parts[0];
+	if (!packageName || (specifier.startsWith("@") && !parts[1])) {
+		return null;
+	}
+
+	const subpathParts = parts.slice(packageName.startsWith("@") ? 2 : 1);
+	let cursor = importerDir;
+	while (true) {
+		const candidate = path.join(cursor, "node_modules", packageName);
+		if (await Bun.file(path.join(candidate, "package.json")).exists()) {
+			return { packageDir: candidate, subpath: subpathParts.join("/") };
+		}
+
+		const nodeModulesIndex = cursor.lastIndexOf(NODE_MODULES_SEGMENT);
+		if (nodeModulesIndex >= 0) {
+			const nodeModulesRoot = cursor.slice(0, nodeModulesIndex + NODE_MODULES_SEGMENT.length - 1);
+			const sibling = path.join(nodeModulesRoot, packageName);
+			if (await Bun.file(path.join(sibling, "package.json")).exists()) {
+				return { packageDir: sibling, subpath: subpathParts.join("/") };
+			}
+		}
+
+		const parent = path.dirname(cursor);
+		if (parent === cursor) {
+			return null;
+		}
+		cursor = parent;
+	}
+}
+
+async function resolvePackageEntry(packageDir: string, subpath: string): Promise<string> {
+	const pkg = (await Bun.file(path.join(packageDir, "package.json")).json()) as {
+		exports?: unknown;
+		module?: string;
+		main?: string;
+	};
+	if (subpath) {
+		return path.join(packageDir, subpath);
+	}
+
+	const rootExport =
+		typeof pkg.exports === "object" && pkg.exports !== null
+			? (pkg.exports as Record<string, unknown>)["."]
+			: undefined;
+	if (typeof rootExport === "string") {
+		return path.join(packageDir, rootExport);
+	}
+	if (typeof rootExport === "object" && rootExport !== null) {
+		const importTarget = (rootExport as Record<string, unknown>).import;
+		if (typeof importTarget === "string") {
+			return path.join(packageDir, importTarget);
+		}
+	}
+
+	if (typeof pkg.module === "string") {
+		return path.join(packageDir, pkg.module);
+	}
+	if (typeof pkg.main === "string") {
+		return path.join(packageDir, pkg.main);
+	}
+	return path.join(packageDir, "index.js");
+}
+
+async function resolveBareImportForLegacyExtension(specifier: string, importerDir: string): Promise<string | null> {
+	try {
+		return Bun.resolveSync(specifier, importerDir);
+	} catch {
+		const packageInfo = await getPackageDirForBareSpecifier(specifier, importerDir);
+		return packageInfo ? resolvePackageEntry(packageInfo.packageDir, packageInfo.subpath) : null;
+	}
+}
+
+async function rewriteBareImportsForLegacyExtension(
+	source: string,
+	importerPath: string,
+	state: LegacyPiMirrorState,
+): Promise<string> {
 	const importerDir = path.dirname(importerPath);
-	return source.replace(ANY_IMPORT_SPECIFIER_REGEX, (match, prefix: string, specifier: string, suffix: string) => {
-		// Skip relative, absolute, URL-style, and already-resolved Node specifiers.
-		if (shouldPreserveImportSpecifier(specifier)) {
-			return match;
+	const importReplacements = new Map<string, string>();
+	const requireReplacements = new Map<string, string>();
+
+	for (const match of source.matchAll(ANY_IMPORT_SPECIFIER_REGEX)) {
+		const specifier = match[2];
+		if (specifier === TYPEBOX_SPECIFIER && !importReplacements.has(specifier)) {
+			const shimPath = await writeTypeBoxShim(state);
+			importReplacements.set(specifier, toImportSpecifier(shimPath));
+			continue;
 		}
-		if (specifier === TYPEBOX_SPECIFIER) {
-			return `${prefix}${toRewrittenImportSpecifier(TYPEBOX_SHIM_PATH)}${suffix}`;
+
+		if (shouldPreserveImportSpecifier(specifier) || importReplacements.has(specifier)) {
+			continue;
 		}
-		try {
-			const resolved = Bun.resolveSync(specifier, importerDir);
-			return `${prefix}${toRewrittenImportSpecifier(resolved)}${suffix}`;
-		} catch {
-			return match;
+
+		const resolved = await resolveBareImportForLegacyExtension(specifier, importerDir);
+		if (resolved) {
+			importReplacements.set(specifier, await toRewrittenBareImportSpecifier(resolved, state));
 		}
+	}
+
+	for (const match of source.matchAll(REQUIRE_SPECIFIER_REGEX)) {
+		const specifier = match[2];
+		if (shouldPreserveImportSpecifier(specifier) || requireReplacements.has(specifier)) {
+			continue;
+		}
+
+		const resolved = await resolveBareImportForLegacyExtension(specifier, importerDir);
+		if (resolved) {
+			requireReplacements.set(specifier, resolved);
+		}
+	}
+
+	if (importReplacements.size === 0 && requireReplacements.size === 0) {
+		return source;
+	}
+
+	const withImports = source.replace(
+		ANY_IMPORT_SPECIFIER_REGEX,
+		(match, prefix: string, specifier: string, suffix: string) => {
+			const replacement = importReplacements.get(specifier);
+			return replacement ? `${prefix}${replacement}${suffix}` : match;
+		},
+	);
+
+	return withImports.replace(REQUIRE_SPECIFIER_REGEX, (match, prefix: string, specifier: string, suffix: string) => {
+		const replacement = requireReplacements.get(specifier);
+		return replacement ? `${prefix}${replacement}${suffix}` : match;
 	});
 }
 
@@ -200,8 +547,8 @@ async function rewriteLegacyPiImportsForRuntime(
 	state: LegacyPiMirrorState,
 ): Promise<string> {
 	const withRelativeResolved = await rewriteRelativeImportsForLegacyExtension(source, importerPath, state);
-	const withLegacyRemap = rewriteLegacyPiImports(withRelativeResolved);
-	return rewriteBareImportsForLegacyExtension(withLegacyRemap, importerPath);
+	const withLegacyRemap = await rewriteLegacyPiImports(withRelativeResolved, state);
+	return rewriteBareImportsForLegacyExtension(withLegacyRemap, importerPath, state);
 }
 
 async function mirrorLegacyPiFile(sourcePath: string, state: LegacyPiMirrorState): Promise<string> {
@@ -248,26 +595,11 @@ function resolveLegacyPiSpecifier(args: { path: string; importer: string }): { p
 		return undefined;
 	}
 
-	// Primary: resolve the canonical @oh-my-pi/* specifier from the host binary
-	// location. Works in dev mode and in source-link installs.
-	try {
-		return { path: getResolvedSpecifier(remappedSpecifier) };
-	} catch {
-		// Fallback for compiled binary mode: the bundled packages live inside
-		// /$bunfs/root and aren't reachable by filesystem resolution. Try the
-		// original (pre-remap) specifier against the importing file's directory,
-		// which resolves to the plugin's installed peer dep.
-		const importerDir = path.dirname(args.importer);
-		try {
-			return { path: Bun.resolveSync(args.path, importerDir) };
-		} catch {
-			return undefined;
-		}
-	}
+	return { path: getResolvedSpecifier(remappedSpecifier) };
 }
 
 function resolveTypeBoxSpecifier(): { path: string } {
-	return { path: TYPEBOX_SHIM_PATH };
+	return { path: getResolvedSpecifier(TYPEBOX_SHIM_RELATIVE_SPECIFIER) };
 }
 
 export function installLegacyPiSpecifierShim(): void {
@@ -303,8 +635,9 @@ export function installLegacyPiSpecifierShim(): void {
 
 			build.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: LEGACY_PI_FILE_NAMESPACE }, async args => {
 				const raw = await Bun.file(args.path).text();
-				const withLegacyRemap = rewriteLegacyPiImports(raw);
-				const withBareResolved = rewriteBareImportsForLegacyExtension(withLegacyRemap, args.path);
+				const state: LegacyPiMirrorState = { root: path.dirname(args.path), seen: new Map() };
+				const withLegacyRemap = await rewriteLegacyPiImports(raw, state);
+				const withBareResolved = await rewriteBareImportsForLegacyExtension(withLegacyRemap, args.path, state);
 				return {
 					contents: withBareResolved,
 					loader: getLoader(args.path),
