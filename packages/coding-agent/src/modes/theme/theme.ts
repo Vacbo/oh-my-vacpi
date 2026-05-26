@@ -549,9 +549,9 @@ const NERD_SYMBOLS: SymbolMap = {
 	// pick: 🤯 high | alt:  high  high
 	"thinking.high": "\u{F111} high",
 	// pick: 🧠 xhi | alt:  xhi  xhi
-	"thinking.xhigh": "\u{F06D} xhi",
+	"thinking.xhigh": "\u{F490} xhi",
 	// pick: 🔥 max | alt:  max  max
-	"thinking.max": "\u{F490} max",
+	"thinking.max": "\u{F06D} max",
 	// Checkboxes
 	// pick:  | alt:  
 	"checkbox.checked": "\uf14a",
