@@ -1,5 +1,9 @@
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
-import type { AutocompleteProvider, CombinedAutocompleteProvider } from "../autocomplete";
+import {
+	type AutocompleteProvider,
+	type CombinedAutocompleteProvider,
+	sanitizeAutocompleteItems,
+} from "../autocomplete";
 import { BracketedPasteHandler } from "../bracketed-paste";
 import { getKeybindings, type KeybindingsManager } from "../keybindings";
 import { extractPrintableText, matchesKey } from "../keys";
@@ -2493,9 +2497,10 @@ export class Editor implements Component, Focusable {
 		);
 		if (requestId !== this.#autocompleteRequestId || abortController.signal.aborted) return;
 
-		if (suggestions && Array.isArray(suggestions.items) && suggestions.items.length > 0) {
+		const sanitized = suggestions ? sanitizeAutocompleteItems(suggestions.prefix, suggestions.items ?? []) : [];
+		if (sanitized.length > 0 && suggestions) {
 			this.#autocompletePrefix = suggestions.prefix;
-			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
+			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, sanitized);
 			this.#autocompleteState = "regular";
 			this.onAutocompleteUpdate?.();
 		} else {
@@ -2503,6 +2508,7 @@ export class Editor implements Component, Focusable {
 			this.onAutocompleteUpdate?.();
 		}
 	}
+
 	#createAutocompleteList(
 		prefix: string,
 		items: Array<{ value: string; label: string; description?: string }>,
@@ -2561,10 +2567,11 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 		);
 		if (requestId !== this.#autocompleteRequestId || abortController.signal.aborted) return;
 
-		if (suggestions && Array.isArray(suggestions.items) && suggestions.items.length > 0) {
+		const sanitized = suggestions ? sanitizeAutocompleteItems(suggestions.prefix, suggestions.items ?? []) : [];
+		if (sanitized.length > 0 && suggestions) {
 			// If there's exactly one suggestion and this was an explicit Tab press, apply it immediately
-			if (explicitTab && suggestions.items.length === 1) {
-				const item = suggestions.items[0]!;
+			if (explicitTab && sanitized.length === 1) {
+				const item = sanitized[0]!;
 				const result = this.#autocompleteProvider.applyCompletion(
 					this.#state.lines,
 					this.#state.cursorLine,
@@ -2584,7 +2591,7 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 			}
 
 			this.#autocompletePrefix = suggestions.prefix;
-			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
+			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, sanitized);
 			this.#autocompleteState = "force";
 			this.onAutocompleteUpdate?.();
 		} else {
@@ -2633,10 +2640,11 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 		);
 		if (requestId !== this.#autocompleteRequestId || abortController.signal.aborted) return;
 
-		if (suggestions && Array.isArray(suggestions.items) && suggestions.items.length > 0) {
+		const sanitized = suggestions ? sanitizeAutocompleteItems(suggestions.prefix, suggestions.items ?? []) : [];
+		if (sanitized.length > 0 && suggestions) {
 			this.#autocompletePrefix = suggestions.prefix;
 			// Always create new SelectList to ensure update
-			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
+			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, sanitized);
 			this.onAutocompleteUpdate?.();
 		} else {
 			this.#cancelAutocomplete();

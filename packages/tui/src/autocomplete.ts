@@ -237,6 +237,30 @@ export function computeSlashUsageBoosts(order: readonly string[] | undefined): M
 	}
 	return boosts;
 }
+/**
+ * Drop autocomplete items that would render as a no-op: empty `value`,
+ * `value` identical to the active prefix (nothing to complete), or empty
+ * `label` paired with a value short enough to be just a bare prefix glyph
+ * (`@`, `/`, `#`). Defends the renderer against provider bugs — e.g. the
+ * FFF mention provider in some configurations returns synthetic "root"
+ * entries with empty `relativePath` that surface as duplicated `@` rows.
+ */
+export function sanitizeAutocompleteItems<T extends { value: string; label: string; description?: string }>(
+	prefix: string,
+	items: readonly T[],
+): T[] {
+	const normalizedPrefix = prefix.trim();
+	return items.filter(item => {
+		const value = item.value?.trim() ?? "";
+		if (value.length === 0) return false;
+		if (value === normalizedPrefix) return false;
+		const label = item.label?.trim() ?? "";
+		// An item with both empty label AND a value equal to a bare prefix
+		// shape (e.g. `@`, `/`, `#`) has no surface to show or apply.
+		if (label.length === 0 && value.length <= 1) return false;
+		return true;
+	});
+}
 
 // Combined provider that handles both slash commands and file paths.
 export class CombinedAutocompleteProvider implements AutocompleteProvider {

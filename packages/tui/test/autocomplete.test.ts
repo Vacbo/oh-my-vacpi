@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CombinedAutocompleteProvider, computeSlashUsageBoosts } from "@oh-my-pi/pi-tui/autocomplete";
+import {
+	CombinedAutocompleteProvider,
+	computeSlashUsageBoosts,
+	sanitizeAutocompleteItems,
+} from "@oh-my-pi/pi-tui/autocomplete";
 
 describe("CombinedAutocompleteProvider", () => {
 	describe("extractPathPrefix", () => {
@@ -328,5 +332,58 @@ describe("slash command frecency boost", () => {
 		expect(result).not.toBeNull();
 		// Both starts-with (score 80), no boost → declared order preserved.
 		expect(result!.items.map(i => i.value)).toEqual(["exit", "extensions"]);
+	});
+});
+
+describe("sanitizeAutocompleteItems", () => {
+	it("preserves well-formed items unchanged", () => {
+		const items = [
+			{ value: "@src/foo.ts", label: "foo.ts", description: "src/foo.ts" },
+			{ value: "@src/bar.ts", label: "bar.ts", description: "src/bar.ts" },
+		];
+		expect(sanitizeAutocompleteItems("@", items)).toEqual(items);
+	});
+
+	it("drops items whose value equals the active prefix (no-op completion)", () => {
+		const items = [
+			{ value: "@", label: "", description: "" }, // duplicate-@ bug shape
+			{ value: "@src/foo.ts", label: "foo.ts" },
+		];
+		const result = sanitizeAutocompleteItems("@", items);
+		expect(result).toHaveLength(1);
+		expect(result[0]?.value).toBe("@src/foo.ts");
+	});
+
+	it("drops items with empty value", () => {
+		const items = [
+			{ value: "", label: "Something", description: "Nothing useful" },
+			{ value: "/exit", label: "exit", description: "Exit the session" },
+		];
+		const result = sanitizeAutocompleteItems("/", items);
+		expect(result.map(i => i.value)).toEqual(["/exit"]);
+	});
+
+	it("drops items with empty label paired with a bare prefix value", () => {
+		// Reproduces the FFF @-mention duplicate bug: provider returns one or two
+		// entries with empty `label` whose `value` ends up as just the prefix.
+		const items = [
+			{ value: "@", label: "", description: "" },
+			{ value: "@", label: "", description: "" },
+			{ value: "@packages/foo.ts", label: "foo.ts", description: "packages/foo.ts" },
+		];
+		const result = sanitizeAutocompleteItems("@", items);
+		expect(result).toHaveLength(1);
+		expect(result[0]?.value).toBe("@packages/foo.ts");
+	});
+
+	it("keeps single-character-value items when they have a real label", () => {
+		// e.g. a legitimate slash command with a 1-char name.
+		const items = [{ value: "x", label: "Mark selection", description: "" }];
+		expect(sanitizeAutocompleteItems("/m", items)).toEqual(items);
+	});
+
+	it("handles trimming around prefix and values", () => {
+		const items = [{ value: "  @  ", label: "  ", description: "" }];
+		expect(sanitizeAutocompleteItems("@", items)).toEqual([]);
 	});
 });
