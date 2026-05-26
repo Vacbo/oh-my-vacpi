@@ -505,9 +505,153 @@ async function rewriteBareImportsForLegacyExtension(
 interface LegacyPiMirrorState {
 	root: string;
 	seen: Map<string, string>;
+	linkedNodeModulesRoots: Set<string>;
+}
+
+interface NodeModulesPackageInfo {
+	nodeModulesDir: string;
+	packageDir: string;
+	packageName: string;
+	relativePath: string;
+}
+
+function getNodeModulesPackageInfo(sourcePath: string): NodeModulesPackageInfo | null {
+	const nodeModulesIndex = sourcePath.lastIndexOf(NODE_MODULES_SEGMENT);
+	if (nodeModulesIndex < 0) {
+		return null;
+	}
+
+	const nodeModulesDir = sourcePath.slice(0, nodeModulesIndex + NODE_MODULES_SEGMENT.length - 1);
+	const afterNodeModules = sourcePath.slice(nodeModulesIndex + NODE_MODULES_SEGMENT.length);
+	const parts = afterNodeModules.split(path.sep);
+	const firstPart = parts[0];
+	if (!firstPart) {
+		return null;
+	}
+	const packageName = firstPart.startsWith("@") ? `${firstPart}/${parts[1]}` : firstPart;
+	const packagePartCount = packageName.startsWith("@") ? 2 : 1;
+	if (packageName.startsWith("@") && !parts[1]) {
+		return null;
+	}
+
+	const packageDir = path.join(nodeModulesDir, ...parts.slice(0, packagePartCount));
+	return {
+		nodeModulesDir,
+		packageDir,
+		packageName,
+		relativePath: parts.slice(packagePartCount).join(path.sep),
+	};
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+	try {
+		await fs.lstat(filePath);
+		return true;
+	} catch (error) {
+		if ((error as { code?: string }).code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+}
+
+async function ensurePackageLink(linkPath: string, targetPath: string): Promise<void> {
+	if (await pathExists(linkPath)) {
+		return;
+	}
+
+	await fs.mkdir(path.dirname(linkPath), { recursive: true });
+	try {
+		await fs.symlink(targetPath, linkPath, "dir");
+	} catch (error) {
+		if ((error as { code?: string }).code !== "EEXIST") {
+			throw error;
+		}
+	}
+}
+
+async function linkOriginalNodeModulesPackages(nodeModulesDir: string, state: LegacyPiMirrorState): Promise<void> {
+	if (state.linkedNodeModulesRoots.has(nodeModulesDir)) {
+		return;
+	}
+	state.linkedNodeModulesRoots.add(nodeModulesDir);
+
+	const mirrorNodeModulesDir = path.join(state.root, "node_modules");
+	await fs.mkdir(mirrorNodeModulesDir, { recursive: true });
+
+	for (const entry of await fs.readdir(nodeModulesDir, { withFileTypes: true })) {
+		if (entry.name.startsWith(".")) {
+			continue;
+		}
+
+		const originalEntryPath = path.join(nodeModulesDir, entry.name);
+		if (entry.name.startsWith("@") && entry.isDirectory()) {
+			const mirrorScopeDir = path.join(mirrorNodeModulesDir, entry.name);
+			await fs.mkdir(mirrorScopeDir, { recursive: true });
+			for (const scopedEntry of await fs.readdir(originalEntryPath, { withFileTypes: true })) {
+				if (!scopedEntry.isDirectory() && !scopedEntry.isSymbolicLink()) {
+					continue;
+				}
+				await ensurePackageLink(
+					path.join(mirrorScopeDir, scopedEntry.name),
+					path.join(originalEntryPath, scopedEntry.name),
+				);
+			}
+			continue;
+		}
+
+		if (entry.isDirectory() || entry.isSymbolicLink()) {
+			await ensurePackageLink(path.join(mirrorNodeModulesDir, entry.name), originalEntryPath);
+		}
+	}
+}
+
+async function ensureWritableMirrorPackageDir(mirrorPackageDir: string): Promise<void> {
+	try {
+		const stat = await fs.lstat(mirrorPackageDir);
+		if (stat.isSymbolicLink()) {
+			await fs.rm(mirrorPackageDir);
+		}
+	} catch (error) {
+		if ((error as { code?: string }).code !== "ENOENT") {
+			throw error;
+		}
+	}
+
+	await fs.mkdir(mirrorPackageDir, { recursive: true });
+}
+
+async function prepareMirroredPackage(
+	sourcePath: string,
+	mirrorPath: string,
+	state: LegacyPiMirrorState,
+): Promise<void> {
+	const packageInfo = getNodeModulesPackageInfo(sourcePath);
+	if (!packageInfo) {
+		await fs.mkdir(path.dirname(mirrorPath), { recursive: true });
+		return;
+	}
+
+	await linkOriginalNodeModulesPackages(packageInfo.nodeModulesDir, state);
+
+	const mirrorPackageDir = path.join(state.root, "node_modules", packageInfo.packageName);
+	await ensureWritableMirrorPackageDir(mirrorPackageDir);
+
+	const sourcePackageJson = path.join(packageInfo.packageDir, "package.json");
+	const mirrorPackageJson = path.join(mirrorPackageDir, "package.json");
+	if ((await Bun.file(sourcePackageJson).exists()) && !(await Bun.file(mirrorPackageJson).exists())) {
+		await Bun.write(mirrorPackageJson, Bun.file(sourcePackageJson));
+	}
+
+	await fs.mkdir(path.dirname(mirrorPath), { recursive: true });
 }
 
 function getMirrorPath(sourcePath: string, state: LegacyPiMirrorState): string {
+	const packageInfo = getNodeModulesPackageInfo(sourcePath);
+	if (packageInfo) {
+		return path.join(state.root, "node_modules", packageInfo.packageName, packageInfo.relativePath);
+	}
+
 	const extension = path.extname(sourcePath) || ".js";
 	const digest = Bun.hash(sourcePath).toString(36);
 	return path.join(state.root, `module-${digest}${extension}`);
@@ -563,6 +707,7 @@ async function mirrorLegacyPiFile(sourcePath: string, state: LegacyPiMirrorState
 
 	const raw = await Bun.file(resolvedPath).text();
 	const rewritten = await rewriteLegacyPiImportsForRuntime(raw, resolvedPath, state);
+	await prepareMirroredPackage(resolvedPath, mirrorPath, state);
 	await Bun.write(mirrorPath, rewritten);
 	return mirrorPath;
 }
@@ -571,7 +716,7 @@ export async function loadLegacyPiModule(resolvedPath: string): Promise<unknown>
 	const mirrorParent = path.join(os.tmpdir(), "omp-legacy-pi-file");
 	await fs.mkdir(mirrorParent, { recursive: true });
 	const root = await fs.mkdtemp(path.join(mirrorParent, `${Bun.hash(resolvedPath).toString(36)}-`));
-	const state: LegacyPiMirrorState = { root, seen: new Map() };
+	const state: LegacyPiMirrorState = { root, seen: new Map(), linkedNodeModulesRoots: new Set() };
 	const mirroredEntry = await mirrorLegacyPiFile(resolvedPath, state);
 	return import(`${toImportSpecifier(mirroredEntry)}?mtime=${Date.now()}`);
 }
@@ -635,7 +780,11 @@ export function installLegacyPiSpecifierShim(): void {
 
 			build.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: LEGACY_PI_FILE_NAMESPACE }, async args => {
 				const raw = await Bun.file(args.path).text();
-				const state: LegacyPiMirrorState = { root: path.dirname(args.path), seen: new Map() };
+				const state: LegacyPiMirrorState = {
+					root: path.dirname(args.path),
+					seen: new Map(),
+					linkedNodeModulesRoots: new Set(),
+				};
 				const withLegacyRemap = await rewriteLegacyPiImports(raw, state);
 				const withBareResolved = await rewriteBareImportsForLegacyExtension(withLegacyRemap, args.path, state);
 				return {
