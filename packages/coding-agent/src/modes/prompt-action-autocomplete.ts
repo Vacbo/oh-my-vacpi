@@ -34,6 +34,8 @@ interface PromptActionAutocompleteOptions {
 	moveCursorToMessageStart: () => void;
 	moveCursorToLineStart: () => void;
 	moveCursorToLineEnd: () => void;
+	/** Optional callback returning slash command names in MRU order (frecency boost). */
+	getSlashUsageOrder?: () => readonly string[];
 }
 
 function fuzzyMatch(query: string, target: string): boolean {
@@ -93,8 +95,13 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
 
-	constructor(commands: SlashCommand[], basePath: string, actions: PromptActionDefinition[]) {
-		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath);
+	constructor(
+		commands: SlashCommand[],
+		basePath: string,
+		actions: PromptActionDefinition[],
+		getSlashUsageOrder?: () => readonly string[],
+	) {
+		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, getSlashUsageOrder);
 		this.#actions = actions;
 	}
 
@@ -246,5 +253,5 @@ export function createPromptActionAutocompleteProvider(
 		},
 	];
 
-	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions);
+	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions, options.getSlashUsageOrder);
 }

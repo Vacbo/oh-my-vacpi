@@ -22,8 +22,14 @@ type ModelUsageRow = {
 	last_used_at: number;
 };
 
+/** Row shape for slash_command_usage table queries */
+type SlashCommandUsageRow = {
+	command_name: string;
+	last_used_at: number;
+};
+
 /** Bump when schema changes require migration */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
 
 /** Singleton instances per database path */
@@ -42,6 +48,9 @@ export class AgentStorage {
 	#upsertModelUsageStmt: Statement;
 	#listModelUsageStmt: Statement;
 	#modelUsageCache: string[] | null = null;
+	#upsertSlashCommandUsageStmt: Statement;
+	#listSlashCommandUsageStmt: Statement;
+	#slashCommandUsageCache: string[] | null = null;
 
 	private constructor(dbPath: string) {
 		this.#ensureDir(dbPath);
@@ -71,6 +80,12 @@ export class AgentStorage {
 		this.#listModelUsageStmt = this.#db.prepare(
 			"SELECT model_key, last_used_at FROM model_usage ORDER BY last_used_at DESC",
 		);
+		this.#upsertSlashCommandUsageStmt = this.#db.prepare(
+			`INSERT INTO slash_command_usage (command_name, last_used_at) VALUES (?, ${SQLITE_NOW_EPOCH}) ON CONFLICT(command_name) DO UPDATE SET last_used_at = ${SQLITE_NOW_EPOCH}`,
+		);
+		this.#listSlashCommandUsageStmt = this.#db.prepare(
+			"SELECT command_name, last_used_at FROM slash_command_usage ORDER BY last_used_at DESC",
+		);
 	}
 
 	/**
@@ -85,6 +100,11 @@ PRAGMA busy_timeout=5000;
 
 CREATE TABLE IF NOT EXISTS model_usage (
 	model_key TEXT PRIMARY KEY,
+	last_used_at INTEGER NOT NULL DEFAULT (${SQLITE_NOW_EPOCH})
+);
+
+CREATE TABLE IF NOT EXISTS slash_command_usage (
+	command_name TEXT PRIMARY KEY,
 	last_used_at INTEGER NOT NULL DEFAULT (${SQLITE_NOW_EPOCH})
 );
 
@@ -170,6 +190,9 @@ CREATE TABLE settings (
 		if (fromVersion < 5) {
 			this.#migrateSchemaV4ToV5();
 		}
+		if (fromVersion < 6) {
+			this.#migrateSchemaV5ToV6();
+		}
 	}
 
 	#migrateSchemaV4ToV5(): void {
@@ -204,6 +227,15 @@ FROM model_usage_legacy
 			this.#db.run("DROP TABLE model_usage_legacy");
 		});
 		migrate();
+	}
+
+	#migrateSchemaV5ToV6(): void {
+		this.#db.run(`
+CREATE TABLE IF NOT EXISTS slash_command_usage (
+	command_name TEXT PRIMARY KEY,
+	last_used_at INTEGER NOT NULL DEFAULT (${SQLITE_NOW_EPOCH})
+);
+`);
 	}
 
 	/**
@@ -301,6 +333,42 @@ FROM model_usage_legacy
 			return this.#modelUsageCache;
 		} catch (error) {
 			logger.warn("AgentStorage failed to get model usage order", { error: String(error) });
+			return [];
+		}
+	}
+
+	/**
+	 * Records slash command usage, updating the last-used timestamp.
+	 * @param commandName - Canonical slash command name (without leading "/")
+	 */
+	recordSlashCommandUsage(commandName: string): void {
+		if (!commandName) return;
+		try {
+			this.#upsertSlashCommandUsageStmt.run(commandName);
+			this.#slashCommandUsageCache = null;
+		} catch (error) {
+			logger.warn("AgentStorage failed to record slash command usage", {
+				commandName,
+				error: String(error),
+			});
+		}
+	}
+
+	/**
+	 * Gets slash command names ordered by most recently used.
+	 * Results are cached until recordSlashCommandUsage is called.
+	 * @returns Array of command names in MRU order
+	 */
+	getSlashCommandUsageOrder(): string[] {
+		if (this.#slashCommandUsageCache) {
+			return this.#slashCommandUsageCache;
+		}
+		try {
+			const rows = this.#listSlashCommandUsageStmt.all() as SlashCommandUsageRow[];
+			this.#slashCommandUsageCache = rows.map(row => row.command_name);
+			return this.#slashCommandUsageCache;
+		} catch (error) {
+			logger.warn("AgentStorage failed to get slash command usage order", { error: String(error) });
 			return [];
 		}
 	}

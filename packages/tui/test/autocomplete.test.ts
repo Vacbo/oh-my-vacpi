@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
+import { CombinedAutocompleteProvider, computeSlashUsageBoosts } from "@oh-my-pi/pi-tui/autocomplete";
 
 describe("CombinedAutocompleteProvider", () => {
 	describe("extractPathPrefix", () => {
@@ -254,5 +254,79 @@ describe("trySyncSlashCompletion", () => {
 		const result = provider.trySyncSlashCompletion("/mod");
 		expect(result).not.toBeNull();
 		expect(result!.items.map(i => i.value)).toEqual(["model"]);
+	});
+});
+
+describe("slash command frecency boost", () => {
+	it("returns empty boost map when no usage history exists", () => {
+		expect(computeSlashUsageBoosts(undefined).size).toBe(0);
+		expect(computeSlashUsageBoosts([]).size).toBe(0);
+	});
+
+	it("decays linearly across the top 5 ranks and ignores older entries", () => {
+		const boosts = computeSlashUsageBoosts(["exit", "model", "plan", "settings", "fork", "compact", "memory"]);
+		expect(boosts.get("exit")).toBe(15);
+		expect(boosts.get("model")).toBe(12);
+		expect(boosts.get("plan")).toBe(9);
+		expect(boosts.get("settings")).toBe(6);
+		expect(boosts.get("fork")).toBe(3);
+		// Beyond rank 4 → no boost recorded at all
+		expect(boosts.has("compact")).toBe(false);
+		expect(boosts.has("memory")).toBe(false);
+	});
+
+	it("nudges frequently-used commands above same-tier ties on /e", () => {
+		const provider = new CombinedAutocompleteProvider(
+			[
+				{ name: "exit", description: "Exit the session", value: "exit" },
+				{ name: "extensions", description: "Manage extensions", value: "extensions" },
+				{ name: "echo", description: "Echo text back", value: "echo" },
+			],
+			"/tmp",
+			() => ["echo", "exit"], // echo was picked more recently than exit
+		);
+
+		const result = provider.trySyncSlashCompletion("/e");
+		expect(result).not.toBeNull();
+		const order = result!.items.map(i => i.value);
+		// All three are starts-with matches (score 80 each). echo has boost 15,
+		// exit has boost 12, extensions has none → echo wins, exit second.
+		expect(order[0]).toBe("echo");
+		expect(order[1]).toBe("exit");
+		expect(order[2]).toBe("extensions");
+	});
+
+	it("does not let frecency override a perfect match for an unrelated query", () => {
+		const provider = new CombinedAutocompleteProvider(
+			[
+				{ name: "exit", description: "Exit", value: "exit" },
+				{ name: "fork", description: "Fork the session", value: "fork" },
+			],
+			"/tmp",
+			() => ["exit"], // exit is the most-used command in history
+		);
+
+		// Typing "/fork" — exit can't match this, so even with max boost it must lose.
+		const result = provider.trySyncSlashCompletion("/fork");
+		expect(result).not.toBeNull();
+		const order = result!.items.map(i => i.value);
+		expect(order[0]).toBe("fork");
+		expect(order).not.toContain("exit");
+	});
+
+	it("falls back to vanilla ordering when callback returns no order", () => {
+		const provider = new CombinedAutocompleteProvider(
+			[
+				{ name: "exit", description: "Exit", value: "exit" },
+				{ name: "extensions", description: "Extensions", value: "extensions" },
+			],
+			"/tmp",
+			() => [],
+		);
+
+		const result = provider.trySyncSlashCompletion("/e");
+		expect(result).not.toBeNull();
+		// Both starts-with (score 80), no boost → declared order preserved.
+		expect(result!.items.map(i => i.value)).toEqual(["exit", "extensions"]);
 	});
 });

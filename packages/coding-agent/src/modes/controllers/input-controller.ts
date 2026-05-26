@@ -653,6 +653,10 @@ export class InputController {
 			moveCursorToMessageStart: () => this.ctx.editor.moveToMessageStart(),
 			moveCursorToLineStart: () => this.ctx.editor.moveToLineStart(),
 			moveCursorToLineEnd: () => this.ctx.editor.moveToLineEnd(),
+			// Frecency boost: slash command picker queries the agent storage on each
+			// keystroke so dispatches recorded mid-session show up in the very next
+			// completion without waiting for a process restart.
+			getSlashUsageOrder: () => this.ctx.session.settings.getStorage()?.getSlashCommandUsageOrder() ?? [],
 		});
 	}
 

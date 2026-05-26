@@ -215,6 +215,29 @@ export interface AutocompleteProvider {
 	trySyncInlineReplace?(textBeforeCursor: string): { replaceLen: number; insert: string } | null;
 }
 
+/**
+ * Convert an MRU-ordered list of slash command names into a per-name score
+ * boost that nudges frequently-picked commands higher in autocomplete results.
+ *
+ * Scale is intentionally small relative to {@link fuzzyScore} (max 15 vs max
+ * 100): a perfect exact-match still outranks any boosted starts-with match,
+ * and an unrelated high-usage command can't outrank a relevant prefix match.
+ * Only the top 5 most-recently-used entries get any boost; older entries are
+ * dropped from the lookup entirely.
+ */
+export function computeSlashUsageBoosts(order: readonly string[] | undefined): Map<string, number> {
+	const boosts = new Map<string, number>();
+	if (!order || order.length === 0) return boosts;
+	const cap = Math.min(order.length, 5);
+	for (let rank = 0; rank < cap; rank++) {
+		const name = order[rank];
+		if (!name) continue;
+		// Linear decay: rank 0 → 15, rank 1 → 12, ..., rank 4 → 3.
+		boosts.set(name, (5 - rank) * 3);
+	}
+	return boosts;
+}
+
 // Combined provider that handles both slash commands and file paths.
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	#commands: (SlashCommand | AutocompleteItem)[];
@@ -224,10 +247,19 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	// discovery continues to use native fuzzyFind + shared scan cache.
 	#dirCache: Map<string, { entries: fs.Dirent[]; timestamp: number }> = new Map();
 	readonly #DIR_CACHE_TTL = 2000; // 2 seconds
+	// Optional callback returning slash command names in most-recently-used order.
+	// Used to nudge frequently-picked commands up the autocomplete list while keeping
+	// fuzzy-match quality as the dominant ranking signal.
+	#getSlashUsageOrder?: () => readonly string[];
 
-	constructor(commands: (SlashCommand | AutocompleteItem)[] = [], basePath: string = getProjectDir()) {
+	constructor(
+		commands: (SlashCommand | AutocompleteItem)[] = [],
+		basePath: string = getProjectDir(),
+		getSlashUsageOrder?: () => readonly string[],
+	) {
 		this.#commands = commands;
 		this.#basePath = basePath;
+		this.#getSlashUsageOrder = getSlashUsageOrder;
 	}
 
 	async getSuggestions(
@@ -269,6 +301,10 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				const prefix = textBeforeCursor.slice(1); // Remove the "/"
 				const lowerPrefix = prefix.toLowerCase();
 
+				// Build a usage-rank lookup. The callback is invoked once per request so
+				// stale orderings don't survive a recordSlashCommandUsage(...) call.
+				const usageBoosts = computeSlashUsageBoosts(this.#getSlashUsageOrder?.());
+
 				// Filter commands using fuzzy matching (subsequence match)
 				const matches = this.#commands
 					.filter(cmd => {
@@ -286,13 +322,15 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 						// Score name matches higher than description matches
 						const nameScore = fuzzyMatch(lowerPrefix, lowerName) ? fuzzyScore(lowerPrefix, lowerName) : 0;
 						const descScore = fuzzyMatch(lowerPrefix, lowerDesc) ? fuzzyScore(lowerPrefix, lowerDesc) * 0.5 : 0;
+						const matchScore = Math.max(nameScore, descScore);
+						const usageBoost = name ? (usageBoosts.get(name) ?? 0) : 0;
 						const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
 						const desc = cmd.description ?? "";
 						const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
 						return {
 							value: name,
 							label: "name" in cmd ? cmd.name : cmd.label,
-							score: Math.max(nameScore, descScore),
+							score: matchScore + usageBoost,
 							...(fullDesc && { description: fullDesc }),
 						};
 					})
@@ -810,6 +848,10 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const prefix = textBeforeCursor.slice(1);
 		const lowerPrefix = prefix.toLowerCase();
 
+		// Same usage-boost logic as the async slash branch above; keeps the sync
+		// inline-completion path in lockstep with the picker rankings.
+		const usageBoosts = computeSlashUsageBoosts(this.#getSlashUsageOrder?.());
+
 		const matches = this.#commands
 			.filter(cmd => {
 				const name = "name" in cmd ? cmd.name : cmd.value;
@@ -824,13 +866,15 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				const lowerDesc = cmd.description?.toLowerCase() ?? "";
 				const nameScore = fuzzyMatch(lowerPrefix, lowerName) ? fuzzyScore(lowerPrefix, lowerName) : 0;
 				const descScore = fuzzyMatch(lowerPrefix, lowerDesc) ? fuzzyScore(lowerPrefix, lowerDesc) * 0.5 : 0;
+				const matchScore = Math.max(nameScore, descScore);
+				const usageBoost = name ? (usageBoosts.get(name) ?? 0) : 0;
 				const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
 				const desc = cmd.description ?? "";
 				const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
 				return {
 					value: name,
 					label: "name" in cmd ? cmd.name : cmd.label,
-					score: Math.max(nameScore, descScore),
+					score: matchScore + usageBoost,
 					...(fullDesc && { description: fullDesc }),
 				} as AutocompleteItem & { score: number };
 			})
