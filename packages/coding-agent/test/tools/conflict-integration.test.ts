@@ -102,8 +102,8 @@ describe("read surfaces conflicts as a warning footer", () => {
 		expect(text).toContain("<<< ours");
 		expect(text).toContain(">>> theirs");
 		expect(text).toContain("NOTICE: Inspect a block by reading `conflict://<N>`");
-		expect(text).toContain('`write({ path: "conflict://<N>", content })`');
-		expect(text).toContain('`write({ path: "conflict://*", content })`');
+		expect(text).toContain('`write({ path: "<file>:conflict://<N>", content })`');
+		expect(text).toContain("<file>:conflict://*");
 		expect(text).toContain("@ours");
 		// Registered on session.
 		const history = session.conflictHistory;
@@ -336,15 +336,15 @@ describe("write resolves conflicts via conflict://N", () => {
 
 		await read.execute("read-prefix", { path: "prefix.ts" });
 		const result = await write.execute("write-prefix", {
-			// Malformed path mixing the `:conflicts` read selector with the
-			// `conflict://` scheme — the write tool MUST recover and resolve.
+			// Path-qualified conflict URI validates the id still points at this
+			// file before splicing.
 			path: "prefix.ts:conflict://1",
 			content: "@theirs",
 		});
 
 		const text = getText(result);
 		expect(text).toContain("Resolved conflict #1");
-		expect(text).toContain("stripped erroneous 'prefix.ts:' prefix");
+		expect(text).toContain("validated conflict target with path guard 'prefix.ts:'");
 		expect(await Bun.file(filePath).text()).toBe("line 1\nnewApi(x)\nline N\n");
 	});
 
@@ -363,8 +363,73 @@ describe("write resolves conflicts via conflict://N", () => {
 
 		const text = getText(result);
 		expect(text).toContain("Resolved 1 conflict");
-		expect(text).toContain("stripped erroneous 'bulk-prefix.ts:' prefix");
+		expect(text).toContain("validated conflict target with path guard 'bulk-prefix.ts:'");
 		expect(await Bun.file(filePath).text()).toBe("line 1\noldApi(x)\nline N\n");
+	});
+
+	it("path-qualified conflict writes reject ids registered for a different file", async () => {
+		const scratchPath = path.join(tempDir, "scratch.ts");
+		const intendedPath = path.join(tempDir, "intended.ts");
+		await Bun.write(scratchPath, TWO_WAY);
+		await Bun.write(intendedPath, TWO_WAY.replace("newApi(x)", "intendedApi(x)"));
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-scratch", { path: "scratch.ts:conflicts" });
+		await read.execute("read-intended", { path: "intended.ts:conflicts" });
+
+		await expect(
+			write.execute("write-wrong-file", { path: "intended.ts:conflict://1", content: "@theirs" }),
+		).rejects.toThrow(/belongs to 'scratch\.ts', not 'intended\.ts'/);
+		expect(await Bun.file(scratchPath).text()).toBe(TWO_WAY);
+		expect(await Bun.file(intendedPath).text()).toBe(TWO_WAY.replace("newApi(x)", "intendedApi(x)"));
+	});
+
+	it("bare conflict writes reject targets outside the current workspace", async () => {
+		const workspace = path.join(tempDir, "workspace");
+		const external = path.join(tempDir, "external.ts");
+		await fs.mkdir(workspace);
+		await Bun.write(external, TWO_WAY);
+		const session = createTestSession(workspace);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-external", { path: external });
+		await expect(write.execute("write-external-bare", { path: "conflict://1", content: "@theirs" })).rejects.toThrow(
+			/outside the current workspace/,
+		);
+		expect(await Bun.file(external).text()).toBe(TWO_WAY);
+
+		const result = await write.execute("write-external-guarded", {
+			path: `${external}:conflict://1`,
+			content: "@theirs",
+		});
+		expect(getText(result)).toContain("validated conflict target");
+		expect(await Bun.file(external).text()).toBe("line 1\nnewApi(x)\nline N\n");
+	});
+
+	it("path-qualified wildcard resolves only that file", async () => {
+		const fileA = path.join(tempDir, "scoped-bulk-a.ts");
+		const fileB = path.join(tempDir, "scoped-bulk-b.ts");
+		await Bun.write(fileA, TWO_WAY);
+		await Bun.write(fileB, TWO_WAY.replace("newApi(x)", "otherApi(x)"));
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-scoped-bulk-a", { path: "scoped-bulk-a.ts:conflicts" });
+		await read.execute("read-scoped-bulk-b", { path: "scoped-bulk-b.ts:conflicts" });
+
+		const result = await write.execute("write-scoped-bulk", {
+			path: "scoped-bulk-b.ts:conflict://*",
+			content: "@theirs",
+		});
+		expect(getText(result)).toContain("scoped-bulk-b.ts: 1 conflict");
+		expect(await Bun.file(fileA).text()).toBe(TWO_WAY);
+		expect(await Bun.file(fileB).text()).toBe("line 1\notherApi(x)\nline N\n");
+		expect(session.conflictHistory?.get(1)).toBeDefined();
+		expect(session.conflictHistory?.get(2)).toBeUndefined();
 	});
 
 	it("can resolve two blocks in the same file by id, in either order", async () => {

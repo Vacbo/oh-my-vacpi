@@ -251,17 +251,17 @@ export interface ParsedConflictUri {
 	id: number | "*";
 	scope?: ConflictScope;
 	/**
-	 * When `raw` was a malformed `<file-prefix>:conflict://…` path, the
-	 * stripped prefix is preserved here so callers can surface a gentle
-	 * "you don't need the file path" note. `undefined` for clean URIs.
+	 * Optional path guard from `<file>:conflict://…`. Writers use this to
+	 * validate the registered id still targets the intended file, and wildcard
+	 * writes use it to scope bulk resolution to that file.
 	 */
 	recoveredPrefix?: string;
 }
 
-// Accept an optional `<prefix>:` before the scheme so paths like
-// `path/to/file.ts:conflict://3` (where the agent mixed the `:conflicts`
-// read selector with the `conflict://` scheme) still resolve. The prefix
-// is greedy so the LAST `:conflict://` wins for multi-colon inputs.
+// Accept an optional `<prefix>:` before the scheme so path-guarded writes like
+// `path/to/file.ts:conflict://3` can validate the registered id still belongs
+// to the intended file. The prefix is greedy so the LAST `:conflict://` wins
+// for multi-colon inputs.
 const CONFLICT_URI_RE = /^(?:(.+):)?conflict:\/\/(.+)$/;
 
 /**
@@ -562,7 +562,7 @@ export function formatConflictWarning(
 	if (theirsLabel) out.push(`- theirs = ${theirsLabel}`);
 	if (anyBase) out.push(`- base = ${baseLabel ?? "(no label)"}`);
 	out.push(
-		'NOTICE: Inspect a block by reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` to render a single side). Resolve with `write({ path: "conflict://<N>", content })`, or bulk-resolve every registered conflict with `write({ path: "conflict://*", content })`. Writes replace the whole conflict region (markers + all sides).',
+		'NOTICE: Inspect a block by reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` to render a single side). Resolve with `write({ path: "<file>:conflict://<N>", content })` to validate the target file, or `write({ path: "conflict://<N>", content })` for an unqualified in-workspace id. Bulk-resolve a file with `<file>:conflict://*`, or every registered in-workspace conflict with `conflict://*`. Writes replace the whole conflict region (markers + all sides).',
 	);
 	out.push(
 		'`content` shorthand: a line that is exactly `@ours` / `@theirs` / `@base` / `@both` expands to that recorded section. `@both` is ours-then-theirs with no separator. Lines that are not a token pass through verbatim, so `"// keep both\\n@ours\\n@theirs"` literally writes the comment, then ours, then theirs.',
@@ -625,7 +625,7 @@ export function formatConflictSummary(
 	if (theirsLabel) lines.push(`- theirs = ${theirsLabel}`);
 	if (anyBase) lines.push(`- base = ${baseLabel ?? "(no label)"}`);
 	lines.push(
-		'NOTICE: Bulk-resolve with `write({ path: "conflict://*", content })`, or address a single block with `write({ path: "conflict://<N>", content })`. Inspect a block by reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` for a single side).',
+		'NOTICE: Address a single block with `write({ path: "<file>:conflict://<N>", content })` to validate the target file. Bulk-resolve this file with `<file>:conflict://*`, or every registered in-workspace conflict with `conflict://*`. Inspect a block by reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` for a single side).',
 	);
 	lines.push(
 		"`content` shorthand: `@ours` / `@theirs` / `@base` / `@both` lines expand to the recorded sections; `@both` = ours-then-theirs. Non-token lines pass through verbatim.",

@@ -33,7 +33,7 @@ import {
 } from "./conflict-detect";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
-import { formatPathRelativeToCwd, isInternalUrlPath } from "./path-utils";
+import { formatPathRelativeToCwd, isInternalUrlPath, resolveToCwd } from "./path-utils";
 import { enforcePlanModeWrite, resolvePlanPath } from "./plan-mode-guard";
 import {
 	formatDiagnostics,
@@ -58,6 +58,22 @@ import {
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
+function isPathWithinCwd(absolutePath: string, cwd: string): boolean {
+	const relative = path.relative(path.resolve(cwd), path.resolve(absolutePath));
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function conflictPathMatches(entry: ConflictEntry, requestedPath: string, cwd: string): boolean {
+	const requestedAbsolutePath = path.resolve(resolveToCwd(requestedPath, cwd));
+	return path.resolve(entry.absolutePath) === requestedAbsolutePath;
+}
+
+function assertConflictPathGuard(entry: ConflictEntry, requestedPath: string, cwd: string): void {
+	if (conflictPathMatches(entry, requestedPath, cwd)) return;
+	throw new ToolError(
+		`Conflict #${entry.id} belongs to '${entry.displayPath}', not '${requestedPath}'. Re-read '${requestedPath}:conflicts' to get current ids before writing.`,
+	);
+}
 const LOOSE_HASHLINE_HEADER_RE = /^\s*¶\S+#[^ \t\r\n]*\s*$/;
 
 let fflateModulePromise: Promise<typeof import("fflate")> | undefined;
@@ -604,11 +620,19 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		stripped: boolean,
 		signal: AbortSignal | undefined,
 		context: AgentToolContext | undefined,
+		pathGuard: string | undefined,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		const entry = getConflictHistory(this.session).get(id);
 		if (!entry) {
 			throw new ToolError(
 				`Conflict #${id} not found. Conflict ids are registered when \`read\` surfaces a marker block; re-read the file to get a current id.`,
+			);
+		}
+		if (pathGuard !== undefined) {
+			assertConflictPathGuard(entry, pathGuard, this.session.cwd);
+		} else if (!isPathWithinCwd(entry.absolutePath, this.session.cwd)) {
+			throw new ToolError(
+				`Conflict #${id} targets '${entry.displayPath}', which is outside the current workspace. Use '${entry.displayPath}:conflict://${id}' to confirm the target, or re-read the intended file's \`:conflicts\` selector.`,
 			);
 		}
 		return this.#resolveConflict(entry, replacementContent, stripped, signal, context);
@@ -634,12 +658,18 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		stripped: boolean,
 		signal: AbortSignal | undefined,
 		context: AgentToolContext | undefined,
+		pathGuard: string | undefined,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		const history = getConflictHistory(this.session);
-		const allEntries = history.entries();
+		const registeredEntries = history.entries();
+		const allEntries =
+			pathGuard !== undefined
+				? registeredEntries.filter(entry => conflictPathMatches(entry, pathGuard, this.session.cwd))
+				: registeredEntries.filter(entry => isPathWithinCwd(entry.absolutePath, this.session.cwd));
 		if (allEntries.length === 0) {
+			const scope = pathGuard !== undefined ? ` for '${pathGuard}'` : " in the current workspace";
 			throw new ToolError(
-				"`conflict://*` has nothing to resolve — no conflicts are currently registered. Re-read the file(s) with conflicts first.",
+				`\`conflict://*\` has nothing to resolve${scope}. Re-read the intended file(s) with the \`:conflicts\` selector first.`,
 			);
 		}
 
@@ -782,15 +812,20 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						`Conflict URI scope '/${conflictUri.scope}' is read-only — read \`conflict://${conflictUri.id}/${conflictUri.scope}\` to inspect that side. To write, drop the scope (\`conflict://${conflictUri.id}\`) and put the chosen content (or shorthand like \`@${conflictUri.scope}\`) in \`content\`.`,
 					);
 				}
+				const pathGuard = conflictUri.recoveredPrefix;
 				const result =
 					conflictUri.id === "*"
-						? await this.#resolveAllConflicts(cleanContent, stripped, signal, context)
-						: await this.#resolveSingleConflictById(conflictUri.id, cleanContent, stripped, signal, context);
-				if (conflictUri.recoveredPrefix !== undefined) {
-					appendNoteToResult(
-						result,
-						`Note: stripped erroneous '${conflictUri.recoveredPrefix}:' prefix from path; conflict URIs are global (use \`conflict://${conflictUri.id}\`, not \`<file>:conflict://${conflictUri.id}\`).`,
-					);
+						? await this.#resolveAllConflicts(cleanContent, stripped, signal, context, pathGuard)
+						: await this.#resolveSingleConflictById(
+								conflictUri.id,
+								cleanContent,
+								stripped,
+								signal,
+								context,
+								pathGuard,
+							);
+				if (pathGuard !== undefined) {
+					appendNoteToResult(result, `Note: validated conflict target with path guard '${pathGuard}:'.`);
 				}
 				return result;
 			}

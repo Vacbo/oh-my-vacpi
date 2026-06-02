@@ -69,6 +69,7 @@ import {
 	type LineRange,
 	parseLineRanges,
 	resolveReadPath,
+	resolveToCwd,
 	splitInternalUrlSel,
 	splitPathAndSel,
 } from "./path-utils";
@@ -91,6 +92,18 @@ import {
 } from "./sqlite-reader";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
+
+function conflictPathMatches(entry: ConflictEntry, requestedPath: string, cwd: string): boolean {
+	const requestedAbsolutePath = path.resolve(resolveToCwd(requestedPath, cwd));
+	return path.resolve(entry.absolutePath) === requestedAbsolutePath;
+}
+
+function assertConflictPathGuard(entry: ConflictEntry, requestedPath: string, cwd: string): void {
+	if (conflictPathMatches(entry, requestedPath, cwd)) return;
+	throw new ToolError(
+		`Conflict #${entry.id} belongs to '${entry.displayPath}', not '${requestedPath}'. Re-read '${requestedPath}:conflicts' to get current ids before reading.`,
+	);
+}
 
 // Document types converted to markdown via markit.
 const CONVERTIBLE_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".rtf", ".epub"]);
@@ -1484,7 +1497,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (readPath.startsWith("file://")) {
 			readPath = expandPath(readPath);
 		}
-
 		const conflictUri = parseConflictUri(readPath);
 		if (conflictUri) {
 			if (conflictUri.id === "*") {
@@ -1492,7 +1504,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					"Reading `conflict://*` is not supported — wildcards are write-only. Use the `<path>:conflicts` read selector for the full list of conflicts in a file, or read `conflict://<N>` to inspect a single block.",
 				);
 			}
-			return this.#readConflictRegion(conflictUri.id, conflictUri.scope);
+			return this.#readConflictRegion(conflictUri.id, conflictUri.scope, conflictUri.recoveredPrefix);
 		}
 		const displayMode = resolveFileDisplayMode(this.session);
 
@@ -2039,12 +2051,19 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	 * file line numbers so hashline anchors line up with the source
 	 * file, and no truncation footer is appended.
 	 */
-	async #readConflictRegion(id: number, scope: ConflictScope | undefined): Promise<AgentToolResult<ReadToolDetails>> {
+	async #readConflictRegion(
+		id: number,
+		scope: ConflictScope | undefined,
+		pathGuard: string | undefined,
+	): Promise<AgentToolResult<ReadToolDetails>> {
 		const entry: ConflictEntry | undefined = getConflictHistory(this.session).get(id);
 		if (!entry) {
 			throw new ToolError(
 				`Conflict #${id} not found. Conflict ids are registered when \`read\` surfaces a marker block; re-read the file to get a current id.`,
 			);
+		}
+		if (pathGuard !== undefined) {
+			assertConflictPathGuard(entry, pathGuard, this.session.cwd);
 		}
 
 		const region = renderConflictRegion(entry, scope);

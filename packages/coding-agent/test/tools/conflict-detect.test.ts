@@ -402,8 +402,8 @@ describe("formatConflictWarning", () => {
 		expect(text).toContain("\nc");
 		// NOTICE line with shorthand tokens.
 		expect(text).toContain("NOTICE: Inspect a block by reading `conflict://<N>`");
-		expect(text).toContain('`write({ path: "conflict://<N>", content })`');
-		expect(text).toContain('`write({ path: "conflict://*", content })`');
+		expect(text).toContain('`write({ path: "<file>:conflict://<N>", content })`');
+		expect(text).toContain("<file>:conflict://*");
 		expect(text).toContain("@ours");
 		expect(text).toContain("@theirs");
 		// No per-block invocation; the old verbose header is gone.
