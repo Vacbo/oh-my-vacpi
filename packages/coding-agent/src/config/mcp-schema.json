@@ -123,13 +123,13 @@
         },
         "timeout": {
           "type": "number",
-          "exclusiveMinimum": 0,
-          "description": "Per-tool-call timeout in milliseconds (default 30000). Bounds individual MCP requests like tools/call; raise for long-running agent or oracle tools."
+          "minimum": 0,
+          "description": "Per-tool-call timeout in milliseconds (default 30000, 0 disables). Bounds individual MCP requests like tools/call; raise for long-running agent or oracle tools."
         },
         "connectTimeoutMs": {
           "type": "number",
-          "exclusiveMinimum": 0,
-          "description": "Hard cap on initialize + tools/list (default 30000). Bounds the startup handshake so unreachable or hung servers do not block the agent. Independent of `timeout`."
+          "minimum": 0,
+          "description": "Hard cap on initialize + tools/list (default 30000, 0 disables). Bounds the startup handshake so unreachable or hung servers do not block the agent. Independent of `timeout`."
         },
         "auth": {
           "$ref": "#/$defs/authConfig"

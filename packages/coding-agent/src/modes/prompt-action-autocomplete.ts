@@ -9,6 +9,11 @@ import {
 import { formatKeyHints, type KeybindingsManager } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { applyEmojiCompletion, getEmojiSuggestions, isEmojiPrefix, tryEmojiInlineReplace } from "./emoji-autocomplete";
+import {
+	applyInternalUrlCompletion,
+	getInternalUrlSuggestions,
+	isInternalUrlPrefix,
+} from "./internal-url-autocomplete";
 
 interface PromptActionDefinition {
 	id: string;
@@ -137,6 +142,9 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
+		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor);
+		if (urlSuggestions) return urlSuggestions;
+
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {
 			const emojiSuggestions = getEmojiSuggestions(textBeforeCursor);
 			if (emojiSuggestions) return emojiSuggestions;
@@ -177,6 +185,10 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 				cursorCol: beforePrefix.length,
 				onApplied: () => item.execute(prefix),
 			};
+		}
+
+		if (isInternalUrlPrefix(prefix)) {
+			return applyInternalUrlCompletion(lines, cursorLine, cursorCol, item, prefix);
 		}
 
 		if (isEmojiPrefix(prefix)) {

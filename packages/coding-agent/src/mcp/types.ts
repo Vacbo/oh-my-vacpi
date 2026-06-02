@@ -74,7 +74,7 @@ interface MCPServerConfigBase {
 	/** Whether this server is enabled (default: true) */
 	enabled?: boolean;
 	/**
-	 * Per-tool-call timeout in milliseconds (default: 30000). Bounds the duration of
+	 * Per-tool-call timeout in milliseconds (default: 30000, 0 disables). Bounds the duration of
 	 * a single MCP JSON-RPC request such as `tools/call`. Long-running tools (chat
 	 * sessions, agent runs) typically want this raised.
 	 *

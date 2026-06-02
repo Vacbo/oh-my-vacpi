@@ -149,9 +149,15 @@ describe("model thinking metadata", () => {
 		});
 		// Opus 4.6 has no xhigh API level; legacy xhigh requests still map to max.
 		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.XHigh)).toBe("max");
-		// Opus 4.7 Messages API sends the literal "xhigh" between "high" and "max".
-		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.XHigh)).toBe("xhigh");
-		// Bedrock Opus 4.7 has no xhigh API level; legacy xhigh requests still map to max.
+		// Opus 4.7+ on the Messages API exposes the full five-tier scale, so pi-ai
+		// shifts each user-facing effort up one notch and the top tier reaches "max".
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Minimal)).toBe("low");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Low)).toBe("medium");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Medium)).toBe("high");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.High)).toBe("xhigh");
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.XHigh)).toBe("max");
+		// Bedrock Converse keeps the four-tier legacy mapping; xhigh aliases to "max".
+		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.High)).toBe("high");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.XHigh)).toBe("max");
 		// Max maps to "max" on every Opus 4.6+ adaptive backend.
 		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.Max)).toBe("max");

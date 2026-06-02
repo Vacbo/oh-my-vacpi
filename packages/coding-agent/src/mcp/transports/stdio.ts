@@ -18,6 +18,7 @@ import type {
 	MCPTransport,
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
+import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
 
 /**
  * Ensure a macOS app backing this stdio server is running before we spawn the
@@ -247,7 +248,7 @@ export class StdioTransport implements MCPTransport {
 			params: params ?? {},
 		};
 
-		const timeout = this.config.timeout ?? 30000;
+		const timeout = resolveMCPTimeoutMs(this.config.timeout);
 		const signal = options?.signal;
 
 		if (signal?.aborted) {
@@ -293,10 +294,12 @@ export class StdioTransport implements MCPTransport {
 			},
 		});
 
-		timer = setTimeout(() => {
-			cleanup();
-			reject(new Error(`Request timeout after ${timeout}ms`));
-		}, timeout);
+		if (isMCPTimeoutEnabled(timeout)) {
+			timer = setTimeout(() => {
+				cleanup();
+				reject(new Error(`Request timeout after ${timeout}ms`));
+			}, timeout);
+		}
 
 		const message = `${JSON.stringify(request)}\n`;
 		try {

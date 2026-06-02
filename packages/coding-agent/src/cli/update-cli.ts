@@ -15,7 +15,7 @@ import { $env, isEnoent, setProjectDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { runRootCommand } from "../main";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
-import forkUpdatePrompt from "../prompts/commands/fork-update.md" with { type: "text" };
+import forkUpdatePrompt from "../prompts/system/fork-update.md" with { type: "text" };
 import { parseArgs } from "./args";
 
 interface ModelRoleSettings {

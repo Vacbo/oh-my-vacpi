@@ -7,7 +7,6 @@
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentTelemetryConfig, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
-import { type JsonSchemaValidationIssue, validateJsonSchemaValue } from "@oh-my-pi/pi-ai/utils/schema";
 import { logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { resolveModelOverrideWithAuthFallback } from "../config/model-resolver";
@@ -22,6 +21,7 @@ import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { callTool } from "../mcp/client";
 import type { MCPManager } from "../mcp/manager";
+import type { MnemopiSessionState } from "../mnemopi/state";
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentRegistry } from "../registry/agent-registry";
@@ -33,7 +33,10 @@ import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
 import type { ContextFileEntry } from "../tools";
-import { jtdToJsonSchema, normalizeSchema } from "../tools/jtd-to-json-schema";
+import { normalizeSchema } from "../tools/jtd-to-json-schema";
+import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
+
+import { type ReportFindingDetails, toReviewFinding } from "../tools/review";
 import { ToolAbortError } from "../tools/tool-errors";
 import type { EventBus } from "../utils/event-bus";
 import { buildNamedToolChoice } from "../utils/tool-choice";
@@ -183,6 +186,9 @@ export interface ExecutorOptions {
 	 */
 	parentArtifactManager?: ArtifactManager;
 	parentHindsightSessionState?: HindsightSessionState;
+	parentMnemopiSessionState?: MnemopiSessionState;
+	/** Parent agent's eval executor session id. Subagents reuse it so eval state is shared. */
+	parentEvalSessionId?: string;
 	/**
 	 * Parent agent's OpenTelemetry configuration. When defined, the subagent's
 	 * loop is started with the same tracer/hooks but its own agent identity
@@ -206,51 +212,6 @@ function parseStringifiedJson(value: unknown): unknown {
 	} catch {
 		return value;
 	}
-}
-
-interface OutputValidator {
-	validate: (value: unknown) => { ok: true } | { ok: false; message: string; missingRequired: string[] };
-	requiredFields: string[];
-}
-
-function buildOutputValidator(schema: unknown): { validator?: OutputValidator; error?: string } {
-	const { normalized, error } = normalizeSchema(schema);
-	if (error) return { error };
-	if (normalized === undefined) return {};
-	const jsonSchema = jtdToJsonSchema(normalized);
-	const required = extractRequiredFields(jsonSchema);
-	return {
-		validator: {
-			requiredFields: required,
-			validate: value => {
-				const result = validateJsonSchemaValue(jsonSchema, value);
-				if (result.success) return { ok: true };
-				const missing = computeMissingRequired(required, value);
-				const message = formatValidationIssue(result.issues[0]) ?? "schema validation failed";
-				return { ok: false, message, missingRequired: missing };
-			},
-		},
-	};
-}
-
-function extractRequiredFields(jsonSchema: unknown): string[] {
-	if (!jsonSchema || typeof jsonSchema !== "object") return [];
-	const required = (jsonSchema as { required?: unknown }).required;
-	return Array.isArray(required) ? required.filter((k): k is string => typeof k === "string") : [];
-}
-
-function computeMissingRequired(required: readonly string[], value: unknown): string[] {
-	if (required.length === 0) return [];
-	if (value === null || value === undefined) return [...required];
-	if (typeof value !== "object" || Array.isArray(value)) return [];
-	const record = value as Record<string, unknown>;
-	return required.filter(key => !(key in record) || record[key] === undefined);
-}
-
-function formatValidationIssue(issue: JsonSchemaValidationIssue | undefined): string | undefined {
-	if (!issue) return undefined;
-	const path = issue.path.length > 0 ? issue.path.map(String).join(".") : "(root)";
-	return `${path}: ${issue.message}`;
 }
 
 function previewOffendingData(value: unknown, maxLength = 500): string {
@@ -306,7 +267,7 @@ function resolveFallbackCompletion(rawOutput: string, outputSchema: unknown): { 
 	if (candidate === undefined) return null;
 	const { validator, error } = buildOutputValidator(outputSchema);
 	if (error) return null;
-	if (validator && !validator.validate(candidate).ok) return null;
+	if (validator && !validator.validate(candidate).success) return null;
 	return { data: candidate };
 }
 
@@ -393,9 +354,10 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 					stderr = `schema_violation: invalid output schema: ${schemaError}`;
 					exitCode = 1;
 				} else {
-					const verdict = validator ? validator.validate(completeData) : { ok: true as const };
-					if (!verdict.ok) {
-						const outcome = buildSchemaViolationOutcome(verdict, completeData);
+					const result = validator?.validate(completeData) ?? { success: true as const };
+					if (!result.success) {
+						const summary = summarizeValidationFailure(result, completeData, validator?.requiredFields ?? []);
+						const outcome = buildSchemaViolationOutcome(summary, completeData);
 						rawOutput = outcome.rawOutput;
 						stderr = outcome.stderr;
 						exitCode = outcome.exitCode;
@@ -420,9 +382,10 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 		if (fallback) {
 			const completeData = normalizeCompleteData(fallback.data, reportFindings);
 			const { validator } = buildOutputValidator(outputSchema);
-			const verdict = validator ? validator.validate(completeData) : { ok: true as const };
-			if (!verdict.ok) {
-				const outcome = buildSchemaViolationOutcome(verdict, completeData);
+			const result = validator?.validate(completeData) ?? { success: true as const };
+			if (!result.success) {
+				const summary = summarizeValidationFailure(result, completeData, validator?.requiredFields ?? []);
+				const outcome = buildSchemaViolationOutcome(summary, completeData);
 				rawOutput = outcome.rawOutput;
 				stderr = outcome.stderr;
 				exitCode = outcome.exitCode;
@@ -571,6 +534,11 @@ function createSubagentSettings(baseSettings: Settings): Settings {
 		...snapshot,
 		"async.enabled": false,
 		"bash.autoBackground.enabled": false,
+
+		// Subagents run headless — there is no UI to confirm prompts against, so
+		// the parent task approval is the authorization boundary. Use yolo mode
+		// to preserve unattended subagent execution. User `tools.approval` policies still apply.
+		"tools.approvalMode": "yolo",
 	});
 }
 
@@ -664,6 +632,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 	if (atMaxDepth && toolNames?.includes("task")) {
 		toolNames = toolNames.filter(name => name !== "task");
+	}
+	// IRC is always available; the COOP prompt section advertises it, so a restricted
+	// whitelist must still carry `irc` for the subagent to actually use it.
+	if (toolNames && !toolNames.includes("irc")) {
+		toolNames = [...toolNames, "irc"];
 	}
 	if (toolNames?.includes("exec")) {
 		const allowEvalPy = settings.get("eval.py") ?? true;
@@ -1187,6 +1160,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (model?.contextWindow && model.contextWindow > 0) {
 				progress.contextWindow = model.contextWindow;
 			}
+			if (model) {
+				progress.resolvedModel = explicitThinkingLevel
+					? `${model.provider}/${model.id}:${resolvedThinkingLevel}`
+					: `${model.provider}/${model.id}`;
+			}
 			const effectiveThinkingLevel = explicitThinkingLevel
 				? resolvedThinkingLevel
 				: (thinkingLevel ?? resolvedThinkingLevel);
@@ -1267,6 +1245,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					spawns: spawnsEnv,
 					taskDepth: childDepth,
 					parentHindsightSessionState: options.parentHindsightSessionState,
+					parentMnemopiSessionState: options.parentMnemopiSessionState,
 					parentTaskPrefix: id,
 					agentId: id,
 					agentDisplayName: agent.name,
@@ -1277,6 +1256,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
 					localProtocolOptions: options.localProtocolOptions,
 					telemetry: subagentTelemetry,
+					parentEvalSessionId: options.parentEvalSessionId,
 				}),
 			);
 
@@ -1324,22 +1304,25 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 
 			const extensionRunner = session.extensionRunner;
+			const pendingExtensionMessages: Promise<void>[] = [];
 			if (extensionRunner) {
 				extensionRunner.initialize(
 					{
 						sendMessage: (message, options) => {
-							session.sendCustomMessage(message, options).catch(e => {
+							const sendPromise = session.sendCustomMessage(message, options).catch(e => {
 								logger.error("Extension sendMessage failed", {
 									error: e instanceof Error ? e.message : String(e),
 								});
 							});
+							pendingExtensionMessages.push(sendPromise);
 						},
 						sendUserMessage: (content, options) => {
-							session.sendUserMessage(content, options).catch(e => {
+							const sendPromise = session.sendUserMessage(content, options).catch(e => {
 								logger.error("Extension sendUserMessage failed", {
 									error: e instanceof Error ? e.message : String(e),
 								});
 							});
+							pendingExtensionMessages.push(sendPromise);
 						},
 						appendEntry: (customType, data) => {
 							session.sessionManager.appendCustomEntry(customType, data);
@@ -1375,6 +1358,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					logger.error("Extension error", { path: err.extensionPath, error: err.error });
 				});
 				await awaitAbortable(extensionRunner.emit({ type: "session_start" }));
+				while (pendingExtensionMessages.length > 0) {
+					await awaitAbortable(Promise.all(pendingExtensionMessages.splice(0)));
+				}
 			}
 
 			const MAX_YIELD_RETRIES = 3;
@@ -1460,9 +1446,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					);
 					await awaitAbortable(session.waitForIdle());
 				} catch (err) {
-					logger.error("Subagent prompt failed", {
-						error: err instanceof Error ? err.message : String(err),
-					});
+					if (abortSignal.aborted || err instanceof ToolAbortError) {
+						// Benign control-flow exit — user cancel (^C) or compaction aborting
+						// pending operations both surface here as ToolAbortError. The outer
+						// catch and finally already mark the run aborted; logging at ERROR
+						// would spam operator dashboards with non-failures.
+						logger.debug("Subagent prompt aborted", {
+							reason: abortReason ?? "signal",
+						});
+					} else {
+						logger.error("Subagent prompt failed", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 				}
 			}
 
@@ -1547,7 +1543,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	// Use final output if available, otherwise accumulated output
 	let rawOutput = finalOutputChunks.length > 0 ? finalOutputChunks.join("") : outputChunks.join("");
 	const yieldItems = progress.extractedToolData?.yield as YieldItem[] | undefined;
-	const reportFindings = progress.extractedToolData?.report_finding as ReviewFinding[] | undefined;
+	const reportFindingDetails = progress.extractedToolData?.report_finding as ReportFindingDetails[] | undefined;
+	const reportFindings: ReviewFinding[] | undefined = reportFindingDetails?.map(toReviewFinding);
 	const finalized = finalizeSubprocessOutput({
 		rawOutput,
 		exitCode,
@@ -1637,6 +1634,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		contextTokens: progress.contextTokens,
 		contextWindow: progress.contextWindow,
 		modelOverride,
+		resolvedModel: progress.resolvedModel,
 		error: exitCode !== 0 && stderr ? stderr : undefined,
 		aborted: wasAborted,
 		abortReason: finalAbortReason,
