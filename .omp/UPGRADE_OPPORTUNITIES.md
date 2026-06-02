@@ -203,9 +203,9 @@ Plus regression test `anchors the reminder with a copy-pasteable ops-wrapper JSO
 
 **Follow-up**: consider upstreaming to `can1357/oh-my-pi`; the same bug exists there.
 ---
-## 2026-05-25 — Hindsight `recall` / `retain` tools don't surface tag filters   `[open]` `[high]`
+## 2026-05-25 — Hindsight `recall` / `retain` tools don't surface tag filters   `[done]` `[high]`
 
-**Where**: `packages/coding-agent/src/tools/hindsight-recall.ts:8-10`, `packages/coding-agent/src/tools/hindsight-retain.ts:6-16`
+**Where**: `packages/coding-agent/src/tools/memory-recall.ts:8-13`, `packages/coding-agent/src/tools/memory-retain.ts:6-16`, `packages/coding-agent/src/hindsight/state.ts:26-35`.
 
 **Problem**: Model-facing schemas are minimal:
 - `recall`: `{query: string}` only
@@ -213,7 +213,7 @@ Plus regression test `anchors the reminder with a copy-pasteable ops-wrapper JSO
 
 The internal `HindsightApi` already supports the full Hindsight feature set per `client.ts:97-104` (`RecallOptions { types, maxTokens, budget, tags, tagsMatch }`) and `MemoryItemInput` accepts tags + metadata + types. Hindsight MCP exposes tag-filtered recall as a first-class feature. We are silently dropping the precision-recall benefit.
 
-**Cost of fix**: ~30 input tokens added to `recall` description, ~20 to `retain`. Two-file Zod schema extension + pass-through to existing client calls. Fully testable.
+**Cost of fix**: ~30 input tokens added to `recall` description, ~20 to `retain`. Two-file Zod schema extension + pass-through to existing client calls. Fully testable. **Fix shipped**: `recall` now accepts optional `tags` + `tagsMatch`, merges caller tags with session scope tags, and forwards them to `HindsightApi.recall`; `retain.items[]` now accepts optional `tags`, merges them with session retain tags, and flushes them through the existing retain batch queue. Regression coverage lives in `packages/coding-agent/test/memory-tools.test.ts`.
 
 **Recommended schema (additive, optional)**:
 ```ts
@@ -498,3 +498,70 @@ This is independent of FFF. FFF (`pi-fff`) intentionally only handles `@`-prefix
 **Why not reuse FFF for this**: FFF's index is file-system rooted; commands aren't paths. FFF doesn't know about them, doesn't watch the registry for new commands from plugins, and would force a dependency on FFF being loaded just to get good command ordering. Native ordering keeps the feature working when FFF is disabled or absent.
 
 **Follow-up**: same mechanism could extend to `#`-prefixed prompt actions (handled by `PromptActionAutocompleteProvider` at `packages/coding-agent/src/modes/prompt-action-autocomplete.ts:112`) and to MCP slash commands. Land the slash command tier first, generalize later.
+
+---
+
+## 2026-06-02 — Async "ultra oracle": orchestrated context prep + ultra-tier oneshot (browser-engine-first)   `[open]` `[high]`
+
+**Where**: new async agent `packages/coding-agent/src/prompts/agents/ultra-oracle.md` registered in `packages/coding-agent/src/task/agents.ts:44-72`; new `ultra` model role in `packages/coding-agent/src/config/model-registry.ts:95,114` (plumbing at `settings-schema.ts:213`, `model-resolver.ts:546`); reuses the existing async dispatch unchanged (`packages/coding-agent/src/task/index.ts:303-320`) and the existing CDP browser substrate (`packages/coding-agent/src/tools/browser/registry.ts:9-151`, `browser/attach.ts`). API fallback extends the toolless `llm()` bridge (`packages/coding-agent/src/eval/llm-bridge.ts:30-40`). Prior art: `skill://oracle` (the `@steipete/oracle` CLI) and RepoPrompt `context_builder` (MCP).
+
+**Context**: Consult an ultra-tier model for the hardest questions. The target the user actually wants is the **no-API-cost path**: their signed-in ChatGPT GPT-5.x Pro session, driven by browser automation. These runs are slow (5-30 min typical, 60+ min worst case) and chat-context-only (one self-contained prompt in, one answer out, no tool loop). The main agent must not spend its turn assembling the prompt or block on the answer: a cheap orchestrator prepares the context (the way RepoPrompt context_builder does) and hands a tight bundle to the driver, and the result returns async via `<task-notification>`. The API engine is a generic option for users without a Pro browser session, not the primary path here.
+
+### Why the current `oracle` does not cover this
+
+`oracle` (`prompts/agents/oracle.md`) is `model: pi/slow`, `blocking: true`, full tools, agentic loop. `blocking: true` forces the synchronous in-process path (`task/index.ts:305`), correct for `pi/slow` (seconds to a couple minutes) but wrong for a 60-minute run. Ultra chat models do not run tool loops. There is also no `ultra`/`pro` role: `MODEL_ROLE_IDS` stops at `slow` (`model-registry.ts:114`).
+
+### The real deliverable is the integration layer, not the automation
+
+The hard, change-prone part (driving a logged-in ChatGPT GPT-5.x Pro chat: submit, detect a 5-60 min completion, extract, reattach) can lean on a driver. The oh-my-vacpi-native piece worth building well is the **context-transmission + result-collection layer**:
+- a cheap orchestrator agent (`pi/smol`) that assembles the `skill://oracle` "exhaustive prompt" bundle (briefing, where-things-live, exact question with verbatim errors and what was tried, constraints, desired output, fewest files that hold the truth) under a token budget;
+- an async job that hands the bundle to the selected driver and collects the answer without blocking the main agent;
+- a small `UltraDriver` interface (`submit(bundle) -> handle`, `poll(handle) -> pending | done(answer)`, `reattach(handle)`) so the driver is pluggable and a long run survives an omp restart.
+
+### Driver options (we already own most of the substrate)
+
+oh-my-vacpi already ships the CDP plumbing Oracle reimplements: `browser/registry.ts` supports `headless`, `spawned` (launch a real browser binary with extra args plus `--remote-debugging-port`, and **reuse an existing CDP endpoint** via `findReusableCdp`), and `connected` (attach to a running CDP URL) modes, all over `puppeteer-core`. A native driver is therefore cheap.
+
+1. **Our own CDP driver (default, recommended)**: point the `spawned`/`connected` modes at the user's signed-in Chrome (either spawn Chrome with `app.args: ["--user-data-dir=<profile>", "--remote-debugging-port=…"]`, or attach to a Chrome the user already launched with remote debugging). A scripted flow then drives chatgpt.com: select GPT-5.x Pro, paste the bundle, submit, poll for completion, extract the final message. Auth-reuse caveat: Chrome locks the live default profile, so use a dedicated automation `--user-data-dir`, or extract and inject cookies (Oracle's `sweet-cookie` approach) into that profile. No API cost, no new dependency, fully in-process.
+2. **Oracle CLI subprocess (borrow, out-of-process)**: shell `npx -y @steipete/oracle --engine browser --model gpt-5.x-pro --slug "<3-5 words>" -p "<bundle>" --file …`. It already solves completion-detection and persists reattachable sessions under `~/.oracle/sessions` (`oracle session <id> --render`). Heavy dep tree, but out-of-process so it never enters our bundle or `--compile` binary. Useful as the reattach backbone while the native driver matures.
+3. **Third-party browser-automation tool (only if DOM drift demands self-healing)**: Stagehand (TypeScript, Browserbase) mixes scripted and AI actions and fits a TS codebase; `browser-use` (Python) is an LLM agent that re-derives navigation each step. For a fixed flow (open, select model, paste, wait, copy) a scripted driver is more reliable, free, and deterministic; an LLM-driven agent self-heals against ChatGPT redesigns but costs its own tokens and is nondeterministic. Recommend scripted-first and keep an LLM-agent path only as a self-healing fallback if selector breakage becomes frequent. All slot behind the same `UltraDriver` interface.
+
+### Recommended v0 / v1 / v2
+
+- **v0 (no-API-cost browser engine, our own CDP driver)**: `ultra_oracle` agent on `pi/smol` (orchestrator, `blocking: false`) plus the `UltraDriver` interface plus the native CDP driver against a signed-in ChatGPT GPT-5.x Pro profile. The orchestrator assembles the bundle, the async job drives the browser and collects the answer. This is the user's primary path.
+- **v1 (durable reattach + API fallback)**: add reattach-across-restart (native driver persists its CDP/session handle, or shell the Oracle CLI as the reattach backbone), and wire the generic API engine behind the same `ultra` role plus an `ultra` tier on `llm()` for users without a Pro browser session.
+- **v2 (self-healing driver, only if needed)**: add a Stagehand or LLM-agent driver behind `UltraDriver` as a fallback when scripted selectors break on a ChatGPT redesign.
+
+### Cost and safety guards
+
+- Gate behind `ultraOracle.enabled` (default off) plus `async.enabled`. The browser path has no API cost but still ties up a Chrome session for up to an hour.
+- Orchestrator enforces a token budget before sending (oracle skill targets under ~196k input). Never attach secrets (`.env`, key files).
+- Drive a dedicated automation profile, never the user's live default session, to avoid disrupting their logged-in browser. Surface ultra runs in `/usage` and `omp stats` (count as runs on the browser path, not premium requests).
+
+### Why not <alternatives>
+
+- **Why not API-first**: the user wants the no-API-cost Pro browser session; API is the generic fallback for others.
+- **Why not vendor Oracle's library**: it has none (CLI + MCP only, no `exports` map); the dep tree is too heavy for our Bun `--compile` bundle. Borrow it out-of-process if at all.
+- **Why not browser-use as the default driver**: it is an LLM agent that re-derives a fixed flow nondeterministically and burns tokens; a scripted CDP driver on our existing substrate is cheaper and more reliable for this known UI.
+- **Why not make `oracle` async**: it is intentionally inline and tool-driven for `pi/slow`; flipping `blocking` regresses the fast-consult case and leaves the chat-only and orchestration gaps.
+- **Why not have the main agent assemble the bundle**: that is the time waste the request calls out; the orchestrator runs on a cheap model off the main loop.
+
+**Follow-up**: ship v0 (native CDP driver against signed-in GPT-5.x Pro) first behind `ultraOracle.enabled`; add reattach plus API fallback in v1; add a self-healing driver in v2 only if selector breakage proves frequent.
+
+---
+
+## 2026-06-02 — eager-todo forced first call double-wraps `ops` under tool_choice   `[done]` `[high]`
+
+**Where**: `packages/coding-agent/src/prompts/system/eager-todo.md:11-13`, regression in `packages/coding-agent/test/agent-session-eager-todo.test.ts:204-220`.
+
+**Problem**: A third, distinct failure of the eager-todo forced first call, observed live this session. After the `details` hallucination (`[done]`, 2026-05-25) and the empty `todo_write({})` case (`[done]`, 2026-05-26), the reminder still induced a double-wrap: the model emitted `{"ops":{"ops":[…]}}`, which fails Zod as `ops: Invalid input: expected array, received object`. This differs from the empty case (`expected array, received undefined`): here `ops` is present but is an object, not the array.
+
+**Root cause**: line 11 said "keep the `ops` wrapper" and line 12 showed the full arguments object `{"ops":[…]}`. Under forced `tool_choice: { type: "tool", name: "todo_write" }` (`utils/tool-choice.ts`), the model emits the tool *arguments*. "keep the `ops` wrapper" reads as "wrap your list in an `ops` object", so the model puts `{"ops":[…]}` as the value of the `ops` argument, producing `{"ops":{"ops":[…]}}`. The literal-example anchor that fixed the empty-`{}` case introduced this new ambiguity.
+
+**Fix shipped**: reworded line 11 to state `ops` is the single top-level argument whose value is the array shown, with an explicit "do not nest another `ops` inside it"; added line 13 naming the failure (`a value like { "ops": { "ops": … } }` is rejected as `ops: expected array, received object`). Extended the regression test to assert the anchored example is a flat `ops` array (`Array.isArray(parsed.ops)`, `parsed.ops[0]` has no nested `ops`) and that the reminder names the double-wrap failure (`received object`). Verified: `bun test test/agent-session-eager-todo.test.ts` reports 6 pass.
+
+**Not addressed (out of scope, not a prompt bug)**: the first `todo_write` this session failed with "Request was aborted", a transient runtime abort unrelated to payload shape. No prompt change fixes that; it routes through the normal abort/retry path.
+
+**Why not auto-recover server-side**: same reasoning as the empty-`{}` entry (2026-05-26): unwrapping `{"ops":{"ops":…}}` in the tool dispatcher couples validation to prompt heuristics. The prompt anchor fixes every forced-tool-choice surface for every model at zero runtime cost.
+
+**Follow-up**: if the literal-example anchor was upstreamed to `can1357/oh-my-pi`, it carries the same ambiguity; upstream the reword plus the test hardening alongside the prior two eager-todo fixes.
