@@ -5,11 +5,21 @@ import { formatCurrentTime, formatMemories } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";
 
+const tagSchema = z.string().min(1).describe("memory tag");
+
 const memoryRecallSchema = z.object({
 	query: z.string().describe("natural language search query"),
+	tags: z.array(tagSchema).min(1).describe("optional tag filter").optional(),
+	tagsMatch: z.enum(["any", "all"]).describe("match any tag or require all tags").optional(),
 });
 
 export type MemoryRecallParams = z.infer<typeof memoryRecallSchema>;
+
+function mergeTags(baseTags: string[] | undefined, extraTags: string[] | undefined): string[] | undefined {
+	if (!baseTags?.length) return extraTags;
+	if (!extraTags?.length) return baseTags;
+	return [...new Set([...baseTags, ...extraTags])];
+}
 
 export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	readonly name = "recall";
@@ -67,12 +77,13 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 			}
 
 			try {
+				const tags = mergeTags(state.recallTags, params.tags);
 				const response = await state.client.recall(state.bankId, params.query, {
 					budget: state.config.recallBudget,
 					maxTokens: state.config.recallMaxTokens,
 					types: state.config.recallTypes.length > 0 ? state.config.recallTypes : undefined,
-					tags: state.recallTags,
-					tagsMatch: state.recallTagsMatch,
+					tags,
+					tagsMatch: params.tagsMatch ?? state.recallTagsMatch,
 				});
 				const results = response.results ?? [];
 				if (results.length === 0) {

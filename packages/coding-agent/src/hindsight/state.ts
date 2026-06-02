@@ -23,9 +23,16 @@ import { extractMessages } from "./transcript";
 const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
 
+function mergeTags(baseTags: string[] | undefined, extraTags: string[] | undefined): string[] | undefined {
+	if (!baseTags?.length) return extraTags;
+	if (!extraTags?.length) return baseTags;
+	return [...new Set([...baseTags, ...extraTags])];
+}
+
 interface PendingRetainItem {
 	content: string;
 	context?: string;
+	tags?: string[];
 }
 
 interface RecallOutcome {
@@ -80,11 +87,11 @@ export class HindsightRetainQueue {
 		return this.#items.length;
 	}
 
-	enqueue(content: string, context?: string): void {
+	enqueue(content: string, context?: string, tags?: string[]): void {
 		if (this.#closed) {
 			throw new Error("Hindsight retain queue is closed.");
 		}
-		this.#items.push({ content, context });
+		this.#items.push({ content, context, tags });
 
 		if (this.#items.length >= RETAIN_FLUSH_BATCH_SIZE) {
 			void this.flush();
@@ -153,7 +160,7 @@ export class HindsightRetainQueue {
 				content: item.content,
 				context: item.context ?? state.config.retainContext,
 				metadata: { session_id: sessionId },
-				tags: state.retainTags,
+				tags: mergeTags(state.retainTags, item.tags),
 			}));
 			await state.client.retainBatch(state.bankId, batch, { async: true });
 			if (state.config.debug) {
@@ -243,8 +250,8 @@ export class HindsightSessionState {
 		this.lastRecallSnippet = undefined;
 	}
 
-	enqueueRetain(content: string, context?: string): void {
-		this.retainQueue.enqueue(content, context);
+	enqueueRetain(content: string, context?: string, tags?: string[]): void {
+		this.retainQueue.enqueue(content, context, tags);
 	}
 
 	async flushRetainQueue(): Promise<void> {

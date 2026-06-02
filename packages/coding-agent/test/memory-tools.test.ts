@@ -265,7 +265,7 @@ describe("retain.execute", () => {
 		expect(registeredState?.retainQueue.depth).toBe(1);
 	});
 
-	it("flushes a multi-item tool call as a single retainBatch call with per-item context", async () => {
+	it("flushes a multi-item tool call as a single retainBatch call with per-item context and tags", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
@@ -273,7 +273,7 @@ describe("retain.execute", () => {
 
 		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
 		const result = await tool.execute("call-batch", {
-			items: [{ content: "fact one" }, { content: "fact two", context: "user override" }],
+			items: [{ content: "fact one" }, { content: "fact two", context: "user override", tags: ["decision"] }],
 		});
 		expect(result.content[0]).toEqual({ type: "text", text: "2 memories queued." });
 
@@ -293,7 +293,7 @@ describe("retain.execute", () => {
 				content: "fact two",
 				context: "user override",
 				metadata: { session_id: TEST_SESSION_ID },
-				tags: ["project:pi"],
+				tags: ["project:pi", "decision"],
 			}),
 		]);
 		expect(registeredState?.retainQueue.depth).toBe(0);
@@ -602,6 +602,26 @@ describe("recall.execute", () => {
 			"test-bank",
 			"anything",
 			expect.objectContaining({ tags: ["project:pi"], tagsMatch: "any" }),
+		);
+	});
+
+	it("merges tool-supplied recall tags with session scope tags", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		registerState(client, settings, { recallTags: ["project:pi"], recallTagsMatch: "any" });
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		await tool.execute("call-tool-tags", {
+			query: "anything",
+			tags: ["harness:vacpi", "project:pi"],
+			tagsMatch: "all",
+		});
+
+		expect(recallSpy).toHaveBeenCalledWith(
+			"test-bank",
+			"anything",
+			expect.objectContaining({ tags: ["project:pi", "harness:vacpi"], tagsMatch: "all" }),
 		);
 	});
 

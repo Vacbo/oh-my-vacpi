@@ -14,6 +14,7 @@
 - Added a disabled-by-default, loopback-only TUI input-control bridge: `TUI.injectInput()`, a per-session control registry with a bearer token, a gated `POST /api/sessions/:runId/input` endpoint, and audit logging. Settings: `tui.control.enabled` (default off), `tui.control.requireToken` (default on), `tui.control.logInputs` (default on).
 - Added mirror API endpoints and a live `text/event-stream` feed: `GET /api/sessions/:runId/{terminal,events,stream}`, a `mode=photo` render, and stable DOM selectors (`[data-terminal-row]`, `[data-terminal-cell]`, `[data-cursor]`).
 - Enriched terminal snapshots with dim/blink/invisible/strikethrough/overline cell attributes, palette-vs-RGB color modes (resolved to CSS for the mirror), and cursor visibility/style derived from the recorded ANSI stream.
+- Added optional Hindsight tag support to the model-facing `recall` and `retain` tools: `recall` can now filter by `tags`/`tagsMatch`, and retained items can attach tags that are merged with the active session scope tags.
 
 #### Changed
 

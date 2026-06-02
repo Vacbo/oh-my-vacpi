@@ -3,12 +3,15 @@ import * as z from "zod/v4";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
 import type { ToolSession } from ".";
 
+const tagSchema = z.string().min(1).describe("memory tag");
+
 const memoryRetainSchema = z.object({
 	items: z
 		.array(
 			z.object({
 				content: z.string().describe("information to remember"),
 				context: z.string().describe("source context").optional(),
+				tags: z.array(tagSchema).min(1).describe("optional tags for this memory").optional(),
 			}),
 		)
 		.min(1)
@@ -78,7 +81,7 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 		// its debounce timer fires. If the eventual batch fails, the queue
 		// surfaces a UI-only warning notice — the LLM is not informed.
 		for (const item of params.items) {
-			state.enqueueRetain(item.content, item.context);
+			state.enqueueRetain(item.content, item.context, item.tags);
 		}
 
 		const count = params.items.length;
