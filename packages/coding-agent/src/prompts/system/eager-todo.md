@@ -8,8 +8,9 @@ Task descriptions MUST be specific. A future turn MUST execute them without re-p
 You MUST keep task `content` to a short label (5-10 words). Implementation specifics (file paths, steps) belong in a follow-up `note` op, not in `init`/`append` items — those accept bare strings only.
 You MUST keep exactly one task `in_progress` and all later tasks `pending`.
 
-The call MUST match this exact shape (replace the placeholders, keep the `ops` wrapper):
+The call MUST match this exact arguments object: `ops` is the single top-level argument and its value is the array shown below (replace the placeholders). Do NOT nest another `ops` inside it.
 `{"ops":[{"op":"init","list":[{"phase":"<Phase name>","items":["<task 1>","<task 2>"]}]}]}`
+NEVER double-wrap the argument: a value like `{ "ops": { "ops": … } }` is rejected as `ops: expected array, received object`. The `ops` value is the array itself, not an object.
 
 After `todo_write` succeeds, continue the request in the same turn.
 Do not call `todo_write` again unless task state materially changed.

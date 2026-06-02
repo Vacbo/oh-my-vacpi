@@ -213,6 +213,11 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(parsed.ops[0]?.op).toBe("init");
 		expect(parsed.ops[0]?.list[0]?.phase).toBeTypeOf("string");
 		expect(parsed.ops[0]?.list[0]?.items.length).toBeGreaterThan(0);
+		// Regression: the anchored example must be a flat ops array, never a double-wrapped {"ops":{"ops":...}}.
+		expect(Array.isArray(parsed.ops)).toBe(true);
+		expect(parsed.ops[0]).not.toHaveProperty("ops");
+		// The reminder must name the double-wrap failure so the model avoids it under forced tool_choice.
+		expect(reminderText.toLowerCase()).toContain("received object");
 	});
 
 	it("initializes todos once, then continues within the same user turn", async () => {
