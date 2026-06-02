@@ -208,6 +208,7 @@ import { extractFileMentions, generateFileMentionMessages } from "../utils/file-
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AuthStorage } from "./auth-storage";
 import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome } from "./client-bridge";
+import type { LiveSessionRegistration } from "./live-session-registry";
 import {
 	type BashExecutionMessage,
 	type CompactionSummaryMessage,
@@ -369,6 +370,7 @@ export interface AgentSessionConfig {
 	 * so that credential sticky selection is consistent with the session's streaming calls.
 	 */
 	providerSessionId?: string;
+	liveSession?: LiveSessionRegistration;
 }
 
 /** Options for AgentSession.prompt() */
@@ -998,6 +1000,7 @@ export class AgentSession {
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	#hindsightSessionState: HindsightSessionState | undefined = undefined;
 	readonly rawSseDebugBuffer: RawSseDebugBuffer;
+	#liveSession: LiveSessionRegistration | undefined;
 
 	#acquirePowerAssertion(): void {
 		if (process.platform !== "darwin") return;
@@ -1168,6 +1171,7 @@ export class AgentSession {
 		this.#obfuscator = config.obfuscator;
 		this.#agentId = config.agentId;
 		this.#agentRegistry = config.agentRegistry;
+		this.#liveSession = config.liveSession;
 		this.#providerSessionId = config.providerSessionId;
 		this.#syncToolCallBatchCap();
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
@@ -1293,6 +1297,10 @@ export class AgentSession {
 		return this.#hindsightSessionState;
 	}
 
+	getLiveSession(): LiveSessionRegistration | undefined {
+		return this.#liveSession;
+	}
+
 	setHindsightSessionState(state: HindsightSessionState | undefined): HindsightSessionState | undefined {
 		const previous = this.#hindsightSessionState;
 		this.#hindsightSessionState = state;
@@ -1395,6 +1403,7 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	#emit(event: AgentSessionEvent): void {
+		this.#liveSession?.recordEvent(event);
 		// Copy array before iteration to avoid mutation during iteration.
 		const listeners = [...this.#eventListeners];
 		for (const l of listeners) {
@@ -2841,6 +2850,11 @@ export class AgentSession {
 		this.agent.setMetadataResolver((provider: string) =>
 			buildSessionMetadata(sid, provider, this.#modelRegistry.authStorage),
 		);
+		this.#liveSession?.refresh({
+			sessionId: sid,
+			sessionFile: this.sessionManager.getSessionFile() ?? null,
+			model: this.model ? `${this.model.provider}/${this.model.id}` : undefined,
+		});
 	}
 
 	#rekeyHindsightMemoryForCurrentSessionId(): void {
@@ -2937,6 +2951,13 @@ export class AgentSession {
 		hindsightState?.dispose();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
 		mnemopiState?.dispose();
+		const liveSession = this.#liveSession;
+		this.#liveSession = undefined;
+		try {
+			await liveSession?.dispose("stopped");
+		} catch (error) {
+			logger.warn("Failed to dispose live session registration", { error: String(error) });
+		}
 		this.#disconnectFromAgent();
 		if (this.#unsubscribeAppendOnly) {
 			this.#unsubscribeAppendOnly();

@@ -101,6 +101,7 @@ import {
 import { AgentSession } from "./session/agent-session";
 import { resolveAuthBrokerConfig } from "./session/auth-broker-config";
 import { AuthBrokerClient, AuthStorage, RemoteAuthCredentialStore } from "./session/auth-storage";
+import { type LiveSessionRegistration, registerLiveSession } from "./session/live-session-registry";
 import { type CustomMessage, convertToLlm } from "./session/messages";
 import { SessionManager } from "./session/session-manager";
 import { closeAllConnections } from "./ssh/connection-manager";
@@ -337,6 +338,8 @@ export interface CreateAgentSessionOptions {
 	/** Session manager. Default: session stored under the configured agentDir sessions root */
 	sessionManager?: SessionManager;
 
+	/** Runtime mode recorded by the live session registry. */
+	liveMode?: "interactive" | "text" | "rpc" | "rpc-ui" | "acp" | "unknown";
 	/** Override local:// protocol options for subagent local:// sharing. Default: uses the session's own artifacts dir and session ID. */
 	localProtocolOptions?: LocalProtocolOptions;
 
@@ -613,7 +616,7 @@ function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 function isCustomTool(tool: CustomTool | ToolDefinition): tool is CustomTool {
 	// To distinguish, we mark converted tools with a hidden symbol property.
 	// If the tool doesn't have this marker, it's a CustomTool that needs conversion.
-	return !(tool as any).__isToolDefinition;
+	return !((tool as { [TOOL_DEFINITION_MARKER]?: true })[TOOL_DEFINITION_MARKER] === true);
 }
 
 const TOOL_DEFINITION_MARKER = Symbol("__isToolDefinition");
@@ -1115,13 +1118,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// work continues so caches still warm.
 	const raceWithDeadline = async <T>(name: string, work: Promise<T>): Promise<T | undefined> => {
 		let timedOut = false;
-		const result = await Promise.race([
-			work,
-			Bun.sleep(STARTUP_SCAN_DEADLINE_MS).then(() => {
-				timedOut = true;
-				return undefined;
-			}),
-		]);
+		const timeout = Promise.withResolvers<undefined>();
+		const timer = setTimeout(() => {
+			timedOut = true;
+			timeout.resolve(undefined);
+		}, STARTUP_SCAN_DEADLINE_MS);
+		const result = await Promise.race([work, timeout.promise]);
+		clearTimeout(timer);
 		if (timedOut) {
 			logger.warn("Startup scan exceeded deadline; deferring to system prompt fallback", {
 				name,
@@ -1194,6 +1197,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const resolvedAgentDisplayName =
 		options.agentDisplayName ?? ((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main");
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
+	let liveSession: LiveSessionRegistration | undefined;
 
 	try {
 		const getActiveModelString = (): string | undefined => {
@@ -1202,6 +1206,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (model) return formatModelString(model);
 			return undefined;
 		};
+		if (!options.parentTaskPrefix) {
+			try {
+				liveSession = await registerLiveSession({
+					agentDir,
+					cwd,
+					agentId: resolvedAgentId,
+					sessionId: providerSessionId,
+					sessionFile: sessionManager.getSessionFile() ?? null,
+					mode: options.liveMode ?? (options.hasUI ? "interactive" : "text"),
+					model: getActiveModelString(),
+				});
+			} catch (error) {
+				logger.warn("Failed to register live session", { error: String(error) });
+			}
+		}
 		const toolSession: ToolSession = {
 			get cwd() {
 				return sessionManager.getCwd();
@@ -2052,6 +2071,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			agentRegistry,
 			providerSessionId: options.providerSessionId,
 			parentEvalSessionId: options.parentEvalSessionId,
+			liveSession,
 		});
 		hasSession = true;
 		if (asyncJobManager) {
@@ -2230,6 +2250,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			} else {
 				if (hasRegistered) agentRegistry.unregister(resolvedAgentId);
 				await disposeKernelSessionsByOwner(evalKernelOwnerId);
+				await liveSession?.dispose("stopped");
 			}
 		} catch (cleanupError) {
 			logger.warn("Failed to clean up createAgentSession resources after startup error", {

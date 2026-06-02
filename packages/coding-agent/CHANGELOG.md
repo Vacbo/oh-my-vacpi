@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### oh-my-vacpi (fork)
+
+#### Added
+
+- Added live TUI observability primitives: a bounded session registry under `~/.omp/agent/runs`, JSONL session event streams, `omp sessions` inspection commands, terminal snapshots backed by `@xterm/headless`, and a read-only browser mirror for DOM/queryable session state.
+- Added the model-facing `tui_observe` tool (gated by `tui.observe.enabled`, default on) with `list`, `snapshot`, `events`, `mirror`, `screenshot`, `native_screenshot`, and `bash_snapshots` actions, so a model can inspect a running OMP session's structured terminal state, recent events, browser mirror URL, and screenshots. Read actions are auto-approved; `screenshot`/`native_screenshot` require exec approval.
+- Added browser-mirror screenshots: `tui_observe screenshot` renders a session's terminal through a loopback mirror photo view and captures a PNG via the existing headless-browser pipeline. Destination resolves `tui.screenshotDir`, then `browser.screenshotDir`, then a temp file.
+- Added optional native terminal-window capture (`tui.nativeCapture.enabled`, default off): macOS `screencapture -l <windowId>`, Linux X11 (`maim`/`import` via `xdotool`) and Wayland (`grim` with sway/hyprland geometry). It resolves a specific window or returns a typed failure, and never falls back to a full-screen capture. Tunable via `tui.nativeCapture.preferredApp`, `tui.nativeCapture.screenshotDir`, and `tui.nativeCapture.includeWindowChrome`.
+- Added interactive (pty) bash TUI snapshots: `bash` with `pty: true` captures the final terminal state into a process-local ring, surfaces a `tuiSnapshotId` on the result, and exposes it through `tui_observe bash_snapshots` for inspecting a child `omp` build's TUI.
+- Added a disabled-by-default, loopback-only TUI input-control bridge: `TUI.injectInput()`, a per-session control registry with a bearer token, a gated `POST /api/sessions/:runId/input` endpoint, and audit logging. Settings: `tui.control.enabled` (default off), `tui.control.requireToken` (default on), `tui.control.logInputs` (default on).
+- Added mirror API endpoints and a live `text/event-stream` feed: `GET /api/sessions/:runId/{terminal,events,stream}`, a `mode=photo` render, and stable DOM selectors (`[data-terminal-row]`, `[data-terminal-cell]`, `[data-cursor]`).
+- Enriched terminal snapshots with dim/blink/invisible/strikethrough/overline cell attributes, palette-vs-RGB color modes (resolved to CSS for the mirror), and cursor visibility/style derived from the recorded ANSI stream.
+
+#### Changed
+
+- Changed `omp update` in the fork to start a fresh slow-model agent session for merging the latest upstream tag, instead of installing the upstream package or release binary over fork-specific changes. The session is pinned to the fork checkout (`OMP_VACPI_REPO_DIR`, default `~/Documents/Projects/oh-my-vacpi`) so the merge always edits the right repo regardless of the cwd `omp update` ran from.
+
+#### Fixed
+
+- Fixed `omp sessions watch`/`inspect` throwing an uncaught exception when no run id was passed (`watch requires a run id`). `watch` now defaults to the only running registry-backed session, prints a concise error listing run ids when ambiguous, and rejects process-only sessions (no event stream) with a friendly message; `inspect` reports a typed not-found/usage error. Errors print to stderr with a non-zero exit instead of a stack trace.
+
 ### Added
 
 - Added `launchApp` per-server stdio MCP option that ensures a macOS app backing the server is running before spawning the proxy command. Accepts a string shorthand (`"Repo Prompt"`) for background launch, or `{ path, foreground? }` for explicit control. Resolves the RepoPrompt-CLI-hangs-when-app-is-closed footgun: `omp` now auto-`open -gja`s the app at session start instead of spinning forever on a dead proxy.
@@ -11,7 +32,6 @@
 ### Changed
 
 - Bounded MCP tool discovery (`tools/list`) by `connectTimeoutMs` on both initial-connect and reconnect paths, with atomic transport cleanup on timeout — previously a hung `tools/list` could orphan a half-open connection with no tools, and on reconnect could hang for the full `config.timeout` (up to 4h in user configs) on every retry.
-- Changed `omp update` in the fork to start a fresh slow-model agent session for merging the latest upstream tag, instead of installing the upstream package or release binary over fork-specific changes. The session is pinned to the fork checkout (`OMP_VACPI_REPO_DIR`, default `~/Documents/Projects/oh-my-vacpi`) so the merge always edits the right repo regardless of the cwd `omp update` ran from.
 - Captured the subprocess exit code in `StdioTransport`'s `Transport closed` rejection (`Transport closed (subprocess exit code N)`) so logs and the classifier can distinguish "process exited without responding" from generic transport drops.
 - Wrapped HTTP transport `fetch` rejections to preserve Bun's `code` field (e.g. `ConnectionRefused`) and to include the URL in the error message, so the classifier can map them and operators can see which endpoint failed.
 - Synced the agent session against the live MCP tool list immediately after wiring `setOnToolsChanged`, closing a startup race where a server whose handshake settled between `discoverAndLoadMCPTools` returning and the callback being wired would have its tools forever invisible to the session.

@@ -17,6 +17,7 @@ import { Settings } from "../config/settings";
 import { NON_INTERACTIVE_ENV } from "../exec/non-interactive-env";
 import type { Theme } from "../modes/theme/theme";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
+import { type TerminalSnapshot, TerminalSnapshotRecorder } from "../session/terminal-snapshot";
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
 import { formatStatusIcon, replaceTabs } from "./render-utils";
@@ -25,6 +26,7 @@ export interface BashInteractiveResult extends OutputSummary {
 	exitCode: number | undefined;
 	cancelled: boolean;
 	timedOut: boolean;
+	terminalSnapshot?: TerminalSnapshot;
 }
 
 function normalizeCaptureChunk(chunk: string): string {
@@ -310,6 +312,9 @@ export async function runInteractiveBashPty(
 			const session = new PtySession();
 			const component = new BashInteractiveOverlayComponent(options.command, uiTheme, () => tui.terminal.rows);
 			component.setSession(session);
+			const cols = Math.max(20, tui.terminal.columns - 2);
+			const rows = Math.max(5, tui.terminal.rows - 4);
+			const snapshotRecorder = new TerminalSnapshotRecorder({ path: "", cols, rows });
 			let finished = false;
 			const finalize = (run: PtyRunResult) => {
 				if (finished) return;
@@ -319,16 +324,18 @@ export async function runInteractiveBashPty(
 				void (async () => {
 					await component.flushOutput();
 					const summary = await sink.dump();
+					await snapshotRecorder.flush();
+					const terminalSnapshot = snapshotRecorder.snapshot();
+					snapshotRecorder.dispose();
 					done({
 						exitCode: run.exitCode,
 						cancelled: run.cancelled,
 						timedOut: run.timedOut,
 						...summary,
+						terminalSnapshot,
 					});
 				})();
 			};
-			const cols = Math.max(20, tui.terminal.columns - 2);
-			const rows = Math.max(5, tui.terminal.rows - 4);
 			component.setHandlers(
 				data => {
 					try {
@@ -370,6 +377,7 @@ export async function runInteractiveBashPty(
 					(err, chunk) => {
 						if (finished || err || !chunk) return;
 						component.appendOutput(chunk);
+						snapshotRecorder.write(chunk);
 						const normalizedChunk = normalizeCaptureChunk(chunk);
 						sink.push(normalizedChunk);
 						tui.requestRender();

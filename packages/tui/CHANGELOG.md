@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### oh-my-vacpi (fork)
+
+#### Added
+
+- Added `TUI.injectInput(data)`, a public method that feeds input through the same dispatch path as real terminal input (input listeners, focus, overlays), so it never bypasses focus/overlay logic. Used only by the gated, loopback-only session input-control bridge in the coding agent.
+
 ## [15.7.6] - 2026-06-01
 
 ### Fixed

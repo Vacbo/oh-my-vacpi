@@ -109,6 +109,88 @@ export interface Terminal {
 	get appearance(): TerminalAppearance | undefined;
 }
 
+export type TerminalWriteListener = (data: string) => void;
+
+export class TeeTerminal implements Terminal {
+	constructor(
+		readonly inner: Terminal,
+		readonly onWrite: TerminalWriteListener,
+	) {}
+
+	start(onInput: (data: string) => void, onResize: () => void): void {
+		this.inner.start(onInput, onResize);
+	}
+
+	stop(): void {
+		this.inner.stop();
+	}
+
+	drainInput(maxMs?: number, idleMs?: number): Promise<void> {
+		return this.inner.drainInput(maxMs, idleMs);
+	}
+
+	write(data: string): void {
+		this.inner.write(data);
+		this.onWrite(data);
+	}
+
+	get columns(): number {
+		return this.inner.columns;
+	}
+
+	get rows(): number {
+		return this.inner.rows;
+	}
+
+	get kittyProtocolActive(): boolean {
+		return this.inner.kittyProtocolActive;
+	}
+
+	moveBy(lines: number): void {
+		this.inner.moveBy(lines);
+	}
+
+	hideCursor(): void {
+		this.inner.hideCursor();
+	}
+
+	showCursor(): void {
+		this.inner.showCursor();
+	}
+
+	clearLine(): void {
+		this.inner.clearLine();
+	}
+
+	clearFromCursor(): void {
+		this.inner.clearFromCursor();
+	}
+
+	clearScreen(): void {
+		this.inner.clearScreen();
+	}
+
+	setTitle(title: string): void {
+		this.inner.setTitle(title);
+	}
+
+	setProgress(active: boolean): void {
+		this.inner.setProgress(active);
+	}
+
+	isNativeViewportAtBottom(): boolean | undefined {
+		return this.inner.isNativeViewportAtBottom?.();
+	}
+
+	onAppearanceChange(callback: (appearance: TerminalAppearance) => void): void {
+		this.inner.onAppearanceChange(callback);
+	}
+
+	get appearance(): TerminalAppearance | undefined {
+		return this.inner.appearance;
+	}
+}
+
 function isWindowsSubsystemForLinux(): boolean {
 	return process.platform === "linux" && (!!$env.WSL_DISTRO_NAME || !!$env.WSL_INTEROP);
 }

@@ -756,6 +756,16 @@ export class TUI extends Container {
 		}, delay);
 	}
 
+	/**
+	 * Inject input as if it arrived from the terminal. Routes through the same
+	 * dispatch path as real keyboard input (input listeners, focus, overlays), so
+	 * it never bypasses focus/overlay logic. Used only by gated, loopback-only
+	 * session control; not part of normal interaction flows.
+	 */
+	injectInput(data: string): void {
+		this.#handleInput(data);
+	}
+
 	#handleInput(data: string): void {
 		if (this.#inputListeners.size > 0) {
 			let current = data;

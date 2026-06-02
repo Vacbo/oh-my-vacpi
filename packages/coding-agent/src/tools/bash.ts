@@ -18,6 +18,7 @@ import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { shimmerEnabled } from "../modes/theme/shimmer";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
+import { recordBashTuiSnapshot } from "../session/bash-tui-snapshots";
 import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from "../session/client-bridge";
 import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
@@ -133,6 +134,8 @@ export interface BashToolDetails {
 	/** Exit code of a command that ran to completion but failed (non-zero). */
 	exitCode?: number;
 	terminalId?: string;
+	/** Id of the captured interactive (pty) TUI snapshot, inspectable via tui_observe. */
+	tuiSnapshotId?: string;
 	async?: {
 		state: "running" | "completed" | "failed";
 		jobId: string;
@@ -400,6 +403,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			notices?: readonly string[];
 			terminalId?: string;
 			wallTimeMs?: number;
+			tuiSnapshotId?: string;
 		} = {},
 	): AgentToolResult<BashToolDetails> {
 		const exitCode = result.exitCode;
@@ -415,6 +419,11 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				if (notice) notices.push(notice);
 			}
 		}
+		if (options.tuiSnapshotId) {
+			notices.push(
+				`TUI snapshot captured (id ${options.tuiSnapshotId}). Inspect it with tui_observe { action: "bash_snapshots" }.`,
+			);
+		}
 		if (notices.length > 0) outputLines.push("", ...notices);
 		if (failedExit) outputLines.push("", formatExitCodeNotice(exitCode));
 		const outputText = outputLines.join("\n");
@@ -428,6 +437,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 		if (options.terminalId !== undefined) {
 			details.terminalId = options.terminalId;
+		}
+		if (options.tuiSnapshotId !== undefined) {
+			details.tuiSnapshotId = options.tuiSnapshotId;
 		}
 		if (options.wallTimeMs !== undefined) {
 			details.wallTimeMs = options.wallTimeMs;
@@ -982,6 +994,17 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 				});
 		const wallTimeMs = performance.now() - wallTimeStart;
+		let tuiSnapshotId: string | undefined;
+		if (isInteractiveResult(result) && result.terminalSnapshot) {
+			tuiSnapshotId = recordBashTuiSnapshot({
+				command,
+				cwd: commandCwd,
+				exitCode: result.exitCode,
+				cancelled: result.cancelled,
+				timedOut: result.timedOut,
+				snapshot: result.terminalSnapshot,
+			}).id;
+		}
 		if (result.cancelled) {
 			if (signal?.aborted) {
 				throw new ToolAbortError(normalizeResultOutput(result) || "Command aborted");
@@ -995,6 +1018,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			requestedTimeoutSec,
 			notices: pendingNotices,
 			wallTimeMs,
+			tuiSnapshotId,
 		});
 	}
 }

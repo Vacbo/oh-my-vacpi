@@ -28,6 +28,7 @@ import {
 	Markdown,
 	ProcessTerminal,
 	Spacer,
+	TeeTerminal,
 	Text,
 	TUI,
 	visibleWidth,
@@ -64,6 +65,8 @@ import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext, SessionManager } from "../session/session-manager";
 import { getRecentSessions } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
+import { TerminalSnapshotRecorder } from "../session/terminal-snapshot";
+import { createControlToken, registerTuiControl } from "../session/tui-control";
 import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
 import type { LspStartupServerInfo } from "../tools";
@@ -317,6 +320,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: import("../mcp").MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+	#terminalSnapshotRecorder: TerminalSnapshotRecorder | undefined;
+	#tuiControlUnregister: (() => void) | undefined;
 
 	readonly #btwController: BtwController;
 	readonly #omfgController: OmfgController;
@@ -366,7 +371,28 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 
-		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
+		const baseTerminal = new ProcessTerminal();
+		const liveSession = session.getLiveSession();
+		if (liveSession) {
+			this.#terminalSnapshotRecorder = new TerminalSnapshotRecorder({
+				path: liveSession.terminalSnapshotPath,
+				cols: baseTerminal.columns,
+				rows: baseTerminal.rows,
+			});
+		}
+		const terminal = this.#terminalSnapshotRecorder
+			? new TeeTerminal(baseTerminal, data => {
+					this.#terminalSnapshotRecorder?.resize(baseTerminal.columns, baseTerminal.rows);
+					this.#terminalSnapshotRecorder?.write(data);
+				})
+			: baseTerminal;
+		this.ui = new TUI(terminal, settings.get("showHardwareCursor"));
+		if (liveSession) {
+			this.#tuiControlUnregister = registerTuiControl(liveSession.runId, {
+				injectInput: data => this.ui.injectInput(data),
+				token: createControlToken(),
+			});
+		}
 		this.ui.setClearOnShrink(settings.get("clearOnShrink"));
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
@@ -2200,6 +2226,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#cleanupUnsubscribe) {
 			this.#cleanupUnsubscribe();
 		}
+		const terminalSnapshotRecorder = this.#terminalSnapshotRecorder;
+		this.#terminalSnapshotRecorder = undefined;
+		if (terminalSnapshotRecorder) {
+			void terminalSnapshotRecorder.persist().finally(() => {
+				terminalSnapshotRecorder.dispose();
+			});
+		}
+		this.#tuiControlUnregister?.();
+		this.#tuiControlUnregister = undefined;
 		// Clear the process-global consent handler so it doesn't outlive this
 		// InteractiveMode instance (e.g. test harnesses, headless re-init).
 		setAutoQaConsentHandler(null, null);

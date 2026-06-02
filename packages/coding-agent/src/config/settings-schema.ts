@@ -2393,6 +2393,95 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Live TUI observability (omp sessions / tui_observe)
+	"tui.observe.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "TUI Observe",
+			description:
+				"Enable the tui_observe tool for inspecting live OMP sessions (structured terminal state, events, and screenshots).",
+		},
+	},
+	"tui.screenshotDir": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			label: "TUI screenshot directory",
+			description:
+				"Directory for tui_observe screenshots of live OMP sessions. Falls back to the browser screenshot directory, then a temp file. Supports ~.",
+		},
+	},
+	"tui.nativeCapture.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "Native terminal capture",
+			description:
+				"Allow tui_observe to screenshot the actual terminal window via OS tools (macOS screencapture, Linux grim/maim/import). Privacy-sensitive; disabled by default and never falls back to full-screen capture.",
+		},
+	},
+	"tui.nativeCapture.preferredApp": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			label: "Native capture app",
+			description:
+				"Preferred terminal application name to disambiguate the capture target (e.g. Ghostty, Warp, Terminal, Alacritty, iTerm).",
+		},
+	},
+	"tui.nativeCapture.screenshotDir": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			label: "Native capture directory",
+			description:
+				"Directory for native terminal-window screenshots. Falls back to the TUI screenshot directory, then the browser one, then a temp file. Supports ~.",
+		},
+	},
+	"tui.nativeCapture.includeWindowChrome": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "Native capture window chrome",
+			description: "Include the window title bar/shadow in native captures where the platform supports it.",
+		},
+	},
+	"tui.control.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "TUI input control",
+			description:
+				"Allow the loopback sessions server to inject input into this session's TUI. Disabled by default; only enable for trusted local automation.",
+		},
+	},
+	"tui.control.requireToken": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "Require control token",
+			description: "Require the per-session bearer token for TUI input control requests.",
+		},
+	},
+	"tui.control.logInputs": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "Log control inputs",
+			description: "Write an audit log entry for every TUI input-control attempt.",
+		},
+	},
+
 	// Tool execution
 	"tools.intentTracing": {
 		type: "boolean",
