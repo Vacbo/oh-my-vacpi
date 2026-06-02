@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import * as path from "node:path";
 import { FileType, type GlobMatch, listWorkspace } from "@oh-my-pi/pi-natives";
 import { formatAge, formatBytes } from "@oh-my-pi/pi-utils";
@@ -82,9 +83,18 @@ export async function buildDirectoryTree(cwd: string, options: BuildDirectoryTre
  * Build the workspace tree shown in the system prompt. Returns the rendered
  * tree plus the AGENTS.md files surfaced by the same native walk so callers
  * never need to do a second filesystem scan.
+ *
+ * The user's home directory is intentionally not treated as a workspace root.
+ * Home scans can traverse cloud-synced folders and other repos before native
+ * cancellation gets a chance to run, which delays startup and degrades the
+ * prompt anyway. The CLI normally auto-chdirs from `$HOME`; direct SDK callers
+ * get the same safe fallback here.
  */
 export async function buildWorkspaceTree(cwd: string, options: BuildWorkspaceTreeOptions = {}): Promise<WorkspaceTree> {
 	const rootPath = path.resolve(cwd);
+	if (rootPath === path.resolve(os.homedir())) {
+		return { ...emptyTree(rootPath), agentsMdFiles: [] };
+	}
 	try {
 		const result = await listWorkspace({
 			path: rootPath,

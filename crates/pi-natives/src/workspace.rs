@@ -90,14 +90,17 @@ struct WorkspaceConfig {
 	collect_agents_md: bool,
 }
 
-fn build_workspace_walker(config: &WorkspaceConfig) -> WalkBuilder {
+fn build_workspace_walker(config: &WorkspaceConfig, ct: &task::CancelToken) -> WalkBuilder {
 	let mut builder = WalkBuilder::new(&config.root);
+	let ct_for_filter = ct.clone();
 	builder
 		.hidden(!config.include_hidden)
 		.follow_links(false)
-		.sort_by_file_path(|a, b| a.cmp(b))
 		.max_depth(Some(config.walk_max_depth))
-		.filter_entry(|entry| {
+		.filter_entry(move |entry| {
+			if ct_for_filter.aborted() {
+				return false;
+			}
 			let name = entry.file_name().to_str().unwrap_or_default();
 			if name == ".DS_Store" {
 				return false;
@@ -295,7 +298,7 @@ fn run_list_workspace(
 		&mut root_agents_md_files,
 	);
 
-	let mut builder = build_workspace_walker(&config);
+	let mut builder = build_workspace_walker(&config, &ct);
 	let workers = fs_cache::grep_workers();
 	if workers > 0 {
 		builder.threads(workers);
@@ -316,6 +319,7 @@ fn run_list_workspace(
 	builder.build_parallel().visit(&mut visitor_builder);
 
 	let walk_error = error.lock().take();
+	ct.heartbeat()?;
 	if let Some(error) = walk_error {
 		return Err(Error::from_reason(error));
 	}

@@ -33,6 +33,14 @@ describe("buildWorkspaceTree", () => {
 		await Promise.all(tempDirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
 	});
 
+	it("does not scan the user home directory as a workspace", async () => {
+		const tree = await buildWorkspaceTree(os.homedir());
+
+		expect(tree.rootPath).toBe(path.resolve(os.homedir()));
+		expect(tree.rendered).toBe("");
+		expect(tree.totalLines).toBe(0);
+		expect(tree.agentsMdFiles).toEqual([]);
+	});
 	it("sorts files and directories together by modification time", async () => {
 		const cwd = await makeTempDir();
 		const base = Date.now() - 60_000;

@@ -414,7 +414,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		} satisfies WorkspaceTree,
 	};
 
-	const deadline = Bun.sleep(SYSTEM_PROMPT_PREP_TIMEOUT_MS).then(() => "__timeout__" as const);
 	const timedOut: string[] = [];
 	const failed: Array<{ name: string; error: unknown }> = [];
 
@@ -422,7 +421,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		const tagged = work
 			.then(value => ({ kind: "ok" as const, value }))
 			.catch(error => ({ kind: "err" as const, error }));
-		const result = await Promise.race([tagged, deadline]);
+		const timeout = Promise.withResolvers<"__timeout__">();
+		const timer = setTimeout(() => timeout.resolve("__timeout__"), SYSTEM_PROMPT_PREP_TIMEOUT_MS);
+		const result = await Promise.race([tagged, timeout.promise]);
+		clearTimeout(timer);
 		if (result === "__timeout__") {
 			timedOut.push(name);
 			// Let the work continue in the background so its caches still warm; just log on completion.
@@ -492,9 +494,12 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			timeoutMs: SYSTEM_PROMPT_PREP_TIMEOUT_MS,
 			steps: timedOut,
 		});
-		process.stderr.write(
-			`Warning: system prompt preparation steps timed out after ${SYSTEM_PROMPT_PREP_TIMEOUT_MS}ms (${timedOut.join(", ")}); using minimal fallback for those steps.\n`,
-		);
+		const visibleTimedOut = timedOut.filter(name => name !== "buildWorkspaceTree");
+		if (visibleTimedOut.length > 0) {
+			process.stderr.write(
+				`Warning: system prompt preparation steps timed out after ${SYSTEM_PROMPT_PREP_TIMEOUT_MS}ms (${visibleTimedOut.join(", ")}); using minimal fallback for those steps.\n`,
+			);
+		}
 	}
 	if (failed.length > 0) {
 		for (const { name, error } of failed) {
