@@ -381,14 +381,9 @@ export class TUI extends Container {
 
 	/**
 	 * When enabled, live render frames rebuild native scrollback on offscreen and
-	 * structural changes even when the viewport position is unobservable (POSIX,
-	 * where `isNativeViewportAtBottom()` is `undefined`), instead of deferring to a
-	 * non-destructive repaint. This trades the anti-yank guarantee for a clean,
-	 * duplicate-free history and is meant for windows where output above the fold
-	 * is actively re-rendering — e.g. a tool whose result is still streaming and
-	 * re-laying-out rows that have already scrolled into history. A snap to the tail
-	 * is acceptable there. A terminal that can report a *known*-scrolled viewport
-	 * (Windows) still defers; only the unknown case is forced to rebuild.
+	 * structural changes even when the viewport position is unobservable. This
+	 * keeps terminal history cleaner during foreground streams, but can push
+	 * mouse-scrolled POSIX terminals back to the latest message.
 	 */
 	setEagerNativeScrollbackRebuild(enabled: boolean): void {
 		this.#eagerNativeScrollbackRebuild = enabled;

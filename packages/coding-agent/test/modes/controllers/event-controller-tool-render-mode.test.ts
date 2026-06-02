@@ -8,6 +8,7 @@ function createContext() {
 	const setEagerNativeScrollbackRebuild = vi.fn();
 	const pendingTools = new Map<string, unknown>();
 	const chatContainer = { addChild: vi.fn(), removeChild: vi.fn() };
+	const settings = Settings.instance;
 	const ctx = {
 		isInitialized: true,
 		isBackgrounded: false,
@@ -24,6 +25,7 @@ function createContext() {
 			isTtsrAbortPending: false,
 			retryAttempt: 0,
 		},
+		settings,
 		ui: { setEagerNativeScrollbackRebuild, requestRender: vi.fn() },
 	} as unknown as InteractiveModeContext;
 	return { ctx, pendingTools, setEagerNativeScrollbackRebuild };
@@ -67,7 +69,21 @@ describe("EventController tool render mode", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("enables eager native scrollback rebuild while a foreground tool is pending", async () => {
+	it("keeps eager native scrollback rebuild disabled by default while a foreground tool is pending", async () => {
+		const { ctx, pendingTools, setEagerNativeScrollbackRebuild } = createContext();
+		const controller = new EventController(ctx);
+
+		pendingTools.set("call-1", {});
+		await controller.handleEvent(REFRESH_TRIGGER);
+		expect(setEagerNativeScrollbackRebuild).toHaveBeenLastCalledWith(false);
+
+		pendingTools.clear();
+		await controller.handleEvent(REFRESH_TRIGGER);
+		expect(setEagerNativeScrollbackRebuild).toHaveBeenLastCalledWith(false);
+	});
+
+	it("enables eager native scrollback rebuild for foreground tools when setting is enabled", async () => {
+		Settings.instance.set("tui.rebuildScrollbackDuringStreaming", true);
 		const { ctx, pendingTools, setEagerNativeScrollbackRebuild } = createContext();
 		const controller = new EventController(ctx);
 
@@ -80,7 +96,22 @@ describe("EventController tool render mode", () => {
 		expect(setEagerNativeScrollbackRebuild).toHaveBeenLastCalledWith(false);
 	});
 
-	it("enables eager native scrollback rebuild while assistant text is streaming", async () => {
+	it("keeps eager native scrollback rebuild disabled by default while assistant text is streaming", async () => {
+		const { ctx, setEagerNativeScrollbackRebuild } = createContext();
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent({
+			type: "message_start",
+			message: ASSISTANT_MESSAGE,
+		} as unknown as AgentSessionEvent);
+		expect(setEagerNativeScrollbackRebuild).toHaveBeenLastCalledWith(false);
+
+		await controller.handleEvent({ type: "message_end", message: ASSISTANT_MESSAGE } as unknown as AgentSessionEvent);
+		expect(setEagerNativeScrollbackRebuild).toHaveBeenLastCalledWith(false);
+	});
+
+	it("enables eager native scrollback rebuild for assistant streaming when setting is enabled", async () => {
+		Settings.instance.set("tui.rebuildScrollbackDuringStreaming", true);
 		const { ctx, setEagerNativeScrollbackRebuild } = createContext();
 		const controller = new EventController(ctx);
 
@@ -95,6 +126,7 @@ describe("EventController tool render mode", () => {
 	});
 
 	it("resets eager native scrollback rebuild when a stream ends without assistant message_end", async () => {
+		Settings.instance.set("tui.rebuildScrollbackDuringStreaming", true);
 		const { ctx, setEagerNativeScrollbackRebuild } = createContext();
 		const controller = new EventController(ctx);
 

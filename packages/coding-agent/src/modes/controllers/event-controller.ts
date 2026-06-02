@@ -174,12 +174,11 @@ export class EventController {
 		await run(event);
 		// While assistant text or a foreground tool is streaming, rows above the
 		// viewport can re-layout after they have already entered native scrollback
-		// (Markdown fences, wrapping, previews). Let the TUI rebuild history on
-		// those offscreen edits instead of deferring, which otherwise leaves stale
-		// tail rows duplicated above the live viewport.
-		// Background-running tools are excluded so late async updates outside the
-		// active foreground stream keep the no-yank deferral; agent_start resets
-		// the mode at every turn boundary.
+		// (Markdown fences, wrapping, previews). The TUI can rebuild history on
+		// those offscreen edits instead of deferring, which keeps history cleaner
+		// but may yank readers who used native mouse scrollback on terminals that
+		// cannot report viewport position. Keep that behavior opt-in through
+		// `tui.rebuildScrollbackDuringStreaming`.
 		if (STREAM_RENDER_MODE_EVENTS[event.type]) {
 			this.#refreshToolRenderMode();
 		}
@@ -195,7 +194,9 @@ export class EventController {
 				}
 			}
 		}
-		this.ctx.ui.setEagerNativeScrollbackRebuild(foregroundToolActive);
+		this.ctx.ui.setEagerNativeScrollbackRebuild(
+			foregroundToolActive && this.ctx.settings.get("tui.rebuildScrollbackDuringStreaming"),
+		);
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {

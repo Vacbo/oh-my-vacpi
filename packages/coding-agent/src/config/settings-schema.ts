@@ -667,6 +667,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tui.rebuildScrollbackDuringStreaming": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			label: "Rebuild Scrollback During Streaming",
+			description:
+				"Experimental: clear and replay terminal scrollback while assistant or tool output streams to keep native history cleaner. Can push mouse-scrolled terminals back to the latest message.",
+		},
+	},
+
 	// ────────────────────────────────────────────────────────────────────────
 	// Model
 	// ────────────────────────────────────────────────────────────────────────
