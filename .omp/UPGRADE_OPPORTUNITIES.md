@@ -5,6 +5,75 @@ Running log of vacpi-specific upgrade ideas: prompt bugs, missing features, inte
 **Status tags**: `[open]` `[in-progress]` `[done]` `[wontfix]` `[deferred]`
 **Severity tags**: `[crit]` `[high]` `[med]` `[low]` `[chore]`
 
+## Repository topology (read me first)
+
+This repo is a **fork of a fork**. Three Git remotes are configured; agents working on this codebase MUST keep the directions straight.
+
+| Remote | Repo | Role |
+|---|---|---|
+| `origin` | `Vacbo/oh-my-vacpi` | This fork. Where vacpi-specific features and prefetches land. |
+| `upstream` | `can1357/oh-my-pi` | The intermediate fork ("oh-my-pi"). Adds power-user features on top of pi — most notably MCP server integration, the worktree CLI, the auth-gateway, omp-stats, and the AuthStorage rework. Maintained primarily by `can1357` + the `roboomp` automation account. |
+| `pi` | `earendil-works/pi` | The **original** Pi Agent. Maintained primarily by Mario Zechner with Armin Ronacher and others. Source of truth for the core agent/AI/streaming architecture. |
+
+**Direction of code flow** (typical): pi → oh-my-pi → vacpi. Fixes that originate in pi may take weeks to reach oh-my-pi, and may never reach vacpi unless explicitly prefetched.
+
+**Why we forked oh-my-pi instead of going back to pi**: oh-my-pi ships the MCP integration and power-user UX (worktrees, auth-gateway, stats dashboard, etc.) that aren't in the upstream Pi Agent. Rebuilding all of that on top of bare pi would be a multi-week effort with no clear payoff. The trade-off accepted is that oh-my-pi's core code quality is sometimes less mature than pi's — Mario's architectural patterns tend to land later in oh-my-pi via merges or independent reimplementation. When investigating a bug in `packages/ai/` or `packages/agent/`, check `pi/main` first; the fix may already exist upstream.
+
+**Useful git commands**:
+```bash
+# Survey recent pi work touching a specific area
+git log pi/main --oneline -- packages/ai/src/providers/anthropic.ts
+
+# See what pi has that oh-my-pi doesn't yet (one-way)
+git log upstream/main..pi/main --oneline -- packages/ai/
+
+# See what pi shipped vs an old vacpi version
+git log v15.0.0..pi/main --pretty=format:"%h %ad %s" --date=short -- packages/ai/
+
+# Inspect a specific Mario commit
+git show <sha> --stat
+
+# Refresh all three remotes
+git fetch --all --tags
+```
+
+**Refresh cadence**: `git fetch pi --tags` periodically (Mario ships frequently; the pi `bigrefactor` branch is the place to look for in-flight architectural rewrites). For ongoing oh-my-pi prefetches, `git fetch upstream` first, then survey via `git log upstream/main HEAD..upstream/main --oneline`.
+
+---
+
+## 2026-05-26 — Hindsight integration: per-harness observability gaps   `[open]` `[med]`
+
+**Where**: `packages/coding-agent/src/hindsight/{state.ts,backend.ts,client.ts,content.ts}`, plus `packages/coding-agent/src/slash-commands/builtin-registry.ts` for the proposed `/memory list`.
+
+**Context**: User runs Hindsight across multiple coding harnesses (vacpi + Codex + Claude integrations) targeting a shared `Vacbo` bank. Wants to evaluate which harness produces what kind of memories and tune accordingly. Current vacpi flow is "send full session transcript on `agent_end` gated by `retainEveryNTurns`; Hindsight server extracts/dedups/consolidates." All the cross-harness comparison friction lives at the metadata/tooling layer, not the wire protocol.
+
+### Confirmed flow (read-only audit, no changes)
+
+- **Sent**: flat plain-text transcript of user + assistant messages only. Tool calls, results, bash, thinking, custom messages are dropped. `<memories>` and `<mental_models>` tags are stripped before send (anti-feedback loop).
+- **Triggered**: `HindsightSessionState.attachSessionListeners` subscribes to `agent_end`. `maybeRetainOnAgentEnd` gates on `userTurns - lastRetainedTurn >= retainEveryNTurns`.
+- **Wire**: `POST /v1/default/banks/Vacbo/memories` with `{ items: [{ content, document_id: <session-id>, tags: ["project:<basename>"], context: "Pi Coding Agent session transcript", metadata: { session_id } }], async: true }`. Stable `document_id` makes Hindsight treat re-uploads as document-replace + re-consolidate (full-session retainMode behavior).
+- **Server-side decision**: Hindsight runs LLM extraction → typed memory items (`experience`, `world`, `decision`, etc.) → dedup against existing bank memories → consolidate. Harness is dumb; Hindsight is the editor.
+
+### Recommended upgrades (none implemented)
+
+1. **`harness:vacpi` retain tag** `[high]` — add to `retainTags` in `HindsightConfig` (or always-append in `retainSession`). Other harnesses' plugins add their own tag. Then the Hindsight UI / `listMemories` query can filter by `tag = harness:vacpi` for direct per-harness comparison. ~5 LOC. **Coordination cost**: requires the Codex and Claude Hindsight plugins to adopt matching `harness:<name>` tags for the comparison to be symmetric.
+
+2. **`/memory list` slash command** `[med]` — vacpi has `/memory clear` and `/memory enqueue` but no list. `HindsightApi.listMemories(bankId, { limit, offset, q })` already exists in `client.ts:330`. Add a TUI renderer (item table grouped by type, with metadata + tag preview). ~50 LOC, makes the bank browseable without opening the Hindsight UI or installing the MCP server.
+
+3. **Document the `retainMode` trade-off** `[low]` — `"full-session"` produces fewer, larger, contextually-rich memories per session (one document replaced on each retain). `"last-turn"` (the OpenCode plugin default) produces many small turn-scoped memories. Pick deliberately per harness based on whether granularity or context dominates. Currently vacpi defaults to `"full-session"` but there's no user-facing docs explaining when to choose what. Either add a paragraph to `DEVELOPMENT.md` or a tooltip in `/memory` settings UI.
+
+4. **Hindsight hook event family** `[low]` — Hindsight is a privileged `MemoryBackend`, not a hook plugin; consequently its operations are opaque to other extensions. Emitting `hindsight.retained` / `hindsight.recalled` / `hindsight.mental_models_loaded` events from `HindsightSessionState` at the same points the internal subscriptions fire would let observability plugins react. ~50 LOC, zero behavior change. Only worth shipping if a concrete consumer plugin is on the horizon.
+
+### Architectural note
+
+Hindsight is wired via the internal `MemoryBackend` interface (`packages/coding-agent/src/memory-backend/types.ts`), **not** the public hook API. This is intentional — the public hook system can't mutate the system prompt before generation, but `MemoryBackend.buildDeveloperInstructions` + `beforeAgentStartPrompt` can. The trade-off is opacity to other extensions (gap #4 above). Codex's Hindsight plugin uses hooks because Codex has no `MemoryBackend` equivalent; that's a Codex architectural limitation, not a model to follow.
+
+### Workarounds available today (no code)
+
+- Inspect the bank in the Hindsight UI: filter by `tag = project:<basename>`. The `metadata.session_id` field distinguishes which session wrote each memory; with multiple harnesses, you may be able to fingerprint session-id format per harness to attribute origin.
+- Compare `context` field per memory — vacpi sets `"Pi Coding Agent session transcript"`; other harnesses set their own string (or nothing).
+- Memory shape itself is a strong signal: vacpi's full-session retains produce coarser, more contextual memories than per-turn retains from other harnesses.
+
 ---
 
 ## 2026-05-25 — eager-todo.md prompt lies about `details` field   `[done]` `[high]`
@@ -21,6 +90,98 @@ Running log of vacpi-specific upgrade ideas: prompt bugs, missing features, inte
 
 ---
 
+## 2026-05-26 — Adaptive-thinking max_tokens truncates large structured tool_use calls   `[done]` `[high]`
+
+**Where**: `packages/ai/src/providers/anthropic.ts:1627-1639` (`ensureMaxTokensForThinking`) and `:1884` (`buildParams` default).
+
+**Problem**: `buildParams` defaults `max_tokens: options?.maxTokens || (model.maxTokens / 3) | 0` for every mode. For Opus 4.7 native (`maxTokens: 128_000`) this lands at 42_666; for the GitHub Copilot Opus 4.7 (`maxTokens: 64_000`) it lands at 21_333. Under `effort: xhigh`/`max` the model self-allocates a large thinking burst out of the *same* per-response budget, so a long thinking turn followed by a structured `tool_use` (e.g. a 28-task `todo_write` with file-path-ish strings) can exceed the `/3` cap and Anthropic returns `stop_reason: "max_tokens"`. The harness translates this to `stopReason: "length"`, which is **not** treated as aborted in `agent-loop.ts:533`. The partial tool_use input is then repaired by `parseStreamingJson` (`packages/ai/src/utils/json-parse.ts:142`) — `partialParse` closes dangling braces/quotes at the nearest boundary, so a cutoff right after a comma produces a clean-looking shorter list with no error indication. User sees a silently-truncated todo plan.
+
+**Root cause history**: `ensureMaxTokensForThinking` had an adaptive-mode branch that lifted `max_tokens` to `model.maxTokens` (see git history around `f212cbd8c` and the upstream Sep 2025 commit `35fe8f21e` that originally introduced the `/3` cap). The adaptive branch was deleted in a later consolidation refactor that retained only the budget-mode (`thinking.type === "enabled"`) path. Adaptive (`thinking.type === "adaptive"`, the Opus 4.7+ default) silently fell back to the `/3` default.
+
+**Fix shipped**: restored the adaptive branch in `ensureMaxTokensForThinking` with explicit caller-override respect:
+
+```ts
+if (thinking.type === "adaptive") {
+    if (callerProvidedMaxTokens) return;
+    if (model.maxTokens > 0 && (params.max_tokens ?? 0) < model.maxTokens) {
+        params.max_tokens = model.maxTokens;
+    }
+    return;
+}
+```
+
+Plus call-site `ensureMaxTokensForThinking(params, model, !!options?.maxTokens)` so the harness only lifts the ceiling when the caller did not specify their own budget. Regression test suite `packages/ai/test/anthropic-adaptive-max-tokens.test.ts` covers four cases: adaptive default (lifts to `model.maxTokens`), adaptive with explicit override (respects caller), adaptive disabled (no lift), budget mode (floor-and-cap invariant preserved).
+
+**Safety analysis** (why "burn the full ceiling" is fine for adaptive):
+- Anthropic bills per *actual* tokens used; `max_tokens` is a ceiling, not an allocation. Zero marginal cost.
+- TPM rate limits scale to actual usage, not budget.
+- `model.maxTokens` IS the documented per-response max for each model — setting `max_tokens` to it is exactly the API contract.
+- GitHub Copilot premium budget is per premium-request count, not tokens. No change.
+- Per-account soft caps would 400 and route through the existing retry layer.
+- Context window pressure: adaptive responses self-regulate and typically land at 5–30K, not the full ceiling. With Opus 4.7's 1M context, the per-response cap doesn't meaningfully change session longevity.
+
+**Why not "raise OUTPUT_FALLBACK_BUFFER"**: my first-pass framing in the original investigation. The 4000 buffer lives in the *budget*-mode path (`thinking.type === "enabled"`), which adaptive Opus 4.7 never enters. Raising it would do nothing for the actual failure mode.
+
+**Follow-up**: `earendil-works/pi` (the true upstream) already shipped a broader version of this fix as `2787b601d` on May 19, 2026. See the "Upstream prefetch from `earendil-works/pi`" section below for the full comparison and reconciliation plan.
+---
+
+## 2026-05-26 — Upstream prefetch from `earendil-works/pi` (the real upstream)   `[open]` `[high]`
+
+**Where**: `pi/main` (`earendil-works/pi`), plus secondary survey of `upstream/main` (`can1357/oh-my-pi`) and `upstream/farm/ece8a163/restore-provider-streaming`.
+
+**Correction to my earlier framing**: I initially thought "upstream" meant `can1357/oh-my-pi`. The real source-of-truth upstream is `earendil-works/pi` (the original Pi Agent by Mario Zechner). `oh-my-pi` is can1357's fork. Many "novel" findings in our recent debugging are already shipped — and more cleanly — in `pi/main`. The fix I shipped today (adaptive-only `model.maxTokens` lift) was *independently solved by Mario in May 2026 with a broader sweep*. Acknowledging this and prefetching what's applicable.
+
+### Critical: Mario's token-budget sweep (Apr 29 – May 19) already in `pi/main`, NOT yet in oh-my-pi
+
+A coherent four-commit sequence on `pi/main` by Mario Zechner addresses the exact root cause my fix targets:
+
+| Commit | Date | Title | Net effect |
+|---|---|---|---|
+| **`83592bb2d`** | Apr 29 | `fix(ai): detect incomplete Anthropic streams` (closes #3936) | Throws if SSE ends without `message_stop` after seeing `message_start`. Exactly the stream-truncation detector that was missing in oh-my-pi. |
+| **`5ac874c84`** | May 12 | `fix(coding-agent): retry Anthropic message_stop stream endings` (closes #4433) | Pairs with the detector — coding-agent retries when truncation is thrown. |
+| **`22a9c484e`** | May 16 | `fix(ai): respect model output token limits` (closes #4539) | Removes `min(model.maxTokens, 32000)` defensive cap in `buildBaseOptions`. |
+| **`6d474f8c1`** | May 17 | `fix(ai): cap context-sized default output budgets` (closes #4614) | Refines: only cap at 32000 when `model.maxTokens >= model.contextWindow - 1024` (i.e. model has no separate output cap). |
+| **`2787b601d`** | May 19 | `fix(ai): stop defaulting max token request caps` (closes #4675) | **The big one.** Eliminates `model.maxTokens / 3` divisor in `buildParams`. Changes `options?.maxTokens \|\| (model.maxTokens / 3)` → `options?.maxTokens ?? model.maxTokens`. Adopts `undefined`-means-"no-cap" semantics through `adjustMaxTokensForThinking`. |
+
+The May 19 commit `2787b601d` is **the exact fix we just shipped, but broader** — it applies to ALL modes (budget, adaptive, no-thinking) instead of only adaptive. Mario's diff is also simpler: he just changed the `buildParams` default itself rather than adding a branch in `ensureMaxTokensForThinking`.
+
+### Why our narrower fix is still correct
+
+- `oh-my-pi`'s `anthropic.ts` is **substantially divergent** from `pi`'s. oh-my-pi has the `ensureMaxTokensForThinking` helper, adaptive-vs-budget mode resolution, GitHub Copilot Anthropic OAuth, the `applyCacheControlToLastBlock` machinery, anthropic-adaptive mode flag, etc. Mario's 6-line `buildParams` patch would not apply 1:1 — it would need adaptation to oh-my-pi's flow.
+- Our `ensureMaxTokensForThinking` adaptive branch is a localized, tested fix that addresses the same root cause for the model and mode we actually hit.
+- Mario's sweep is the upstream-aligned direction. When oh-my-pi pulls these commits, we should reconcile (likely replace our adaptive branch with the broader buildParams change).
+
+### Recommended actions
+
+1. **Keep our adaptive max_tokens fix in place** — already shipped, tested, narrow blast radius.
+2. **Prefetch the stream-truncation detector + retry (`83592bb2d` + `5ac874c84`)** — these are directly relevant to the "stuck partial todo_write" symptom the user just experienced. Mario's detector throws on incomplete streams; the coding-agent retries. Both diffs are small (15 + 4 lines), focused, and bring meaningful runtime safety. Adaptation needed: oh-my-pi's Anthropic stream loop is heavily refactored vs pi's `iterateAnthropicEvents`, so this is a port, not a cherry-pick.
+3. **Defer Mario's `2787b601d` until oh-my-pi merges it.** The `/3` divisor removal is the right long-term answer but conflicts with our local adaptive-only branch and would change behavior for budget mode + non-thinking mode, which we haven't analyzed yet.
+4. **Defer `22a9c484e` + `6d474f8c1`** — same reasoning. These tune `buildBaseOptions` which oh-my-pi structures differently.
+
+### Tier A (oh-my-pi side, defensive, tiny, low-risk) — STILL apply
+
+- **`211a1aa98`** `[high]` Anthropic refusal-fallback error message. 15 lines + 36-line test.
+- **`69d73bf84`** `[low]` Trivial type follow-up to `211a1aa98`.
+
+### Tier B — `restore-provider-streaming` branch (`upstream/farm/ece8a163`)
+
+`-994 / +206` lines. Deletes `idle-iterator.ts` entirely. Aligns oh-my-pi with pi's no-watchdog architecture. Not on `upstream/main` yet — watch for merge. Zero conflict with today's adaptive max_tokens fix (touches lines 53, 1089-1116, 1437-1444; our fix at 1627-1660 + 2002).
+
+### Confirmed: no upstream prior art for our specific framing
+
+- Mario's `2787b601d` solves the same root cause but at a different layer (buildParams default vs ensureMaxTokensForThinking branch).
+- Our framing — "preserve the budget-mode floor formula AND lift adaptive separately" — is genuinely orthogonal and could be valuable as a *more conservative* alternative to Mario's broader change. Worth offering upstream as a less-invasive option for can1357 to consider.
+
+### Action items
+
+1. ✅ Today's adaptive-max_tokens fix shipped, tested, documented.
+2. Port `83592bb2d` (incomplete-stream detector) to oh-my-pi's Anthropic stream loop. Add the retry from `5ac874c84` to the coding-agent. This directly addresses the "stuck partial" symptom and is a defensive win independent of any token-budget question.
+3. Cherry-pick `211a1aa98` + `69d73bf84` from `upstream/main`.
+4. Add `pi/main` token-budget sweep (`22a9c484e`, `6d474f8c1`, `2787b601d`) to the "watch-and-reconcile when oh-my-pi merges" list.
+5. Watch `upstream/farm/ece8a163/restore-provider-streaming` for merge to `upstream/main`.
+6. Optional: open an upstream PR against `can1357/oh-my-pi:main` with our adaptive-only fix + regression test as a narrower alternative to Mario's `2787b601d`. Let can1357 decide which direction to take.
+
+---
 ## 2026-05-26 — eager-todo.md is prose-only — model still emits `todo_write({})` under forced tool_choice   `[done]` `[high]`
 
 **Where**: `packages/coding-agent/src/prompts/system/eager-todo.md`
@@ -140,6 +301,54 @@ The internal `HindsightApi` already supports the full Hindsight feature set per 
 
 **Follow-up**: prototype (1) first since it has the highest visual impact and reuses existing code. (4) is a small wrapper. (2) and (3) can land later.
 
+---
+
+## 2026-06-01 — Live session observability and browser-backed TUI debugging   `[open]` `[high]`
+
+**Where**: `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-manager.ts`, `packages/coding-agent/src/modes`, `packages/coding-agent/src/commands`, possible new `sessions` command and local dev server.
+
+**Validated current state**:
+
+- `AgentSession.subscribe(...)` exists and emits rich in-process events, but only inside the owning `omp` process.
+- `/session` exposes current-session stats, but only from inside the active TUI.
+- `SessionManager.list(...)` powers resume/session selection over persisted files, not live running processes.
+- ACP/RPC modes provide protocol-level observability only for sessions launched under those modes. A normal interactive `omp update` session is not attachable.
+- `omp stats` is historical/local observability, not a live watch API.
+- Root, `packages/coding-agent`, and `packages/tui` already depend on `@xterm/headless`, so terminal-state modeling is not foreign to the repo.
+- No native surfaces found for `omp sessions list --running`, `omp sessions watch <id>`, read-only attach, or an agent tool that inspects active `omp` sessions.
+
+**Problem**: OMP is strong at developing and debugging web apps because the agent can use browser tooling against a visible running app. TUI work lacks the same feedback loop. Today, debugging a live `omp` session requires terminal automation (`tui-use`) or reading persisted logs/session files. That is useful, but it is not a first-class OMP API, and it does not let an agent inspect or visually debug another running TUI session the way it can inspect a browser app.
+
+**Recommended approach**:
+
+1. **Runtime session registry**: each top-level `omp` process writes `~/.omp/agent/runs/<session-id>.json` with `pid`, `cwd`, `sessionFile`, `command`, `mode`, `model`, `startedAt`, `lastHeartbeat`, `status`, and `title`. Heartbeat atomically refreshes while alive; stale PID entries are marked dead by readers.
+
+2. **Live event stream**: mirror selected `AgentSessionEvent` records to `~/.omp/agent/runs/<session-id>.events.jsonl`. Include turn start/end, model changes, tool start/end, todo state, async-job snapshots, MCP connect errors, update/merge/build phases, and final error. Keep payloads bounded and redacted using the same TUI sanitization helpers.
+
+3. **CLI and tool surface**:
+   - `omp sessions list --running --json`
+   - `omp sessions inspect <id> --json`
+   - `omp sessions watch <id> [--json]`
+   - model-facing tool `omp_sessions` with `list`, `inspect`, and `watch_snapshot`
+   - first narrow use case: `omp sessions watch latest` for `omp update`, including merge phase plus `.git/omp-rebuild.log` status.
+
+4. **Browser-backed TUI mirror**: add a local dev server that exposes a read-only terminal mirror over WebSocket or SSE. The browser tool can then inspect screenshots, accessibility tree, DOM state, and visual regressions for TUI sessions, matching the workflow OMP already supports for web apps.
+
+**xterm.js option**: `xterm.js` is mature, MIT-licensed, TypeScript, and used by VS Code, Hyper, Tabby, ttyd, and similar tools. It supports real terminal apps, mouse events, WebGL rendering, addons, and `@xterm/headless` for server-side terminal state plus serialization. It is the conservative choice for a reliable visual TUI mirror. OMP already has `@xterm/headless`, which makes the first slice cheaper: feed PTY output into a headless terminal state, serialize snapshots, then later add a browser renderer with `@xterm/xterm` plus `@xterm/addon-fit` and optionally `@xterm/addon-serialize`.
+
+**wterm option**: `vercel-labs/wterm` is a newer Apache-2.0 web terminal with DOM rendering, native text selection, browser find, accessibility, dirty-row rendering, WebSocket transport, and optional Ghostty/libghostty-backed VT emulation. It is attractive for visual debugging because DOM rows are directly inspectable by browser tools. Risk is maturity and integration surface compared with xterm.js. Prototype it as an experimental renderer, not the default.
+
+**Suggested architecture**:
+
+- Use the existing PTY/TUI boundary as the capture point, not screen scraping.
+- For read-only watch, tee output bytes into a terminal-state engine and expose snapshots/events. Do not allow input at first.
+- For browser visual debugging, serve `/sessions/:id/terminal` with a renderer plus `/sessions/:id/events`.
+- Add a browser-tool-friendly metadata panel: current model, turn state, active tool, selected session file, cwd, tokens, and last error.
+- Later add controlled input/attach only after permissions are explicit. Read-only first avoids accidental interference with a running agent.
+
+**Why not only `tui-use`**: `tui-use` is excellent external automation, but it is terminal-screen-level. OMP-native observability can expose structured session identity, model/tool phases, event history, and bounded snapshots without requiring the observer to own the process terminal. The right design is a native session watch API plus optional browser terminal mirror.
+
+**Follow-up**: implement the registry + `omp sessions list --running --json` first. Then wire event snapshots from `AgentSession.subscribe`. Only after the structured API exists should we prototype xterm.js or wterm rendering.
 ---
 
 ## 2026-05-26 — Upstream OG-repo PRs worth merging into vacpi   `[open]` `[chore]`

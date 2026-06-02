@@ -22,6 +22,7 @@ export interface Args {
 	appendSystemPrompt?: string;
 	thinking?: Effort;
 	continue?: boolean;
+	newSession?: boolean;
 	resume?: string | true;
 	help?: boolean;
 	version?: boolean;
@@ -84,6 +85,8 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			}
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
+		} else if (arg === "--new") {
+			result.newSession = true;
 		} else if (arg === "--resume" || arg === "-r" || arg === "--session") {
 			const next = args[i + 1];
 			if (next && !next.startsWith("-")) {
@@ -254,6 +257,7 @@ export function getExtraHelpText(): string {
   PI_SLOW_MODEL              - Override slow/reasoning model (see --slow)
   PI_PLAN_MODEL              - Override planning model (see --plan)
   PI_NO_PTY                  - Disable PTY-based interactive bash execution
+  OMP_VACPI_REPO_DIR         - Fork checkout path used by 'omp update' (default: ~/Documents/Projects/oh-my-vacpi)
 
   For complete environment variable reference, see:
   ${chalk.dim("docs/environment-variables.md")}

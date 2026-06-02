@@ -7,12 +7,13 @@
 import * as path from "node:path";
 import * as url from "node:url";
 import type { TSchema } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, withTimeout } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { AuthStorage } from "../session/auth-storage";
 import {
+	CONNECTION_TIMEOUT_MS,
 	connectToServer,
 	disconnectServer,
 	getPrompt,
@@ -29,7 +30,7 @@ import {
 import { loadAllMCPConfigs, validateServerConfig } from "./config";
 import { refreshMCPOAuthToken } from "./oauth-flow";
 import type { MCPToolDetails } from "./tool-bridge";
-import { DeferredMCPTool, MCPTool } from "./tool-bridge";
+import { MCPTool } from "./tool-bridge";
 import type { MCPToolCache } from "./tool-cache";
 import { HttpTransport } from "./transports/http";
 import type {
@@ -127,6 +128,77 @@ export interface MCPDiscoverOptions {
 }
 
 /**
+ * Classification of why a server failed to connect or load tools, surfaced
+ * through `MCPManager.getLastConnectError(name)`.
+ *
+ * - `unreachable`: process exited, command not found, ECONNREFUSED, DNS missed.
+ *   The agent should not see tools from this server and the user gets a clear
+ *   reason in `/mcp`.
+ * - `timeout`: the handshake or a request didn't complete inside the bound
+ *   (`connectTimeoutMs` for the handshake, `timeout` for in-flight requests).
+ *   Often a slow legitimate server.
+ * - `protocol`: MCP-level JSON-RPC error (e.g. unexpected -32601). Server is
+ *   alive but the contract is broken; user action usually required.
+ * - `other`: everything we couldn't classify. Always carries the raw message.
+ */
+export type MCPConnectErrorKind = "unreachable" | "timeout" | "protocol" | "other";
+
+export interface MCPConnectError {
+	kind: MCPConnectErrorKind;
+	/** Short, user-facing classification including the server name. */
+	message: string;
+	/** Original error message for logs. */
+	raw: string;
+	/** `Date.now()` when the classification was recorded. */
+	at: number;
+}
+
+/**
+ * Map a connect/discovery error to a stable, user-facing classification.
+ *
+ * Order matters: we test the most specific signals (Node `code`, Bun `code`,
+ * known transport messages) before falling back to message regex. Bun's
+ * `fetch` rejection carries `code: "ConnectionRefused"` with the message
+ * `Unable to connect…`, which Node's `ECONNREFUSED` regex would otherwise
+ * miss — both are covered here.
+ *
+ * Exported for tests and `/mcp` panel rendering.
+ */
+export function classifyConnectError(err: unknown, name: string): MCPConnectError {
+	const raw = err instanceof Error ? err.message : String(err);
+	const code = (err as { code?: string } | null | undefined)?.code;
+	const at = Date.now();
+	const make = (kind: MCPConnectErrorKind, message: string): MCPConnectError => ({ kind, message, raw, at });
+
+	if (code === "ENOENT" || /\bENOENT\b/.test(raw)) {
+		return make("unreachable", `${name}: command not found`);
+	}
+	if (code === "ECONNREFUSED" || code === "ConnectionRefused" || /ECONNREFUSED|Unable to connect/i.test(raw)) {
+		return make("unreachable", `${name}: no listener at endpoint (connection refused)`);
+	}
+	if (code === "EAI_NONAME" || code === "ENOTFOUND" || /(EAI_NONAME|ENOTFOUND|getaddrinfo)/.test(raw)) {
+		return make("unreachable", `${name}: host did not resolve`);
+	}
+	if (/Transport closed/.test(raw)) {
+		return make("unreachable", `${name}: subprocess exited before responding to initialize`);
+	}
+	if (/launchApp:/.test(raw)) {
+		return make("unreachable", `${name}: ${raw}`);
+	}
+	if (
+		/(timed out after \d+ms|Request timeout after \d+ms|SSE response timeout after \d+ms|Notify timeout after \d+ms)/.test(
+			raw,
+		)
+	) {
+		return make("timeout", `${name}: still launching? did not respond within timeout`);
+	}
+	if (/MCP error/.test(raw)) {
+		return make("protocol", `${name}: ${raw}`);
+	}
+	return make("other", `${name}: ${raw}`);
+}
+
+/**
  * MCP Server Manager.
  *
  * Manages connections to MCP servers and provides tools to the agent.
@@ -168,6 +240,12 @@ export class MCPManager {
 	#serverConfigs = new Map<string, MCPServerConfig>();
 	/** Monotonic epoch incremented on disconnectAll to invalidate stale reconnections. */
 	#epoch = 0;
+	/**
+	 * Per-server classified record of the most recent connect/discovery failure,
+	 * cleared on successful (re)connect. Surfaced by `/mcp` and `/info` so the
+	 * user can see *why* a server is missing without spelunking the log file.
+	 */
+	#lastConnectErrors = new Map<string, MCPConnectError>();
 
 	constructor(
 		private cwd: string,
@@ -402,10 +480,12 @@ export class MCPManager {
 			);
 			this.#pendingConnections.set(name, connectionPromise);
 
-			const toolsPromise = connectionPromise.then(async connection => {
-				const serverTools = await listTools(connection);
-				return { connection, serverTools };
-			});
+			const toolsPromise = connectionPromise.then(connection =>
+				this.#discoverToolsWithCleanup(name, connection, config).then(serverTools => ({
+					connection,
+					serverTools,
+				})),
+			);
 			this.#pendingToolLoads.set(name, toolsPromise);
 
 			const tracked = trackPromise(toolsPromise);
@@ -415,6 +495,7 @@ export class MCPManager {
 				.then(async ({ connection, serverTools }) => {
 					if (this.#pendingToolLoads.get(name) !== toolsPromise) return;
 					this.#pendingToolLoads.delete(name);
+					this.#lastConnectErrors.delete(name);
 					const reconnect = () => this.reconnectServer(name);
 					const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 					this.#replaceServerTools(name, customTools);
@@ -426,6 +507,10 @@ export class MCPManager {
 				.catch(error => {
 					if (this.#pendingToolLoads.get(name) !== toolsPromise) return;
 					this.#pendingToolLoads.delete(name);
+					// Always classify — `getLastConnectError(name)` is the public
+					// signal for late failures since `connectServers` has already
+					// returned its `errors` map by the time this fires.
+					this.#lastConnectErrors.set(name, classifyConnectError(error, name));
 					if (!allowBackgroundLogging || reportedErrors.has(name)) return;
 					const message = error instanceof Error ? error.message : String(error);
 					logger.error("MCP tool load failed", { path: `mcp:${name}`, error: message });
@@ -442,21 +527,6 @@ export class MCPManager {
 				Promise.allSettled(connectionTasks.map(task => task.tracked.promise)),
 				delay(STARTUP_TIMEOUT_MS),
 			]);
-
-			const cachedTools = new Map<string, MCPToolDefinition[]>();
-			const pendingTasks = connectionTasks.filter(task => task.tracked.status === "pending");
-
-			if (pendingTasks.length > 0 && this.toolCache) {
-				await Promise.all(
-					pendingTasks.map(async task => {
-						const cached = await this.toolCache?.get(task.name, task.config);
-						if (cached) {
-							cachedTools.set(task.name, cached);
-						}
-					}),
-				);
-			}
-
 			for (const task of connectionTasks) {
 				const { name } = task;
 				if (task.tracked.status === "fulfilled") {
@@ -464,23 +534,20 @@ export class MCPManager {
 					if (!value) continue;
 					const { connection, serverTools } = value;
 					connectedServers.add(name);
+					this.#lastConnectErrors.delete(name);
 					const reconnect = () => this.reconnectServer(name);
 					allTools.push(...MCPTool.fromTools(connection, serverTools, reconnect));
 				} else if (task.tracked.status === "rejected") {
-					const message =
-						task.tracked.reason instanceof Error ? task.tracked.reason.message : String(task.tracked.reason);
+					const reason = task.tracked.reason;
+					const message = reason instanceof Error ? reason.message : String(reason);
 					errors.set(name, message);
+					this.#lastConnectErrors.set(name, classifyConnectError(reason, name));
 					reportedErrors.add(name);
-				} else {
-					const cached = cachedTools.get(name);
-					if (cached) {
-						const source = this.#sources.get(name);
-						const reconnect = () => this.reconnectServer(name);
-						allTools.push(
-							...DeferredMCPTool.fromTools(name, cached, () => this.waitForConnection(name), source, reconnect),
-						);
-					}
 				}
+				// Pending tasks are deliberately left alone: no deferred-cache fallback,
+				// no `errors.set`. The async `.then`/`.catch` above will populate
+				// `#tools`/`#lastConnectErrors` once the handshake settles, and
+				// `setOnToolsChanged` will propagate the late update to the session.
 			}
 		}
 
@@ -498,6 +565,40 @@ export class MCPManager {
 			connectedServers: Array.from(connectedServers),
 			exaApiKeys: [], // Will be populated by discoverAndConnect
 		};
+	}
+
+	/**
+	 * Discover tools from a freshly connected MCP server with a hard time bound.
+	 *
+	 * Bounded by `config.connectTimeoutMs` (defaults to `CONNECTION_TIMEOUT_MS`)
+	 * so a hung `tools/list` can't strand the connection. On any failure the
+	 * transport is torn down and removed from `#connections` atomically; this is
+	 * a contract callers depend on (no zombie connection with no tools).
+	 */
+	async #discoverToolsWithCleanup(
+		name: string,
+		connection: MCPServerConnection,
+		config: MCPServerConfig,
+	): Promise<MCPToolDefinition[]> {
+		const ms = config.connectTimeoutMs ?? CONNECTION_TIMEOUT_MS;
+		try {
+			return await withTimeout(
+				listTools(connection),
+				ms,
+				`Tool discovery for MCP server "${name}" timed out after ${ms}ms`,
+			);
+		} catch (error) {
+			// Atomic cleanup: detach reconnect handler, close transport (best
+			// effort — close() may itself error if the subprocess already exited),
+			// and remove from the live connections map so callers don't observe a
+			// half-open server.
+			connection.transport.onClose = undefined;
+			await connection.transport.close().catch(() => {});
+			if (this.#connections.get(name) === connection) {
+				this.#connections.delete(name);
+			}
+			throw error;
+		}
 	}
 
 	#replaceServerTools(name: string, tools: CustomTool<TSchema, MCPToolDetails>[]): void {
@@ -603,6 +704,16 @@ export class MCPManager {
 	}
 
 	/**
+	 * Get the most recent classified connect failure for a server (or undefined
+	 * if the last attempt succeeded). Cleared on the next successful connect
+	 * or reconnect; persists across the boundary of `connectServers` returning
+	 * so the UI can describe late failures that surface after startup.
+	 */
+	getLastConnectError(name: string): MCPConnectError | undefined {
+		return this.#lastConnectErrors.get(name);
+	}
+
+	/**
 	 * Get the source metadata for a server.
 	 */
 	getSource(name: string): SourceMeta | undefined {
@@ -645,7 +756,13 @@ export class MCPManager {
 	 */
 	getAllServerNames(): string[] {
 		return Array.from(
-			new Set([...this.#sources.keys(), ...this.#connections.keys(), ...this.#pendingConnections.keys()]),
+			new Set([
+				...this.#sources.keys(),
+				...this.#connections.keys(),
+				...this.#pendingConnections.keys(),
+				...this.#serverConfigs.keys(),
+				...this.#lastConnectErrors.keys(),
+			]),
 		);
 	}
 
@@ -659,6 +776,7 @@ export class MCPManager {
 		this.#sources.delete(name);
 		this.#serverConfigs.delete(name);
 		this.#pendingResourceRefresh.delete(name);
+		this.#lastConnectErrors.delete(name);
 
 		const connection = this.#connections.get(name);
 
@@ -707,6 +825,7 @@ export class MCPManager {
 		this.#connections.clear();
 		this.#tools = [];
 		this.#subscribedResources.clear();
+		this.#lastConnectErrors.clear();
 	}
 
 	/**
@@ -762,6 +881,7 @@ export class MCPManager {
 			try {
 				const connection = await this.#connectAndWireServer(name, config, source, reconnectEpoch);
 				logger.debug("MCP reconnected", { path: `mcp:${name}`, tools: connection.tools?.length ?? 0 });
+				this.#lastConnectErrors.delete(name);
 				return connection;
 			} catch (error) {
 				if (this.#epoch !== reconnectEpoch) {
@@ -783,6 +903,7 @@ export class MCPManager {
 					await Bun.sleep(delays[attempt]);
 				} else {
 					logger.error("MCP reconnect failed after retries", { path: `mcp:${name}`, error: msg });
+					this.#lastConnectErrors.set(name, classifyConnectError(error, name));
 					// Don't remove stale tools — keep them in the registry so they
 					// remain selected. Calls will fail with MCP errors, which
 					// triggers the tool-level reconnect, or the user can run
@@ -836,22 +957,18 @@ export class MCPManager {
 			logger.debug("MCP transport lost, triggering reconnect", { path: `mcp:${name}` });
 			void this.reconnectServer(name);
 		};
-		try {
-			const serverTools = await listTools(connection);
-			const reconnect = () => this.reconnectServer(name);
-			const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
-			void this.toolCache?.set(name, config, serverTools);
-			this.#replaceServerTools(name, customTools);
-			this.#onToolsChanged?.(this.#tools);
-			void this.#loadServerResourcesAndPrompts(name, connection);
-			return connection;
-		} catch (error) {
-			// Clean up the connection to avoid zombie transports
-			connection.transport.onClose = undefined;
-			await connection.transport.close().catch(() => {});
-			this.#connections.delete(name);
-			throw error;
-		}
+		// Discovery bounded by connectTimeoutMs and atomically cleaned on failure.
+		// Without this bound the reconnect path could hang on `tools/list` for
+		// the full per-tool-call `timeout` (4h in pathological user configs) on
+		// every reconnect attempt.
+		const serverTools = await this.#discoverToolsWithCleanup(name, connection, config);
+		const reconnect = () => this.reconnectServer(name);
+		const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
+		void this.toolCache?.set(name, config, serverTools);
+		this.#replaceServerTools(name, customTools);
+		this.#onToolsChanged?.(this.#tools);
+		void this.#loadServerResourcesAndPrompts(name, connection);
+		return connection;
 	}
 
 	/**

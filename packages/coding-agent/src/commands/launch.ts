@@ -61,6 +61,9 @@ export default class Index extends Command {
 			char: "c",
 			description: "Continue previous session",
 		}),
+		new: Flags.boolean({
+			description: "Start a fresh session even when auto-resume is enabled",
+		}),
 		resume: Flags.string({
 			char: "r",
 			description: "Resume a session (by ID prefix, path, or picker if omitted)",

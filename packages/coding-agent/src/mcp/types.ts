@@ -57,12 +57,38 @@ export interface MCPAuthConfig {
 	clientSecret?: string;
 }
 
+/**
+ * macOS app launch descriptor for a stdio server.
+ *
+ * - `string` shorthand: app name or full path; launched in background (no focus steal).
+ * - `{ path, foreground? }`: explicit. `foreground` defaults to `false`. When `false`,
+ *   we use `open -gja <path>` (background, no activation). When `true`, `open -a <path>`.
+ *
+ * `path` is whatever the macOS `open -a` flag accepts: an app name ("Repo Prompt"),
+ * a full bundle path ("/Applications/Repo Prompt.app"), or a bundle id.
+ */
+export type MCPLaunchApp = string | { path: string; foreground?: boolean };
+
 /** Base server config with shared options */
 interface MCPServerConfigBase {
 	/** Whether this server is enabled (default: true) */
 	enabled?: boolean;
-	/** Connection timeout in milliseconds (default: 30000) */
+	/**
+	 * Per-tool-call timeout in milliseconds (default: 30000). Bounds the duration of
+	 * a single MCP JSON-RPC request such as `tools/call`. Long-running tools (chat
+	 * sessions, agent runs) typically want this raised.
+	 *
+	 * Note: this used to bound the *connection handshake* too. That is now
+	 * `connectTimeoutMs`.
+	 */
 	timeout?: number;
+	/**
+	 * Hard cap on initialize + tools/list (default: 30000). Bounds the startup
+	 * handshake so an unreachable or hung server can't block the agent. Kept
+	 * separate from `timeout` so users can set very long per-call timeouts without
+	 * delaying startup detection.
+	 */
+	connectTimeoutMs?: number;
 	/** Authentication configuration (optional) */
 	auth?: MCPAuthConfig;
 	/** OAuth configuration for servers requiring explicit client credentials */
@@ -82,6 +108,12 @@ export interface MCPStdioServerConfig extends MCPServerConfigBase {
 	args?: string[];
 	env?: Record<string, string>;
 	cwd?: string;
+	/**
+	 * macOS-only: ensure a macOS app is running before spawning `command`. Useful
+	 * when the stdio server is a thin proxy into a desktop app (e.g. RepoPrompt's
+	 * CLI binary depends on `/Applications/Repo Prompt.app` being open).
+	 */
+	launchApp?: MCPLaunchApp;
 }
 
 /** HTTP server configuration (Streamable HTTP transport) */

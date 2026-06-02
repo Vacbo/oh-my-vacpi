@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `launchApp` per-server stdio MCP option that ensures a macOS app backing the server is running before spawning the proxy command. Accepts a string shorthand (`"Repo Prompt"`) for background launch, or `{ path, foreground? }` for explicit control. Resolves the RepoPrompt-CLI-hangs-when-app-is-closed footgun: `omp` now auto-`open -gja`s the app at session start instead of spinning forever on a dead proxy.
+- Added `connectTimeoutMs` per-server MCP option that bounds the startup handshake (`initialize` + `tools/list`) independently of `timeout` (per-tool-call). Default 30s. Lets users keep multi-hour per-call timeouts for long-running agent or oracle tools without sacrificing startup fail-fast.
+- Added `MCPManager.getLastConnectError(name)` and `classifyConnectError(err, name)` so `/mcp` and `/info` can show *why* a server is disconnected (`unreachable | timeout | protocol | other`) instead of a generic "not connected". Classifier covers Node `ECONNREFUSED`/`ENOENT`/`EAI_NONAME`, Bun `fetch` `ConnectionRefused` + "Unable to connect" wording, `Transport closed (subprocess exit code N)`, outer connect timeout, inner request/SSE/notify timeouts, and `MCP error -32xxx`.
+
+### Changed
+
+- Bounded MCP tool discovery (`tools/list`) by `connectTimeoutMs` on both initial-connect and reconnect paths, with atomic transport cleanup on timeout — previously a hung `tools/list` could orphan a half-open connection with no tools, and on reconnect could hang for the full `config.timeout` (up to 4h in user configs) on every retry.
+- Changed `omp update` in the fork to start a fresh slow-model agent session for merging the latest upstream tag, instead of installing the upstream package or release binary over fork-specific changes. The session is pinned to the fork checkout (`OMP_VACPI_REPO_DIR`, default `~/Documents/Projects/oh-my-vacpi`) so the merge always edits the right repo regardless of the cwd `omp update` ran from.
+- Captured the subprocess exit code in `StdioTransport`'s `Transport closed` rejection (`Transport closed (subprocess exit code N)`) so logs and the classifier can distinguish "process exited without responding" from generic transport drops.
+- Wrapped HTTP transport `fetch` rejections to preserve Bun's `code` field (e.g. `ConnectionRefused`) and to include the URL in the error message, so the classifier can map them and operators can see which endpoint failed.
+- Synced the agent session against the live MCP tool list immediately after wiring `setOnToolsChanged`, closing a startup race where a server whose handshake settled between `discoverAndLoadMCPTools` returning and the callback being wired would have its tools forever invisible to the session.
+- `/mcp` and `/info` now render the classified last-connect-error next to each disconnected MCP server, and `/info` lists disconnected servers (not just connected ones).
+
+### Fixed
+
+- Fixed `eager-todo` system reminder occasionally producing `todo_write({})` on the first turn of new sessions under Anthropic's `tool_choice: { type: "tool", name }` forcing. The reminder was prose-only and left the model with no literal JSON anchor; under named-tool forcing Anthropic can emit a `tool_use` block with empty input, which `parseStreamingJson` coerces to `{}` and Zod then rejects with `ops: expected array, received undefined`. The reminder now inlines a literal `{"ops":[{"op":"init","list":[...]}]}` example so the forced emission has a copy-pasteable shape, with a regression test that parses the inlined sample to keep it valid against the live schema
+- Fixed MCP `mcp-schema.json` rejecting valid base properties (`timeout`, `auth`, `oauth`) on stdio/http/sse server configs in Ajv 2020 validators — the transport branches used `additionalProperties: false` next to a `serverBase` `allOf` sibling, which doesn't see the sibling's evaluated properties. Switched to `unevaluatedProperties: false`.
+- Fixed the deferred-tool fallback exposing stale tool schemas to the agent for unbounded periods when a server failed to handshake within the 250 ms startup window. Combined with a 4-hour per-tool-call `timeout`, this could leak full schemas into every prompt for hours after RepoPrompt (or any proxied-app server) failed silently. The fallback is removed: pending servers expose no tools until their handshake actually settles.
+
 ## [15.3.2] - 2026-05-25
 ### Added
 

@@ -1624,9 +1624,30 @@ function disableThinkingIfToolChoiceForced(params: MessageCreateParamsStreaming)
 	}
 }
 
-function ensureMaxTokensForThinking(params: MessageCreateParamsStreaming, model: Model<"anthropic-messages">): void {
+function ensureMaxTokensForThinking(
+	params: MessageCreateParamsStreaming,
+	model: Model<"anthropic-messages">,
+	callerProvidedMaxTokens: boolean,
+): void {
 	const thinking = params.thinking;
-	if (!thinking || thinking.type !== "enabled") return;
+	if (!thinking) return;
+
+	// Adaptive mode: the model self-allocates thinking vs output, so the per-response
+	// ceiling needs to be the model's full output max. The buildParams default of
+	// `model.maxTokens / 3` can leave too little room for a long thinking burst plus
+	// a large structured tool_use (e.g. a multi-phase todo_write), tripping
+	// `stop_reason: "max_tokens"` mid-emission; partial-JSON repair then silently
+	// closes the truncated call so the user sees a clean-looking incomplete result.
+	// Skip when the caller explicitly passed maxTokens — they've opted into a custom budget.
+	if (thinking.type === "adaptive") {
+		if (callerProvidedMaxTokens) return;
+		if (model.maxTokens > 0 && (params.max_tokens ?? 0) < model.maxTokens) {
+			params.max_tokens = model.maxTokens;
+		}
+		return;
+	}
+
+	if (thinking.type !== "enabled") return;
 
 	const budgetTokens = thinking.budget_tokens ?? 0;
 	if (budgetTokens <= 0) return;
@@ -1999,7 +2020,7 @@ function buildParams(
 		params.system = systemBlocks;
 	}
 	disableThinkingIfToolChoiceForced(params);
-	ensureMaxTokensForThinking(params, model);
+	ensureMaxTokensForThinking(params, model, !!options?.maxTokens);
 	applyPromptCaching(params, cacheControl);
 	enforceCacheControlLimit(params, 4);
 	normalizeCacheControlTtlOrdering(params);

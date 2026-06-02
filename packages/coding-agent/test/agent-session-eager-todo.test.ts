@@ -201,6 +201,20 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(session.formatSessionAsText()).not.toContain("<user-request>");
 	});
 
+	it("anchors the reminder with a copy-pasteable ops-wrapper JSON shape", async () => {
+		await session.prompt("list all work trees");
+
+		const reminderText = observedCalls[0]?.messageTexts[0] ?? "";
+		const match = reminderText.match(/`(\{"ops":\[[^`]+\})`/);
+		expect(match, 'eager-todo reminder must inline a literal `{"ops":[...]}` example').not.toBeNull();
+		const parsed = JSON.parse(match![1] as string) as {
+			ops: { op: string; list: { phase: string; items: string[] }[] }[];
+		};
+		expect(parsed.ops[0]?.op).toBe("init");
+		expect(parsed.ops[0]?.list[0]?.phase).toBeTypeOf("string");
+		expect(parsed.ops[0]?.list[0]?.items.length).toBeGreaterThan(0);
+	});
+
 	it("initializes todos once, then continues within the same user turn", async () => {
 		scriptedResponses = [
 			createToolCallAssistantMessage("todo_write", {

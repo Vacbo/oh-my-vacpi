@@ -241,6 +241,16 @@ export class HttpTransport implements MCPTransport {
 				}
 				throw new Error(`Request timeout after ${timeout}ms`);
 			}
+			// Preserve Bun's `code` (e.g. "ConnectionRefused") and the original
+			// `cause` while wrapping the message to include the URL we tried. The
+			// raw error from `fetch` has no URL context, which makes downstream
+			// classification ambiguous and logs harder to diagnose.
+			if (error instanceof Error) {
+				const wrapped = new Error(`fetch ${this.config.url} failed: ${error.message}`, { cause: error });
+				const code = (error as { code?: string }).code;
+				if (code) (wrapped as { code?: string }).code = code;
+				throw wrapped;
+			}
 			throw error;
 		}
 	}

@@ -89,6 +89,31 @@
       },
       "description": "Explicit OAuth client settings for servers that need them during /mcp reauth or initial connect."
     },
+    "launchApp": {
+      "description": "macOS app to ensure is running before spawning this stdio server. Accepts an app name (e.g. \"Repo Prompt\") or a full bundle path. String shorthand = background launch.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "App name, full bundle path, or bundle id understood by `open -a`."
+            },
+            "foreground": {
+              "type": "boolean",
+              "description": "If true, activate the app on launch (`open -a`). Default false uses `open -gja` to launch in the background without stealing focus."
+            }
+          }
+        }
+      ]
+    },
     "serverBase": {
       "type": "object",
       "properties": {
@@ -99,7 +124,12 @@
         "timeout": {
           "type": "number",
           "exclusiveMinimum": 0,
-          "description": "Connection timeout in milliseconds."
+          "description": "Per-tool-call timeout in milliseconds (default 30000). Bounds individual MCP requests like tools/call; raise for long-running agent or oracle tools."
+        },
+        "connectTimeoutMs": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Hard cap on initialize + tools/list (default 30000). Bounds the startup handshake so unreachable or hung servers do not block the agent. Independent of `timeout`."
         },
         "auth": {
           "$ref": "#/$defs/authConfig"
@@ -116,7 +146,7 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "unevaluatedProperties": false,
           "required": ["command"],
           "properties": {
             "type": {
@@ -143,6 +173,9 @@
             "cwd": {
               "type": "string",
               "description": "Working directory used when spawning the stdio process."
+            },
+            "launchApp": {
+              "$ref": "#/$defs/launchApp"
             }
           },
           "not": {
@@ -158,7 +191,7 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "unevaluatedProperties": false,
           "required": ["type", "url"],
           "properties": {
             "type": {
@@ -189,7 +222,7 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "unevaluatedProperties": false,
           "required": ["type", "url"],
           "properties": {
             "type": {

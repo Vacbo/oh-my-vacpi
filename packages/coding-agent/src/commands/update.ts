@@ -1,21 +1,14 @@
 /**
- * Check for and install updates.
+ * Start a fork update agent session.
  */
-import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { runUpdateCommand } from "../cli/update-cli";
-import { initTheme } from "../modes/theme/theme";
 
 export default class Update extends Command {
-	static description = "Check for and install updates";
-
-	static flags = {
-		force: Flags.boolean({ char: "f", description: "Force update", default: false }),
-		check: Flags.boolean({ char: "c", description: "Check for updates without installing", default: false }),
-	};
+	static description = "Start a new session to merge the latest upstream tag";
 
 	async run(): Promise<void> {
-		const { flags } = await this.parse(Update);
-		await initTheme();
-		await runUpdateCommand({ force: flags.force, check: flags.check });
+		await this.parse(Update);
+		await runUpdateCommand();
 	}
 }

@@ -2114,6 +2114,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			mcpManager.setOnToolsChanged(tools => {
 				void session.refreshMCPTools(tools);
 			});
+			// Close the race window between `discoverAndLoadMCPTools` returning the
+			// initial snapshot (already injected into the session at construction)
+			// and the callback above being wired. A server whose handshake settles
+			// in that gap would otherwise have its tools forever invisible to the
+			// session — `setOnToolsChanged` only fires on the *next* change.
+			void session.refreshMCPTools(mcpManager.getTools());
 			// Wire prompt refresh → rebuild MCP prompt slash commands
 			mcpManager.setOnPromptsChanged(serverName => {
 				const promptCommands = buildMCPPromptCommands(mcpManager);

@@ -983,6 +983,12 @@ export class MCPCommandController {
 									? theme.fg("muted", " ◌ connecting")
 									: theme.fg("muted", " ○ not connected");
 					lines.push(`  ${theme.fg("accent", name)}${status} ${theme.fg("dim", `[${type}]`)}`);
+					if (state === "disconnected") {
+						const lastError = this.ctx.mcpManager?.getLastConnectError(name);
+						if (lastError) {
+							lines.push(`    ${theme.fg("error", `↳ ${lastError.message}`)}`);
+						}
+					}
 				}
 				lines.push("");
 			}
@@ -1006,6 +1012,12 @@ export class MCPCommandController {
 									? theme.fg("muted", " ◌ connecting")
 									: theme.fg("muted", " ○ not connected");
 					lines.push(`  ${theme.fg("accent", name)}${status} ${theme.fg("dim", `[${type}]`)}`);
+					if (state === "disconnected") {
+						const lastError = this.ctx.mcpManager?.getLastConnectError(name);
+						if (lastError) {
+							lines.push(`    ${theme.fg("error", `↳ ${lastError.message}`)}`);
+						}
+					}
 				}
 				lines.push("");
 			}
@@ -1023,6 +1035,12 @@ export class MCPCommandController {
 									? theme.fg("muted", " ◌ connecting")
 									: theme.fg("muted", " ○ not connected");
 						lines.push(`  ${theme.fg("accent", name)}${status}`);
+						if (state === "disconnected") {
+							const lastError = this.ctx.mcpManager!.getLastConnectError(name);
+							if (lastError) {
+								lines.push(`    ${theme.fg("error", `↳ ${lastError.message}`)}`);
+							}
+						}
 					}
 					lines.push("");
 				}

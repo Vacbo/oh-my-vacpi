@@ -4,6 +4,8 @@
  * Canonical shape for MCP server configurations, regardless of source format.
  * All providers translate their native format to this shape.
  */
+
+import type { MCPLaunchApp } from "../mcp/types";
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
@@ -15,8 +17,10 @@ export interface MCPServer {
 	name: string;
 	/** Whether this server is enabled (default: true) */
 	enabled?: boolean;
-	/** Connection timeout in milliseconds */
+	/** Per-tool-call timeout in milliseconds (default: 30000). */
 	timeout?: number;
+	/** Hard cap on the startup handshake (default: 30000). Separate from `timeout`. */
+	connectTimeoutMs?: number;
 	/** Command to run (for stdio transport) */
 	command?: string;
 	/** Command arguments */
@@ -25,6 +29,11 @@ export interface MCPServer {
 	env?: Record<string, string>;
 	/** Working directory for stdio transport */
 	cwd?: string;
+	/**
+	 * macOS-only: ensure a macOS app is running before spawning the stdio command.
+	 * Forwarded to `MCPStdioServerConfig.launchApp` when transport === "stdio".
+	 */
+	launchApp?: MCPLaunchApp;
 	/** URL (for HTTP/SSE transport) */
 	url?: string;
 	/** HTTP headers (for HTTP transport) */
@@ -67,6 +76,21 @@ export const mcpCapability = defineCapability<MCPServer>({
 		}
 		if ((server.transport === "http" || server.transport === "sse") && !server.url) {
 			return "http/sse transport requires url field";
+		}
+
+		// launchApp is stdio-only
+		if (server.launchApp !== undefined) {
+			const inferredStdio = server.transport === "stdio" || (!server.transport && !!server.command);
+			if (!inferredStdio) {
+				return "launchApp is only valid for stdio transport";
+			}
+			if (typeof server.launchApp === "string") {
+				if (server.launchApp.length === 0) return "launchApp string must not be empty";
+			} else {
+				if (typeof server.launchApp.path !== "string" || server.launchApp.path.length === 0) {
+					return "launchApp.path must be a non-empty string";
+				}
+			}
 		}
 
 		return undefined;

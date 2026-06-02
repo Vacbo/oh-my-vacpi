@@ -438,14 +438,29 @@ export class CommandController {
 
 		if (this.ctx.mcpManager) {
 			const mcpServers = this.ctx.mcpManager.getConnectedServers();
+			const connectedSet = new Set(mcpServers);
+			const allNames = this.ctx.mcpManager.getAllServerNames();
+			const disconnected = allNames.filter(name => !connectedSet.has(name));
 			info += `\n${theme.bold("MCP Servers")}\n`;
-			if (mcpServers.length === 0) {
+			if (mcpServers.length === 0 && disconnected.length === 0) {
 				info += `${theme.fg("dim", "None connected")}\n`;
 			} else {
 				for (const name of mcpServers) {
 					const conn = this.ctx.mcpManager.getConnection(name);
 					const toolCount = conn?.tools?.length ?? 0;
 					info += `${theme.fg("dim", `${name}:`)} ${theme.fg("success", "connected")} ${theme.fg("dim", `(${toolCount} tools)`)}\n`;
+				}
+				// Surface disconnected servers with their classified last-connect error so
+				// the user sees *why* a server is missing without digging through `/mcp`.
+				for (const name of disconnected) {
+					const status = this.ctx.mcpManager.getConnectionStatus(name);
+					if (status === "connecting") {
+						info += `${theme.fg("dim", `${name}:`)} ${theme.fg("warning", "connecting")}\n`;
+						continue;
+					}
+					const lastError = this.ctx.mcpManager.getLastConnectError(name);
+					const detail = lastError ? ` ${theme.fg("dim", `(${lastError.message})`)}` : "";
+					info += `${theme.fg("dim", `${name}:`)} ${theme.fg("error", "disconnected")}${detail}\n`;
 				}
 			}
 		}

@@ -39,8 +39,14 @@ import type {
 /** MCP protocol version we support */
 const PROTOCOL_VERSION = "2025-03-26";
 
-/** Default connection timeout in ms */
-const CONNECTION_TIMEOUT_MS = 30_000;
+/**
+ * Default connection-handshake cap in ms. Bounds `initialize` so unreachable or
+ * hung servers can't block the agent at startup. Per-tool-call timeouts use
+ * `config.timeout` (also defaults to 30s) and are intentionally separate so
+ * users can lift the per-call cap (e.g. multi-hour agent runs) without losing
+ * the startup-fail-fast guarantee.
+ */
+export const CONNECTION_TIMEOUT_MS = 30_000;
 
 /** Client info sent during initialization */
 const CLIENT_INFO = {
@@ -139,7 +145,7 @@ export async function connectToServer(
 		onRequest?: (method: string, params: unknown) => Promise<unknown>;
 	},
 ): Promise<MCPServerConnection> {
-	const timeoutMs = config.timeout ?? CONNECTION_TIMEOUT_MS;
+	const timeoutMs = config.connectTimeoutMs ?? CONNECTION_TIMEOUT_MS;
 	let transport: MCPTransport | undefined;
 
 	const connect = async (): Promise<MCPServerConnection> => {

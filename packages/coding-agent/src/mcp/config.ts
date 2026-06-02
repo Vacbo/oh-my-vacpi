@@ -41,6 +41,7 @@ function convertToLegacyConfig(server: MCPServer): MCPServerConfig {
 	const shared = {
 		enabled: server.enabled,
 		timeout: server.timeout,
+		connectTimeoutMs: server.connectTimeoutMs,
 		auth: server.auth,
 		oauth: server.oauth,
 	};
@@ -54,6 +55,7 @@ function convertToLegacyConfig(server: MCPServer): MCPServerConfig {
 		if (server.args) config.args = server.args;
 		if (server.env) config.env = server.env;
 		if (server.cwd) config.cwd = server.cwd;
+		if (server.launchApp !== undefined) config.launchApp = server.launchApp;
 		return config;
 	}
 
@@ -273,6 +275,31 @@ export function validateServerConfig(name: string, config: MCPServerConfig): str
 		}
 	} else {
 		errors.push(`Server "${name}": unknown server type "${serverType}"`);
+	}
+
+	// launchApp is stdio-only and must not be empty
+	if ("launchApp" in config && config.launchApp !== undefined) {
+		if (serverType !== "stdio") {
+			errors.push(`Server "${name}": "launchApp" is only valid for stdio transport`);
+		} else if (typeof config.launchApp === "string") {
+			if (config.launchApp.length === 0) {
+				errors.push(`Server "${name}": "launchApp" string must not be empty`);
+			}
+		} else if (config.launchApp && typeof config.launchApp === "object") {
+			const path = (config.launchApp as { path?: unknown }).path;
+			if (typeof path !== "string" || path.length === 0) {
+				errors.push(`Server "${name}": "launchApp.path" must be a non-empty string`);
+			}
+		} else {
+			errors.push(`Server "${name}": "launchApp" must be a string or { path, foreground? } object`);
+		}
+	}
+
+	// connectTimeoutMs must be a positive number when set
+	if (config.connectTimeoutMs !== undefined) {
+		if (typeof config.connectTimeoutMs !== "number" || !(config.connectTimeoutMs > 0)) {
+			errors.push(`Server "${name}": "connectTimeoutMs" must be a positive number`);
+		}
 	}
 
 	return errors;

@@ -12,11 +12,39 @@ import type {
 	JsonRpcMessage,
 	JsonRpcRequest,
 	JsonRpcResponse,
+	MCPLaunchApp,
 	MCPRequestOptions,
 	MCPStdioServerConfig,
 	MCPTransport,
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
+
+/**
+ * Ensure a macOS app backing this stdio server is running before we spawn the
+ * subprocess. Throws on non-darwin platforms and on non-zero `open` exit.
+ *
+ * Idempotent: `open` against a running app is a no-op. We rely on `open -gja`
+ * (background, no activation) when `foreground !== true` so the user's focus
+ * is not stolen at session start.
+ */
+export async function ensureMacAppRunning(launchApp: MCPLaunchApp): Promise<void> {
+	if (process.platform !== "darwin") {
+		throw new Error(`launchApp is macOS-only (current platform: ${process.platform})`);
+	}
+	const { path, foreground } =
+		typeof launchApp === "string" ? { path: launchApp, foreground: false } : { foreground: false, ...launchApp };
+	if (!path) throw new Error("launchApp.path must be a non-empty string");
+	const args = foreground ? ["-a", path] : ["-gja", path];
+	// Routed through `Bun.spawn` (not the named `spawn` import) so tests can spy
+	// on the global without the import-time binding bypassing them.
+	const child = Bun.spawn({ cmd: ["open", ...args], stdout: "ignore", stderr: "pipe" });
+	const exitCode = await child.exited;
+	if (exitCode !== 0) {
+		const stderr = await new Response(child.stderr as ReadableStream<Uint8Array>).text();
+		const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
+		throw new Error(`launchApp: 'open ${args.join(" ")}' failed with exit ${exitCode}${detail}`);
+	}
+}
 
 /**
  * Stdio transport for MCP servers.
@@ -50,6 +78,10 @@ export class StdioTransport implements MCPTransport {
 	 */
 	async connect(): Promise<void> {
 		if (this.#connected) return;
+
+		if (this.config.launchApp) {
+			await ensureMacAppRunning(this.config.launchApp);
+		}
 
 		const args = this.config.args ?? [];
 		const env = {
@@ -182,9 +214,16 @@ export class StdioTransport implements MCPTransport {
 		if (!this.#connected) return;
 		this.#connected = false;
 
+		// Capture subprocess exit code (if any) so the reject message is informative.
+		// `Transport closed (subprocess exit code N)` lets classifyConnectError
+		// distinguish "process exited without responding" from generic transport drop.
+		const exitCode = this.#process?.exitCode;
+		const detail = exitCode != null ? ` (subprocess exit code ${exitCode})` : "";
+		const err = new Error(`Transport closed${detail}`);
+
 		// Reject all pending requests
 		for (const [, pending] of this.#pendingRequests) {
-			pending.reject(new Error("Transport closed"));
+			pending.reject(err);
 		}
 		this.#pendingRequests.clear();
 
