@@ -13,10 +13,11 @@ Required outcome:
 5. Record the current `HEAD` commit so the merge can be undone if needed, then merge the latest upstream tag into the current fork branch.
 6. Preserve fork-specific package names, compatibility shims, and local behavior.
 7. Resolve conflicts at the source, not by discarding fork changes.
-8. Run focused verification for the changed packages.
-9. Do not commit unless explicitly asked.
+8. Normalize each changed `packages/*/CHANGELOG.md`: these files use a `merge=union` driver, so the merge never drops lines but re-injects upstream `## [Unreleased]` items alongside the fork's. Keep all fork entries under `### oh-my-vacpi (fork)`, move any upstream entries that landed in `## [Unreleased]` into their versioned `## [x.y.z]` section (or drop them if upstream already released them), and remove duplicates. Never delete fork entries.
+9. Run focused verification for the changed packages.
+10. Do not commit unless explicitly asked.
 
 Recompile and reinstall handling:
-10. After a successful merge, check `.git/omp-rebuild.log` for the background hook result. If the hook did not run, failed, or skipped despite compiled-code changes, run `bun --cwd=packages/coding-agent run build` manually.
-11. Detect how the active `omp` is installed by resolving its path on PATH. If it resolves into the repo source or to `packages/coding-agent/dist/omp`, the rebuild hook is enough: report that the user must restart `omp` to load the rebuilt binary.
-12. If the active `omp` is a separate copied binary, replace it with `packages/coding-agent/dist/omp` after the rebuild completes, preserve executable permissions, then report that the user must restart `omp`.
+11. After a successful merge, check `.git/omp-rebuild.log` for the background hook result. If the hook did not run, failed, or skipped despite compiled-code changes, run `bun --cwd=packages/coding-agent run build` manually.
+12. Detect how the active `omp` is installed by resolving its path on PATH. If it resolves into the repo source or to `packages/coding-agent/dist/omp`, the rebuild hook is enough: report that the user must restart `omp` to load the rebuilt binary.
+13. If the active `omp` is a separate copied binary, replace it with `packages/coding-agent/dist/omp` after the rebuild completes, preserve executable permissions, then report that the user must restart `omp`.
