@@ -38,7 +38,7 @@ describe("fork update session launch", () => {
 	it("pins the fork repo dir to the default checkout", () => {
 		const dir = resolveForkRepoDir({ env: {}, homedir: "/home/pedro" });
 
-		expect(dir).toBe("/home/pedro/Documents/Projects/oh-my-vacpi");
+		expect(dir).toBe("/home/pedro/Dev/oh-my-vacpi");
 	});
 
 	it("honors OMP_VACPI_REPO_DIR over the default", () => {

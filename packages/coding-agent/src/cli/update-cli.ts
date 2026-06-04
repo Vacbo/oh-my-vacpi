@@ -32,11 +32,11 @@ export interface ForkRepoDirOptions {
 	homedir?: string;
 }
 
-const DEFAULT_FORK_REPO_SUBPATH = ["Documents", "Projects", "oh-my-vacpi"] as const;
+const DEFAULT_FORK_REPO_SUBPATH = ["Dev", "oh-my-vacpi"] as const;
 
 /**
  * Resolve the fork checkout the update session must operate in.
- * `OMP_VACPI_REPO_DIR` overrides; otherwise the default `~/Documents/Projects/oh-my-vacpi`.
+ * `OMP_VACPI_REPO_DIR` overrides; otherwise the default `~/Dev/oh-my-vacpi`.
  */
 export function resolveForkRepoDir(options: ForkRepoDirOptions = {}): string {
 	const override = options.env?.OMP_VACPI_REPO_DIR?.trim();
