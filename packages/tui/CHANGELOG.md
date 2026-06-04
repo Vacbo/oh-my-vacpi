@@ -7,6 +7,15 @@
 #### Added
 
 - Added `TUI.injectInput(data)`, a public method that feeds input through the same dispatch path as real terminal input (input listeners, focus, overlays), so it never bypasses focus/overlay logic. Used only by the gated, loopback-only session input-control bridge in the coding agent.
+- Added `computeSlashUsageBoosts` so the slash-command autocomplete boosts recently-used commands (frecency) without letting usage outrank a real prefix match.
+
+#### Changed
+
+- Made eager native-scrollback rebuild during streaming opt-in via the `tui.rebuildScrollbackDuringStreaming` setting (default off).
+
+#### Fixed
+
+- Fixed bare `@`/`/`/`#` rows rendering in autocomplete by dropping items that render as no-ops (empty value, value equal to the active prefix, or an empty label paired with a single-character value).
 
 ## [15.7.6] - 2026-06-01
 

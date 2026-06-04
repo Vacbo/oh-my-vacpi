@@ -15,37 +15,38 @@
 - Added mirror API endpoints and a live `text/event-stream` feed: `GET /api/sessions/:runId/{terminal,events,stream}`, a `mode=photo` render, and stable DOM selectors (`[data-terminal-row]`, `[data-terminal-cell]`, `[data-cursor]`).
 - Enriched terminal snapshots with dim/blink/invisible/strikethrough/overline cell attributes, palette-vs-RGB color modes (resolved to CSS for the mirror), and cursor visibility/style derived from the recorded ANSI stream.
 - Added optional Hindsight tag support to the model-facing `recall` and `retain` tools: `recall` can now filter by `tags`/`tagsMatch`, and retained items can attach tags that are merged with the active session scope tags.
-
-#### Changed
-
-- Changed `omp update` in the fork to start a fresh slow-model agent session for merging the latest upstream tag, instead of installing the upstream package or release binary over fork-specific changes. The session is pinned to the fork checkout (`OMP_VACPI_REPO_DIR`, default `~/Documents/Projects/oh-my-vacpi`) so the merge always edits the right repo regardless of the cwd `omp update` ran from.
-
-#### Fixed
-
-- Fixed `omp sessions watch`/`inspect` throwing an uncaught exception when no run id was passed (`watch requires a run id`). `watch` now defaults to the only running registry-backed session, prints a concise error listing run ids when ambiguous, and rejects process-only sessions (no event stream) with a friendly message; `inspect` reports a typed not-found/usage error. Errors print to stderr with a non-zero exit instead of a stack trace.
-
-### Added
-
 - Added `launchApp` per-server stdio MCP option that ensures a macOS app backing the server is running before spawning the proxy command. Accepts a string shorthand (`"Repo Prompt"`) for background launch, or `{ path, foreground? }` for explicit control. Resolves the RepoPrompt-CLI-hangs-when-app-is-closed footgun: `omp` now auto-`open -gja`s the app at session start instead of spinning forever on a dead proxy.
 - Added `connectTimeoutMs` per-server MCP option that bounds the startup handshake (`initialize` + `tools/list`) independently of `timeout` (per-tool-call). Default 30s. Lets users keep multi-hour per-call timeouts for long-running agent or oracle tools without sacrificing startup fail-fast.
 - Added `MCPManager.getLastConnectError(name)` and `classifyConnectError(err, name)` so `/mcp` and `/info` can show *why* a server is disconnected (`unreachable | timeout | protocol | other`) instead of a generic "not connected". Classifier covers Node `ECONNREFUSED`/`ENOENT`/`EAI_NONAME`, Bun `fetch` `ConnectionRefused` + "Unable to connect" wording, `Transport closed (subprocess exit code N)`, outer connect timeout, inner request/SSE/notify timeouts, and `MCP error -32xxx`.
+- Added a Jupyter integration: a CLI/command, Python kernel lifecycle, prelude, gateway coordinator with cancellation, shared websocket framing for the gateway, and a `task` isolation-backend module.
+- Added path-guarded `conflict://<N>` URIs for `read`/`write`: the registered conflict id is asserted to still target the intended file, unqualified single writes require the conflict to be in-workspace, and `conflict://*` scopes bulk resolution to the guarded file.
+- Added frecency ranking to the slash-command picker so recently-picked commands (builtin, extension, and `/skill:<name>`) surface first, backed by a `slash_command_usage` table (storage schema bumped to 6).
 
-### Changed
+#### Changed
 
+- Changed `omp update` in the fork to start a fresh slow-model agent session for merging the latest upstream tag, instead of installing the upstream package or release binary over fork-specific changes. The session is pinned to the fork checkout (`OMP_VACPI_REPO_DIR`, default `~/Dev/oh-my-vacpi`) so the merge always edits the right repo regardless of the cwd `omp update` ran from. Before merging, the session now summarizes the upstream changelog delta (the features being gained) and waits for confirmation, refuses to merge over a dirty worktree unless told to proceed, and records `HEAD` so the merge can be rolled back.
 - Bounded MCP tool discovery (`tools/list`) by `connectTimeoutMs` on both initial-connect and reconnect paths, with atomic transport cleanup on timeout — previously a hung `tools/list` could orphan a half-open connection with no tools, and on reconnect could hang for the full `config.timeout` (up to 4h in user configs) on every retry.
 - Captured the subprocess exit code in `StdioTransport`'s `Transport closed` rejection (`Transport closed (subprocess exit code N)`) so logs and the classifier can distinguish "process exited without responding" from generic transport drops.
 - Wrapped HTTP transport `fetch` rejections to preserve Bun's `code` field (e.g. `ConnectionRefused`) and to include the URL in the error message, so the classifier can map them and operators can see which endpoint failed.
 - Synced the agent session against the live MCP tool list immediately after wiring `setOnToolsChanged`, closing a startup race where a server whose handshake settled between `discoverAndLoadMCPTools` returning and the callback being wired would have its tools forever invisible to the session.
 - `/mcp` and `/info` now render the classified last-connect-error next to each disconnected MCP server, and `/info` lists disconnected servers (not just connected ones).
+- Exposed `Effort.Max` across the thinking surface: the Shift+Tab thinking cycle, `EffortSchema`/`ReasoningEffortMapSchema`, generated thinking metadata, and a new `thinking.max` theme symbol (with ASCII, unicode, and nerd-font glyphs).
+- Changed the thinking-level status icons so `xhigh`/`max` use distinct nerd-font flame glyphs, with the more-filled flame on `max`.
+- Made the workspace walk cancellable (threading the cancel token into the native walker) and short-circuited the tree build when the root is `$HOME`, so it no longer traverses cloud-synced folders before cancellation can run.
 
-### Fixed
+#### Fixed
 
+- Fixed `omp sessions watch`/`inspect` throwing an uncaught exception when no run id was passed (`watch requires a run id`). `watch` now defaults to the only running registry-backed session, prints a concise error listing run ids when ambiguous, and rejects process-only sessions (no event stream) with a friendly message; `inspect` reports a typed not-found/usage error. Errors print to stderr with a non-zero exit instead of a stack trace.
 - Fixed `eager-todo` system reminder occasionally producing `todo_write({})` on the first turn of new sessions under Anthropic's `tool_choice: { type: "tool", name }` forcing. The reminder was prose-only and left the model with no literal JSON anchor; under named-tool forcing Anthropic can emit a `tool_use` block with empty input, which `parseStreamingJson` coerces to `{}` and Zod then rejects with `ops: expected array, received undefined`. The reminder now inlines a literal `{"ops":[{"op":"init","list":[...]}]}` example so the forced emission has a copy-pasteable shape, with a regression test that parses the inlined sample to keep it valid against the live schema
 - Fixed MCP `mcp-schema.json` rejecting valid base properties (`timeout`, `auth`, `oauth`) on stdio/http/sse server configs in Ajv 2020 validators — the transport branches used `additionalProperties: false` next to a `serverBase` `allOf` sibling, which doesn't see the sibling's evaluated properties. Switched to `unevaluatedProperties: false`.
 - Fixed the deferred-tool fallback exposing stale tool schemas to the agent for unbounded periods when a server failed to handshake within the 250 ms startup window. Combined with a 4-hour per-tool-call `timeout`, this could leak full schemas into every prompt for hours after RepoPrompt (or any proxied-app server) failed silently. The fallback is removed: pending servers expose no tools until their handshake actually settles.
-### Fixed
-
-- Fixed a module-load crash (`ReferenceError: Cannot access 'evalToolRenderer' before initialization`) triggered whenever `tools/eval` was imported before `tools/renderers`. The eval JS backend statically pulls the agent/task/sdk/extension chain, which re-enters the root barrel → `modes/components` → `tool-execution` → `renderers` while `eval.ts` was still initializing, so `renderers.ts` read `evalToolRenderer` in its TDZ. The eval TUI renderer is now split into a dependency-light `tools/eval-render.ts` that `renderers.ts` imports directly (decoupling pure rendering from the eval runtime); `eval.ts` re-exports `evalToolRenderer`/`EVAL_DEFAULT_PREVIEW_LINES` for compatibility.
+- Fixed two more `eager-todo` reminder defects: it referenced a nonexistent `details` field (now redirected to the `note` op, with the string-only constraint stated) and now warns against double-wrapping the `ops` argument.
+- Fixed legacy `pi` plugin imports failing to load by routing `@earendil-works/*` plugin packages through the compat layer.
+- Fixed native plugin dependency resolution to resolve from the plugin's original install location.
+- Restored legacy extension exports for fork compatibility.
+- Fixed GitHub issue metadata not rendering in the issue view.
+- Simplified the ProjFS isolation fallback for Windows task isolation.
+- Fixed stale legacy-mirror cleanup in the extensibility layer.
 
 ## [15.7.6] - 2026-06-01
 ### Added

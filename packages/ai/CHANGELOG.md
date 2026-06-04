@@ -2,9 +2,21 @@
 
 ## [Unreleased]
 
-### Fixed
+### oh-my-vacpi (fork)
+
+#### Added
+
+- Added `Effort.Max`, a new top thinking tier above `xhigh` that reaches Anthropic Opus 4.6+ adaptive-thinking `max` effort. Ladders are per Opus version (Opus 4.6 Messages and Bedrock Opus skip `xhigh`; Opus 4.7+ Messages expose both `xhigh` and `max`), and `clampThinkingLevelForModel` walks `Max` down to each model's highest supported level for OpenAI, Gemini, and DeepSeek.
+
+#### Changed
+
+- Promoted saved `Effort.XHigh` configs to `Effort.Max` on Opus 4.6/Bedrock Opus models that support `max` but not `xhigh`, re-inferred thinking metadata on `ModelRegistry` cache reads so stale `xhigh` ladders upgrade, accepted `reasoning_effort: max` in the OpenAI-compat servers, exposed `thinkingBudgets.max` in settings, and aligned Bedrock thinking budgets to Converse limits.
+
+#### Fixed
 
 - Fixed Anthropic adaptive-thinking responses being truncated mid-emission by `stop_reason: "max_tokens"` because `buildParams` defaulted `max_tokens` to `model.maxTokens / 3` for *every* mode, but adaptive thinking self-allocates the thinking budget out of the same per-response ceiling — so a long thinking burst plus a large structured `tool_use` (e.g. a multi-phase `todo_write`) could exceed the `/3` cap, trigger `max_tokens`, and silently install a partial-JSON-repaired truncated call. `ensureMaxTokensForThinking` now restores the deleted adaptive-mode branch: when the resolved thinking shape is `{ type: "adaptive" }` and the caller did not pass an explicit `maxTokens`, lift `params.max_tokens` to `model.maxTokens` so the model gets the full documented per-response capacity. Budget-mode behaviour (`type: "enabled"` + `budget_tokens`) and explicit caller overrides are unchanged
+- Restored the legacy `Type` export from `@oh-my-pi/pi-ai` for fork compatibility.
+
 ## [15.7.5] - 2026-06-01
 
 ### Added
