@@ -565,3 +565,100 @@ oh-my-vacpi already ships the CDP plumbing Oracle reimplements: `browser/registr
 **Why not auto-recover server-side**: same reasoning as the empty-`{}` entry (2026-05-26): unwrapping `{"ops":{"ops":…}}` in the tool dispatcher couples validation to prompt heuristics. The prompt anchor fixes every forced-tool-choice surface for every model at zero runtime cost.
 
 **Follow-up**: if the literal-example anchor was upstreamed to `can1357/oh-my-pi`, it carries the same ambiguity; upstream the reword plus the test hardening alongside the prior two eager-todo fixes.
+
+---
+
+## 2026-06-05 — Agent-facing harness observability tools/API   `[open]` `[high]`
+
+**Where**: new tool(s) under `packages/coding-agent/src/tools/`, backed by a read-only introspection surface over system-prompt assembly (`system-prompt.ts`), session state (`session/agent-session.ts`), settings resolution (`config/`), and capability discovery (`discovery/`). Related: the 2026-06-01 "Live session observability" entry (that one observes a running session from outside; this one lets the agent introspect harness internals from inside).
+
+**Context**: The agent has no first-class way to understand the harness it runs in. Questions like "is the global AGENTS.md loaded", "what is my exact context composition", "which providers/capabilities resolved" currently require ad-hoc `bun run` probes against the source. User wants the agent to answer harness questions from inside a session. Stated as a near-term plan: expose the API first, then the tools.
+
+**Recommendation (not implemented)**: Build one read-only introspection API (context composition, resolved settings, active tools/skills/rules, capability results, token accounting) as the single source of truth, then surface it to both the user-facing context inspector (below) and a model-facing tool. Avoid two divergent code paths. The model-facing tool is LOW priority per user (2026-06-05): a brief "see the API docs" hint suffices and the model can search docs; the read-only data model/API is the high-priority foundation.
+
+---
+
+## 2026-06-05 — In-session context inspector: byte-for-byte expandable manifest   `[in-progress]` `[high]`
+
+**Where**: `/context` command in `modes/controllers/command-controller.ts:587`, renderer `modes/utils/context-usage.ts`, system-prompt assembly `system-prompt.ts` (`buildSystemPrompt`), message state `session/agent-session.ts`. Token accounting already exists (`pi-natives` `countTokens`, compaction `estimateTokens`).
+
+**Context**: Current `/context` shows a token-category summary (System prompt / tools / context / Skills / Messages / Free / Autocompact buffer). Good for "what roughly fills the window", useless for "show me exactly what the model sees". User wants a progressive, byte-for-byte drill-down from the system prompt through every message to the latest, modeled as a recursive expand/collapse manifest (HTML `<details>`/`<summary>` mental model): a top node with a one-line summary plus token/byte count, expandable into children (system blocks -> sections -> context files / skills / tools; messages -> each message -> full content), collapsible back to a tag.
+
+**Recommendation (decisions 2026-06-05)**: TUI-native first; browser HTML is a later "plus" (user barely uses the browser). Save as hybrid with TUI priority. Surface as `context full` / `context detailed` (NOT "manifest" — too obscure for users): either a typed arg on `/context`, or `/context` made interactive (arrow keys to drill in). Auto-expand to a "nice" default level (System prompt -> block 1 / block 2, top-level categories, as in the proposed tree); full byte-for-byte content is NOT auto-expanded but user-triggered, with smooth back-and-forth navigation to trace where each piece of context comes from. Secrets shown RAW in the inspector (user owns them; LLM-facing masking is the separate secret-redaction entry below). Per-node token/byte/% from existing accounting. Thinking-block handling in any HTML view deferred.
+
+---
+
+## 2026-06-05 — Agent-visible TUI screenshot (self-view rendered into chat)   `[open]` `[high]`
+
+**Where**: `tui_observe` (`screenshot` / `native_screenshot` actions), the browser-mirror render pipeline, and the tool-result image attachment path. Related: 2026-06-01 "Live session observability" entry.
+
+**Context**: When the agent drives a browser, the screenshot is attached and the user sees exactly what the agent saw. User wants the same for the TUI: the agent renders the running terminal (loopback mirror or native capture), screenshots it, and the image surfaces in the user's chat so the user can confirm the agent sees the terminal correctly. `tui_observe screenshot` already renders via the mirror and `native_screenshot` exists, but it is unverified whether the resulting image surfaces inline in the user-visible transcript the way browser screenshots do.
+
+**Recommendation (not implemented)**: Verify the `tui_observe screenshot` image attaches to the user-visible transcript (not just returned to the model); if not, route it through the same attachment path the browser tool uses. Capturing the agent's own live session mid-render is reflexive, so a separate process/session is likely needed for a clean shot.
+
+---
+
+## 2026-06-05 — Parallel background compaction via cheap SMOL model   `[open]` `[high]`
+
+**Where**: compaction pipeline (`@oh-my-pi/pi-agent-core/compaction`, `session/agent-session.ts` compaction paths), model roles (`config/model-registry.ts` smol/slow), async dispatch (`task/index.ts`), tool-output truncation (vacpi already truncates tool I/O and saves the full output).
+
+**Context**: User has a cheap fast SMOL model on Fireworks.ai with generous (near-unlimited) rate limits, target Kimi 2.6 Turbo (256K context). Idea: run a compaction/summarization agent continuously IN PARALLEL in the background, maintaining a precomputed compacted summary of the live session, so when the user or model wants to compact or hand off, the compacted context is ALREADY ready (instant swap). Show in the TUI that the context was swapped to the auto-compacted version.
+
+Key requirements:
+- Cadence: not every agent response / user input (too frequent); something like every ~5 events / debounced. Open question.
+- Preserve the system prompt BYTE-FOR-BYTE identical; only summarize messages. The agent is a "smart context manager" that knows what to keep verbatim vs compress.
+- Tool-output preservation: keep tool/file references with a legend/caption (e.g. "calls X,Y read file Z; result elided, may matter") so the agent does not need to re-run the tool to recover output. vacpi already saves full outputs; the captions are continuation hints to avoid wasted re-runs.
+- Iterative for huge sessions: the cheap model's 256K window is smaller than Opus/GPT 1M. For sessions exceeding it, compact iteratively from session start, feeding the model its own prior summary plus the next slice of messages, folding forward. Target keep under ~200K.
+- Feedback loop: if the user or agent judges a compaction bad, capture it to improve the compaction agent/prompt over time.
+
+**Recommendation (not implemented, design pending)**: Hybrid summary = deterministic skeleton (system prompt verbatim, tool-call reference captions templated, message boundaries) + model-written prose for the semantic part. Background worker on the smol role; write the rolling summary ALONGSIDE the session (not into it) so the live session is untouched until an explicit swap. Reuse existing compaction token accounting. Shares its summary artifact with the auto-handoff entry below.
+
+---
+
+## 2026-06-05 — Extend `/handoff`: agent-initiated trigger + literal-summary seed   `[open]` `[med]`
+
+**Where**: existing `/handoff` command (`slash-commands/builtin-registry.ts:849`, `allowArgs: true`, `inlineHint: "[focus instructions]"`) -> `command-controller.ts:1230 handleHandoffCommand` -> `agent-session.ts:6094 session.handoff` -> `generateHandoff` (oneshot LLM over full history). Session creation via `session-manager.ts`.
+
+**Finding (2026-06-05)**: `/handoff [focus instructions]` ALREADY exists and does most of the vision: it takes a focus arg, the handoff document is LLM-generated by `generateHandoff` (steered by the focus text, `initiatorOverride: "agent"`, honors the `/model` thinking level), and it seeds a new session. So "the agent creates the summary" is already true; the focus arg steers it (it is NOT a verbatim summary you paste).
+
+**Gaps (what is left to add)**: (1) Agent-initiated handoff: `/handoff` is user-typed only; there is no model-facing tool/trigger, so the agent cannot propose or run a handoff itself when context bloats. (2) Literal-summary injection: handoff always regenerates from history + focus; there is no path to pass an exact pre-written document. This is where the parallel-compaction rolling summary would plug in as the handoff seed.
+
+**Recommendation (not implemented)**: Keep `generateHandoff` as the default. Add (a) an optional model-facing trigger (tool or threshold-gated proposal), gated + reversible (preserve parent, link via `parentSession`); and (b) an option to seed the handoff from a supplied summary (the rolling compaction artifact) instead of regenerating. One summary generator, two consumers (in-place compaction swap + handoff).
+
+---
+
+## 2026-06-05 — Secret redaction: identity-preserving masking + raw in user inspector   `[open]` `[med]`
+
+**Where**: secret obfuscation path (`secretsEnabled` in `system-prompt.ts` `buildSystemPrompt`, plus the `#XXXX#` redaction applied to tool output), and the context inspector above.
+
+**Context**: omp already masks secrets to the model as `#XXXX#` opaque tokens. User's requirements: (1) confirm secrets are ALWAYS masked before reaching the LLM (the agent never sees raw values); (2) masking must be IDENTITY-PRESERVING, the same secret maps to the same token so the model can tell whether two secrets are equal without seeing values (e.g. compare two API keys); (3) the model should KNOW a token is a redacted secret so it does not falsely tell the user to rotate an "exposed" key; (4) the USER-facing context inspector shows secrets RAW (the user owns them on their own machine). Net: the model can manipulate secrets via tools and reason about their identity, but never sees the values.
+
+**Recommendation (not implemented, verify first)**: Audit the existing redaction to confirm it is consistent/identity-preserving (same input -> same token) and that the model is told the token semantics. Then ensure the inspector renders raw (unredacted) since it is user-facing.
+
+---
+
+## 2026-06-05 — Debug/ephemeral session class (exclude from resume + recent lists)   `[open]` `[med]`
+
+**Where**: session creation (`session/session-manager.ts`), the run registry under `~/.omp/agent/runs`, the resume/recent pickers (`modes/controllers/selector-controller.ts` session selector + the recent-session listing), and `tui_observe list`.
+
+**Context**: To verify TUI work (e.g. drive `/context full` and screenshot it through the loopback mirror), the agent spawns a throwaway `omp` session in tmux. That session persists like any real one and pollutes the user's resume/recent list, so genuine sessions get buried under debugging spawns. Today the only way to find a real session is to scroll past the test ones. Verified live on 2026-06-05: spawning a test session works (tmux + `omp` source-run + `tui_observe screenshot`/`snapshot`), but it lands in the normal session history.
+
+**Recommendation (not implemented)**: Add a session "kind" flag (`debug`/`ephemeral`) settable at launch (a CLI flag like `omp --ephemeral`, or an env var), recorded in the run registry and the session storage metadata. The resume/recent pickers filter these out by default, with an explicit toggle/filter ("show debug sessions") to surface them; optionally TTL-prune ephemeral session files after N days. This lets the agent spin up clean test sessions for TUI screenshot verification (which needs a separate process from the live session for a non-reflexive shot) without polluting the user's history. Pairs with the "Agent-visible TUI screenshot" entry above, which already depends on a separate session for a clean capture.
+
+---
+## 2026-06-05 — TUI overlay/streaming flicker: pull upstream v15.9.2/v15.9.3 scrollback fixes   `[open]` `[high]`
+
+**Where**: TUI render-intent + native scrollback (`packages/tui/src/tui.ts`), the fork patch `ad5399a01` (`tui.rebuildScrollbackDuringStreaming` opt-in) and `EventController.setEagerNativeScrollbackRebuild`. Symptom surfaced via the `/context full` inspector but is not inspector-specific.
+
+**Finding (2026-06-05, confirmed by frame analysis of a Warp screen recording)**: The overlay (and likely streaming responses) flicker as a "compressed/half-rendered duplicate strip of the first rows at the very top," with orphaned right-aligned metrics, sitting above a clean copy. That is scrollback duplication / transient overlay rows, NOT the inspector's own render. Our tree is at the v15.9.1 merge base (`be70b0c52`); upstream shipped a series of TUI scrollback/overlay fixes in v15.9.2 and v15.9.3 that directly target this, NONE yet in our tree:
+- `5e369d4fc` prevented hidden overlays leaving transient rows in scrollback
+- `9f895141f` / `744708618` prevented live-region collapse duplicating scrollback
+- `f75cb3d41` dropped eager rebuild mode immediately when stream settled
+- `61f11a6ce` blocked destructive scrollback replay on unknown terminal viewports (the user runs under remote-control = an "unknown viewport")
+- `689431f17`, `1e3a8d5cd`, `d719e0791`, `4e54836f9`, `a1da2a8f0`, `f863d98f5` (related live-region/scrollback pins since v15.9.1)
+
+**Interaction with the fork patch**: `ad5399a01` made the eager native scrollback rebuild opt-in (default OFF) so the TUI stops auto-following scroll to the bottom (lets the user keep reading a long message while scrolled up). Disabling that rebuild can leave the transient/duplicate overlay rows the rebuild would otherwise clear, so the fork patch likely AGGRAVATES the flicker. Upstream `f75cb3d41` ("dropped eager rebuild mode immediately when stream settled") is a more surgical take on the same code path.
+
+**Recommendation (not implemented; merge work, user-owned)**: On the next upstream merge (v15.9.1 -> v15.9.3), prioritize these TUI commits and verify the overlay flicker AND the "don't follow scroll" behavior together; re-evaluate whether `ad5399a01`'s blanket opt-in is still needed or should be replaced by upstream's eager-rebuild rework (preserve the no-auto-scroll behavior the user wants). The context inspector overlay was independently hardened (top-anchored, header pinned, fixed-viewport internal scroll) to minimize the height-churn that triggers the bug, but the root fix is upstream.
+
+---
