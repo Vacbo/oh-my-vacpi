@@ -16,6 +16,21 @@
 
 - Fixed Anthropic adaptive-thinking responses being truncated mid-emission by `stop_reason: "max_tokens"` because `buildParams` defaulted `max_tokens` to `model.maxTokens / 3` for *every* mode, but adaptive thinking self-allocates the thinking budget out of the same per-response ceiling — so a long thinking burst plus a large structured `tool_use` (e.g. a multi-phase `todo_write`) could exceed the `/3` cap, trigger `max_tokens`, and silently install a partial-JSON-repaired truncated call. `ensureMaxTokensForThinking` now restores the deleted adaptive-mode branch: when the resolved thinking shape is `{ type: "adaptive" }` and the caller did not pass an explicit `maxTokens`, lift `params.max_tokens` to `model.maxTokens` so the model gets the full documented per-response capacity. Budget-mode behaviour (`type: "enabled"` + `budget_tokens`) and explicit caller overrides are unchanged
 - Restored the legacy `Type` export from `@oh-my-pi/pi-ai` for fork compatibility.
+## [15.9.2] - 2026-06-05
+
+### Added
+
+- Added an AES-256-GCM auth-broker snapshot cache module and `RemoteAuthCredentialStoreOptions.onSnapshot` so broker clients can persist broker-sourced full snapshots without blocking startup on every run.
+- Added `Model.omitMaxOutputTokens` so providers (notably Ollama proxies fronting cloud catalogs) can suppress `max_output_tokens` (Responses) and `max_tokens`/`max_completion_tokens` (Completions) on the wire while still using the catalog `maxTokens` for local budgeting. Without it, `applyCommonResponsesSamplingParams` unconditionally sent the catalog cap and HTTP-400'd against upstream APIs whose true output limit was unknown to OMP. ([#1881](https://github.com/can1357/oh-my-pi/issues/1881))
+
+### Changed
+
+- Changed usage-ranked OAuth credential selection to pick deterministic session-sticky weighted buckets instead of always choosing the top-ranked account, capping the best account at 2x the baseline session likelihood while keeping equal-priority accounts evenly balanced.
+
+### Fixed
+
+- Fixed parallel `function_call` items on the OpenAI Responses API losing arguments on every call except the last when the upstream server interleaves their stream events (observed against llama.cpp and other local Responses-compat hosts). `processResponsesStream` no longer routes `function_call_arguments.{delta,done}`, `output_item.done`, content_part/text/refusal/reasoning events through a singleton `currentItem`/`currentBlock` reference; it now tracks every open item in registries keyed by `output_index` and `item_id` so each event is folded into the matching block and the emitted `toolcall_end` carries the correct `contentIndex`. ([#1880](https://github.com/can1357/oh-my-pi/issues/1880))
+
 ## [15.9.1] - 2026-06-04
 
 ### Added

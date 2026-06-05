@@ -548,6 +548,7 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 	if (override.input !== undefined) result.input = override.input as ("text" | "image")[];
 	if (override.contextWindow !== undefined) result.contextWindow = override.contextWindow;
 	if (override.maxTokens !== undefined) result.maxTokens = override.maxTokens;
+	if (override.omitMaxOutputTokens !== undefined) result.omitMaxOutputTokens = override.omitMaxOutputTokens;
 	if (override.contextPromotionTarget !== undefined) result.contextPromotionTarget = override.contextPromotionTarget;
 	if (override.premiumMultiplier !== undefined) result.premiumMultiplier = override.premiumMultiplier;
 	if (override.cost) {
@@ -576,6 +577,7 @@ interface CustomModelDefinitionLike {
 	cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 	contextWindow?: number;
 	maxTokens?: number;
+	omitMaxOutputTokens?: boolean;
 	headers?: Record<string, string>;
 	compat?: Model<Api>["compat"];
 	contextPromotionTarget?: string;
@@ -598,6 +600,7 @@ type CustomModelOverlay = {
 	cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 	contextWindow?: number;
 	maxTokens?: number;
+	omitMaxOutputTokens?: boolean;
 	headers?: Record<string, string>;
 	compat?: Model<Api>["compat"];
 	contextPromotionTarget?: string;
@@ -668,6 +671,7 @@ function buildCustomModelOverlay(
 		cost: modelDef.cost,
 		contextWindow: modelDef.contextWindow,
 		maxTokens: modelDef.maxTokens,
+		omitMaxOutputTokens: modelDef.omitMaxOutputTokens,
 		headers: mergeCustomModelHeaders(providerHeaders, modelDef.headers, authHeader, providerApiKey),
 		compat: mergeCompat(providerCompat, modelDef.compat),
 		contextPromotionTarget: modelDef.contextPromotionTarget,
@@ -824,6 +828,7 @@ function finalizeCustomModel(model: CustomModelOverlay, options: CustomModelBuil
 			resolvedModel.contextWindow ?? reference?.contextWindow ?? (options.useDefaults ? 128000 : undefined),
 		maxTokens: resolvedModel.maxTokens ?? reference?.maxTokens ?? (options.useDefaults ? 16384 : undefined),
 		headers: resolvedModel.headers,
+		omitMaxOutputTokens: resolvedModel.omitMaxOutputTokens ?? reference?.omitMaxOutputTokens,
 		compat: mergeCompat(reference?.compat, resolvedModel.compat),
 		contextPromotionTarget: resolvedModel.contextPromotionTarget,
 		premiumMultiplier: resolvedModel.premiumMultiplier,
@@ -1125,6 +1130,7 @@ export class ModelRegistry {
 					cost: customModel.cost ?? existingModel.cost,
 					contextWindow: customModel.contextWindow ?? existingModel.contextWindow,
 					maxTokens: customModel.maxTokens ?? existingModel.maxTokens,
+					omitMaxOutputTokens: customModel.omitMaxOutputTokens ?? existingModel.omitMaxOutputTokens,
 					// Same-id custom definitions replace bundled transport behavior. Provider-level
 					// headers/compat were already folded into customModel during parsing; do not
 					// re-merge bundled transport metadata here.
