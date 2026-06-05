@@ -610,9 +610,9 @@ export class CommandController {
 			overlayHandle?.hide();
 			this.ctx.ui.requestRender();
 		};
-		const overlay = new ContextInspectorOverlayComponent(manifest, done);
+		const overlay = new ContextInspectorOverlayComponent(manifest, done, this.ctx.ui.terminal);
 		overlayHandle = this.ctx.ui.showOverlay(overlay, {
-			anchor: "bottom-center",
+			anchor: "top-left",
 			width: "100%",
 			maxHeight: "100%",
 			margin: 0,

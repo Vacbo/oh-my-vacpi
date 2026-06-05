@@ -732,8 +732,9 @@ export function renderContextManifestText(manifest: ContextManifest): string {
 	const walk = (node: ManifestNode, depth: number): void => {
 		const indent = "  ".repeat(depth);
 		const detail = node.detail ? ` (${node.detail})` : "";
+		const pctUsed = summary.usedTokens > 0 ? node.tokens / summary.usedTokens : 0;
 		lines.push(
-			`${indent}${node.label}${detail} — ${node.tokens} tok / ${node.bytes} B / ${formatPercent(node.percentOfWindow)}`,
+			`${indent}${node.label}${detail} — ${node.tokens} tok · ${formatPercent(pctUsed)} used · ${formatPercent(node.percentOfWindow)} ctx`,
 		);
 		for (const child of node.children ?? []) walk(child, depth + 1);
 	};
