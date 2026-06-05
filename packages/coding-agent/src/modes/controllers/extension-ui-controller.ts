@@ -71,6 +71,7 @@ export class ExtensionUiController {
 			setFooter: () => {},
 			setHeader: () => {},
 			setEditorComponent: factory => this.ctx.setEditorComponent(factory),
+			addAutocompleteProvider: factory => this.ctx.addAutocompleteProvider(factory),
 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
 			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
 		};
@@ -507,6 +508,7 @@ export class ExtensionUiController {
 			setFooter: () => {},
 			setHeader: () => {},
 			setEditorComponent: () => {},
+			addAutocompleteProvider: () => {},
 			getToolsExpanded: () => false,
 			setToolsExpanded: () => {},
 		};

@@ -45,6 +45,7 @@
 - Fixed legacy `pi` plugin imports failing to load by routing `@earendil-works/*` plugin packages through the compat layer.
 - Fixed native plugin dependency resolution to resolve from the plugin's original install location.
 - Restored legacy extension exports for fork compatibility.
+- Fixed legacy `@earendil-works/pi` plugins (e.g. FFF) crashing at `session_start` with `ctx.ui.addAutocompleteProvider is not a function`. Added `addAutocompleteProvider(factory)` to the extension UI context: in interactive mode the factory wraps the editor's current autocomplete provider (composing in registration order and re-applied whenever the base provider rebuilds), and it is a no-op in non-interactive modes (ACP, RPC, background, headless). This restores FFF-backed `@`-mention file completion in the editor.
 - Fixed GitHub issue metadata not rendering in the issue view.
 - Simplified the ProjFS isolation fallback for Windows task isolation.
 - Fixed stale legacy-mirror cleanup in the extensibility layer.

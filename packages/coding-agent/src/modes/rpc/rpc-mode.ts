@@ -434,6 +434,10 @@ export async function runRpcMode(
 		setEditorComponent(): void {
 			// Custom editor components not supported in RPC mode
 		}
+
+		addAutocompleteProvider(): void {
+			// Autocomplete providers require the interactive editor; unavailable in RPC mode
+		}
 	}
 
 	// Wire up UI context for tool execution (ask tool, etc.) and extensions.

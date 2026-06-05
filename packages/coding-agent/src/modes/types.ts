@@ -5,6 +5,7 @@ import type { Component, Container, EditorTheme, Loader, Spacer, Text, TUI } fro
 import type { KeybindingsManager } from "../config/keybindings";
 import type { Settings } from "../config/settings";
 import type {
+	ExtensionAutocompleteProviderFactory,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
@@ -150,6 +151,7 @@ export interface InteractiveModeContext {
 	setEditorComponent(
 		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
 	): void;
+	addAutocompleteProvider(factory: ExtensionAutocompleteProviderFactory): void;
 
 	// Event handling
 	handleBackgroundEvent(event: AgentSessionEvent): Promise<void>;

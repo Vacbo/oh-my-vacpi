@@ -639,6 +639,7 @@ const noOpUIContext: ExtensionUIContext = {
 	setFooter: () => {},
 	setHeader: () => {},
 	setEditorComponent: () => {},
+	addAutocompleteProvider: () => {},
 	getToolsExpanded: () => false,
 	setToolsExpanded: () => {},
 };

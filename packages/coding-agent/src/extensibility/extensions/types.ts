@@ -24,7 +24,7 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/utils/oauth/types";
 import type * as piCodingAgent from "@oh-my-pi/pi-coding-agent";
-import type { AutocompleteItem, Component, EditorTheme, KeyId, TUI } from "@oh-my-pi/pi-tui";
+import type { AutocompleteItem, AutocompleteProvider, Component, EditorTheme, KeyId, TUI } from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type * as Zod from "zod/v4";
 import type { KeybindingsManager } from "../../config/keybindings";
@@ -241,6 +241,16 @@ export interface ExtensionUIContext {
 		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
 	): void;
 
+	/**
+	 * Register an autocomplete provider factory for the core input editor.
+	 *
+	 * The factory receives the current editor provider and returns a replacement
+	 * that may wrap it (delegating unmatched queries back to `current`). Factories
+	 * compose in registration order and are re-applied whenever the base provider
+	 * is rebuilt. Interactive mode only; a no-op in non-interactive modes.
+	 */
+	addAutocompleteProvider(factory: ExtensionAutocompleteProviderFactory): void;
+
 	/** Get the current theme for styling. */
 	readonly theme: Theme;
 
@@ -259,6 +269,13 @@ export interface ExtensionUIContext {
 	/** Set tool output expansion state. */
 	setToolsExpanded(expanded: boolean): void;
 }
+
+/**
+ * Factory passed to {@link ExtensionUIContext.addAutocompleteProvider}. Receives
+ * the current editor autocomplete provider and returns a replacement, typically
+ * one that wraps `current` and delegates queries it does not handle.
+ */
+export type ExtensionAutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 
 // ============================================================================
 // Extension Context

@@ -20,7 +20,7 @@ import {
 	modelsAreEqual,
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
-import type { Component, EditorTheme, SlashCommand } from "@oh-my-pi/pi-tui";
+import type { AutocompleteProvider, Component, EditorTheme, SlashCommand } from "@oh-my-pi/pi-tui";
 import {
 	Container,
 	clearRenderCache,
@@ -55,6 +55,7 @@ import { isSettingsInitialized, Settings, settings } from "../config/settings";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	ContextUsage,
+	ExtensionAutocompleteProviderFactory,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
@@ -329,6 +330,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	oauthManualInput: OAuthManualInputManager = new OAuthManualInputManager();
 
 	#pendingSlashCommands: SlashCommand[] = [];
+	#extensionAutocompleteFactories: ExtensionAutocompleteProviderFactory[] = [];
+	#baseAutocompleteProvider: AutocompleteProvider | undefined;
 	#cleanupUnsubscribe?: () => void;
 	readonly #version: string;
 	readonly #changelogMarkdown: string | undefined;
@@ -696,8 +699,35 @@ export class InteractiveMode implements InteractiveModeContext {
 			[...this.#pendingSlashCommands, ...fileSlashCommands],
 			basePath,
 		);
-		this.editor.setAutocompleteProvider(autocompleteProvider);
+		this.#installAutocompleteProvider(autocompleteProvider);
 		this.session.setSlashCommands(fileCommands);
+	}
+
+	/**
+	 * Compose the registered extension autocomplete factories over `base` and
+	 * install the result on the editor. The unwrapped `base` is cached so a late
+	 * factory registration (or a base rebuild) re-folds from scratch instead of
+	 * double-wrapping a previously composed provider.
+	 */
+	#installAutocompleteProvider(base: AutocompleteProvider): void {
+		this.#baseAutocompleteProvider = base;
+		let provider = base;
+		for (const factory of this.#extensionAutocompleteFactories) {
+			try {
+				provider = factory(provider);
+			} catch (error) {
+				logger.warn("Extension autocomplete provider factory failed", { error: String(error) });
+			}
+		}
+		this.editor.setAutocompleteProvider(provider);
+	}
+
+	/** Register an extension autocomplete provider factory and re-install the editor provider. */
+	addAutocompleteProvider(factory: ExtensionAutocompleteProviderFactory): void {
+		this.#extensionAutocompleteFactories.push(factory);
+		if (this.#baseAutocompleteProvider) {
+			this.#installAutocompleteProvider(this.#baseAutocompleteProvider);
+		}
 	}
 
 	/**

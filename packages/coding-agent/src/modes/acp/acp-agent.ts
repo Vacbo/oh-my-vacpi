@@ -363,6 +363,7 @@ export function createAcpExtensionUiContext(
 		getEditorText: () => "",
 		editor: async () => undefined,
 		setEditorComponent: () => {},
+		addAutocompleteProvider: () => {},
 		get theme() {
 			return theme;
 		},
