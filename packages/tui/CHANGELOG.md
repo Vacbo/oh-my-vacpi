@@ -12,6 +12,7 @@
 #### Changed
 
 - Made eager native-scrollback rebuild during streaming opt-in via the `tui.rebuildScrollbackDuringStreaming` setting (default off).
+- Enabled DEC 2026 synchronized output by default on Warp. Warp supports synchronized output (`Mode::SyncOutput`, since v0.2025.01.15) but was not on the `terminalId` allow-list, and the runtime DECRQM probe only ever *disables* sync output (never enables it), so paints reached Warp's GPU compositor un-batched. `shouldEnableSynchronizedOutputByDefault` now returns true for `TERM_PROGRAM=WarpTerminal`; multiplexers, SSH, and `PI_NO_SYNC_OUTPUT` still override, and the DECRQM probe still turns sync off if a build reports DEC 2026 unsupported. (Note: did not by itself resolve the reported Warp flicker/stutter.)
 
 #### Fixed
 

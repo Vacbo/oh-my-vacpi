@@ -218,6 +218,11 @@ export function shouldEnableSynchronizedOutputByDefault(
 		case "ptyxis":
 		case "xfce4-terminal":
 			return false;
+		// Warp supports DEC 2026 (Mode::SyncOutput) but is not matched by terminalId,
+		// and the runtime DECRQM probe only ever disables sync, never enables it, so
+		// opt Warp in here. If a build ever lacks 2026, the probe turns it back off.
+		case "warpterminal":
+			return true;
 		default:
 			break;
 	}

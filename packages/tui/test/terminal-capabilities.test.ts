@@ -38,4 +38,20 @@ describe("terminal capability defaults", () => {
 			),
 		).toBe(true);
 	});
+
+	it("enables synchronized output by default on Warp (supports DEC 2026)", () => {
+		expect(shouldEnableSynchronizedOutputByDefault({ TERM_PROGRAM: "WarpTerminal" }, "darwin", "base")).toBe(true);
+		// A multiplexer wrapping Warp still wins (screen-coordinate batching is unsafe through it).
+		expect(
+			shouldEnableSynchronizedOutputByDefault({ TERM_PROGRAM: "WarpTerminal", TMUX: "/tmp/x" }, "darwin", "base"),
+		).toBe(false);
+		// The explicit kill switch still wins.
+		expect(
+			shouldEnableSynchronizedOutputByDefault(
+				{ TERM_PROGRAM: "WarpTerminal", PI_NO_SYNC_OUTPUT: "1" },
+				"darwin",
+				"base",
+			),
+		).toBe(false);
+	});
 });
