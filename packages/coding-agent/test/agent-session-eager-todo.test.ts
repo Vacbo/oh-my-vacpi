@@ -10,7 +10,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { TodoWriteTool } from "@oh-my-pi/pi-coding-agent/tools";
+import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import * as z from "zod/v4";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
@@ -116,7 +116,7 @@ describe("AgentSession eager todo enforcement", () => {
 			getSessionSpawns: () => "*",
 			settings,
 		};
-		const todoWriteTool = new TodoWriteTool(toolSession);
+		const todoTool = new TodoTool(toolSession);
 		const mockBashTool: AgentTool = {
 			name: "bash",
 			label: "Bash",
@@ -130,7 +130,7 @@ describe("AgentSession eager todo enforcement", () => {
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
-				tools: [todoWriteTool, mockBashTool],
+				tools: [todoTool, mockBashTool],
 				messages: [],
 			},
 			convertToLlm,
@@ -162,7 +162,7 @@ describe("AgentSession eager todo enforcement", () => {
 		});
 
 		const toolRegistry = new Map<string, AgentTool>([
-			[todoWriteTool.name, todoWriteTool as unknown as AgentTool],
+			[todoTool.name, todoTool as unknown as AgentTool],
 			[mockBashTool.name, mockBashTool],
 		]);
 

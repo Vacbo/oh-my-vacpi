@@ -21,6 +21,7 @@ export interface Args {
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
 	thinking?: Effort;
+	hideThinking?: boolean;
 	continue?: boolean;
 	newSession?: boolean;
 	resume?: string | true;
@@ -185,6 +186,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 					validThinkingLevels: THINKING_EFFORTS,
 				});
 			}
+		} else if (arg === "--hide-thinking") {
+			result.hideThinking = true;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 		} else if (arg === "--export" && i + 1 < args.length) {
@@ -252,7 +255,7 @@ export function getExtraHelpText(): string {
   CLAUDE_CODE_USE_FOUNDRY    - Enable Anthropic Foundry mode (uses Foundry endpoint + mTLS)
   FOUNDRY_BASE_URL           - Anthropic Foundry base URL (e.g., https://<foundry-host>)
   ANTHROPIC_FOUNDRY_API_KEY  - Anthropic token used as Authorization: Bearer <token> in Foundry mode
-  ANTHROPIC_CUSTOM_HEADERS   - Extra Foundry headers (e.g., "user-id: USERNAME")
+  ANTHROPIC_CUSTOM_HEADERS   - Extra headers for Foundry or any custom ANTHROPIC_BASE_URL gateway (e.g., "user-id: USERNAME")
   CLAUDE_CODE_CLIENT_CERT    - Client certificate (PEM path or inline PEM) for mTLS
   CLAUDE_CODE_CLIENT_KEY     - Client private key (PEM path or inline PEM) for mTLS
   NODE_EXTRA_CA_CERTS        - CA bundle path (or inline PEM) for server certificate validation
@@ -287,7 +290,8 @@ export function getExtraHelpText(): string {
   PERPLEXITY_API_KEY         - Perplexity web search (API)
   PERPLEXITY_COOKIES         - Perplexity web search (session cookie)
   TAVILY_API_KEY             - Tavily web search
-  ANTHROPIC_SEARCH_API_KEY   - Anthropic search provider
+  ANTHROPIC_SEARCH_API_KEY   - Anthropic web search (override; isolates search from main ANTHROPIC_API_KEY)
+  ANTHROPIC_SEARCH_BASE_URL  - Anthropic web search base URL (override; pairs with ANTHROPIC_SEARCH_API_KEY)
 
   ${chalk.dim("# Configuration")}
   PI_CODING_AGENT_DIR        - Session storage directory (default: ~/${CONFIG_DIR_NAME}/agent)
@@ -313,7 +317,7 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   inspect_image - Analyze images with a vision model
   browser       - Browser automation (Puppeteer)
   task          - Launch sub-agents for parallel tasks
-  todo_write    - Manage todo/task lists
+  todo          - Manage todo/task lists
   web_search    - Search the web
   ask           - Ask user questions (interactive mode only)
 
