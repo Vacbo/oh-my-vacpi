@@ -48,6 +48,7 @@
 - Fixed GitHub issue metadata not rendering in the issue view.
 - Simplified the ProjFS isolation fallback for Windows task isolation.
 - Fixed stale legacy-mirror cleanup in the extensibility layer.
+
 ## [15.9.4] - 2026-06-05
 ### Fixed
 

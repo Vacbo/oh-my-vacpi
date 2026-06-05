@@ -16,6 +16,7 @@
 #### Fixed
 
 - Fixed bare `@`/`/`/`#` rows rendering in autocomplete by dropping items that render as no-ops (empty value, value equal to the active prefix, or an empty label paired with a single-character value).
+
 ## [15.9.4] - 2026-06-05
 ### Added
 
