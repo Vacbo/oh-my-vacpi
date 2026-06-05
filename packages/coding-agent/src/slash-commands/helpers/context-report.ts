@@ -1,3 +1,4 @@
+import { buildContextManifest, renderContextManifestText } from "../../modes/utils/context-manifest";
 import { computeContextBreakdown } from "../../modes/utils/context-usage";
 import type { SlashCommandRuntime } from "../types";
 import { renderAsciiBar } from "./format";
@@ -36,4 +37,13 @@ export function buildContextReportText(runtime: SlashCommandRuntime): string {
 		if (!fallback) return "Context usage is unavailable.";
 		return ["Context", `Window: ${fallback.contextWindow}`, `Used: ${fallback.tokens ?? 0}`].join("\n");
 	}
+}
+
+/**
+ * Build the `/context full` ACP-mode text: the manifest tree rendered as an
+ * indented outline of node summaries (no raw leaf content), mirroring the TUI
+ * inspector's default view.
+ */
+export function buildContextManifestReportText(runtime: SlashCommandRuntime): string {
+	return renderContextManifestText(buildContextManifest(runtime.session));
 }

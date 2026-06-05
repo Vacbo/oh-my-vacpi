@@ -2733,8 +2733,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController.handleToolsCommand();
 	}
 
-	handleContextCommand(): void {
-		this.#commandController.handleContextCommand();
+	handleContextCommand(detailed = false): void {
+		this.#commandController.handleContextCommand(detailed);
 	}
 
 	#prepareSessionSwitch(): void {

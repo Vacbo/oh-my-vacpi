@@ -10,7 +10,7 @@ import {
 	type UsageLimit,
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
-import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
+import { Loader, Markdown, type OverlayHandle, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { reset as resetCapabilities } from "../../capability";
@@ -29,10 +29,12 @@ import {
 import { resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
+import { ContextInspectorOverlayComponent } from "../../modes/components/context-inspector-overlay";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
+import { buildContextManifest } from "../../modes/utils/context-manifest";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
@@ -577,7 +579,11 @@ export class CommandController {
 		showMarkdownPanel(this.ctx, "Available Tools", tools);
 	}
 
-	handleContextCommand(): void {
+	handleContextCommand(detailed = false): void {
+		if (detailed) {
+			this.#openContextInspector();
+			return;
+		}
 		const breakdown = computeContextBreakdown(this.ctx.session);
 		if (breakdown.contextWindow <= 0) {
 			this.ctx.showWarning("Context usage is unavailable: no model is selected for this session.");
@@ -590,6 +596,28 @@ export class CommandController {
 		this.ctx.chatContainer.addChild(new Spacer(1));
 		this.ctx.chatContainer.addChild(new Text(output, 1, 0));
 		this.ctx.chatContainer.addChild(new DynamicBorder());
+		this.ctx.ui.requestRender();
+	}
+
+	#openContextInspector(): void {
+		const manifest = buildContextManifest(this.ctx.session);
+		if (manifest.summary.contextWindow <= 0) {
+			this.ctx.showWarning("Context inspector is unavailable: no model is selected for this session.");
+			return;
+		}
+		let overlayHandle: OverlayHandle | undefined;
+		const done = () => {
+			overlayHandle?.hide();
+			this.ctx.ui.requestRender();
+		};
+		const overlay = new ContextInspectorOverlayComponent(manifest, done);
+		overlayHandle = this.ctx.ui.showOverlay(overlay, {
+			anchor: "bottom-center",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+		});
+		this.ctx.ui.setFocus(overlay);
 		this.ctx.ui.requestRender();
 	}
 

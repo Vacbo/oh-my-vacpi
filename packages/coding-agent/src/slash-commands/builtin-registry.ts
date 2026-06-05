@@ -23,7 +23,7 @@ import { resolveMemoryBackend } from "../memory-backend";
 import type { InteractiveModeContext } from "../modes/types";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
-import { buildContextReportText } from "./helpers/context-report";
+import { buildContextManifestReportText, buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
 import { createMarketplaceManager } from "./helpers/marketplace-manager";
 import { handleMcpAcp } from "./helpers/mcp";
@@ -597,12 +597,23 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		name: "context",
 		description: "Show estimated context usage breakdown",
 		acpDescription: "Show context usage",
-		handle: async (_command, runtime) => {
-			await runtime.output(buildContextReportText(runtime));
+		acpInputHint: "[full]",
+		subcommands: [
+			{ name: "full", description: "Open the full byte-for-byte context inspector" },
+			{ name: "detailed", description: "Open the full byte-for-byte context inspector" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const detailed = /^(full|detailed)$/.test(command.args.trim().toLowerCase());
+			await runtime.output(detailed ? buildContextManifestReportText(runtime) : buildContextReportText(runtime));
 			return commandConsumed();
 		},
-		handleTui: (_command, runtime) => {
-			runtime.ctx.handleContextCommand();
+		handleTui: (command, runtime) => {
+			const detailed = command.args
+				.split(/\s+/)
+				.filter(Boolean)
+				.some(arg => arg === "full" || arg === "detailed");
+			runtime.ctx.handleContextCommand(detailed);
 			runtime.ctx.editor.setText("");
 		},
 	},
