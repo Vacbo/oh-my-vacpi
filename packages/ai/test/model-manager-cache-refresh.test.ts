@@ -13,9 +13,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effort } from "../src/effort";
 import { writeModelCache } from "../src/model-cache";
 import { resolveProviderModels } from "../src/model-manager";
-import { Effort, enrichModelThinking } from "../src/model-thinking";
+import { enrichModelThinking } from "../src/model-thinking";
 import type { Model } from "../src/types";
 
 function buildOpusModel(thinkingOverride: Model<"anthropic-messages">["thinking"]): Model<"anthropic-messages"> {

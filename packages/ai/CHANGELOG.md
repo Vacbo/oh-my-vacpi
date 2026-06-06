@@ -17,6 +17,21 @@
 - Fixed Anthropic adaptive-thinking responses being truncated mid-emission by `stop_reason: "max_tokens"` because `buildParams` defaulted `max_tokens` to `model.maxTokens / 3` for *every* mode, but adaptive thinking self-allocates the thinking budget out of the same per-response ceiling — so a long thinking burst plus a large structured `tool_use` (e.g. a multi-phase `todo_write`) could exceed the `/3` cap, trigger `max_tokens`, and silently install a partial-JSON-repaired truncated call. `ensureMaxTokensForThinking` now restores the deleted adaptive-mode branch: when the resolved thinking shape is `{ type: "adaptive" }` and the caller did not pass an explicit `maxTokens`, lift `params.max_tokens` to `model.maxTokens` so the model gets the full documented per-response capacity. Budget-mode behaviour (`type: "enabled"` + `budget_tokens`) and explicit caller overrides are unchanged
 - Restored the legacy `Type` export from `@oh-my-pi/pi-ai` for fork compatibility.
 
+## [15.10.0] - 2026-06-06
+
+### Added
+
+- Added a dependency-free `@oh-my-pi/pi-ai/effort` module exporting the `Effort` enum and `THINKING_EFFORTS`, split out of `model-thinking` so hot-path consumers can import the thinking levels without pulling in `model-thinking` and its provider-compat dependency graph. The package barrel still re-exports both names, so existing imports are unaffected.
+
+### Fixed
+
+- Fixed Antigravity usage provider emitting one bar per model instead of deduplicating by tier — a single account's 15+ model entries now collapse to one bar per tier, matching the shared-quota reality of the upstream API.
+- Fixed Antigravity usage reports missing `email` and `accountId` in metadata, so the `/usage` display and the deduplicator can associate reports with their credentials.
+- Fixed usage-report dedup ignoring `projectId` for Google Cloud providers, preventing duplicate credential entries from being recognized as the same account.
+
+- Fixed Cloud Code Assist (Antigravity / Gemini CLI) rejecting the `github` tool with HTTP 400 when the `pr` parameter schema contained `anyOf: [string, array]`. The CCA mixed-type combiner collapse picked the first non-null type (`string`) but indiscriminately copied type-specific keys from variant branches — `items` from the array variant leaked onto the string-typed result, producing `{type: "string", items: {...}}` which Google's API rejects as invalid. The collapse now filters merged variant fields against the winning type's allowed key set. ([#2002](https://github.com/can1357/oh-my-pi/pull/2002))
+- Fixed OpenAI Responses-family providers (Codex, OpenAI Responses, Azure Responses) rejecting requests with `400 No tool output found for function call …` after the user branched/navigated the session tree to a node that ends on a tool call (the tool-result child is dropped from the reconstructed history) or after a turn was aborted/crashed between the call streaming and its result persisting. The converters now synthesize a placeholder `function_call_output`/`custom_tool_call_output` immediately after any unpaired `function_call`/`custom_tool_call`, symmetric to the existing orphan-output repair, so the model still sees the call and can recover instead of the whole request 400ing.
+- Fixed Anthropic-compatible reasoning endpoints losing prior-turn reasoning on continuation requests when they emit unsigned `thinking` blocks. `convertAnthropicMessages` treated unknown endpoints as signature-enforcing and demoted unsigned reasoning to `type: "text"`, which destabilized tool-call argument serialization on the next turn — the upstream symptom behind the `args?.ops?.map is not a function` crash reported against the `todo` tool. Official `api.anthropic.com` keeps the conservative text fallback; non-official `anthropic-messages` reasoning models now replay unsigned reasoning as native `type: "thinking"` ([#2005](https://github.com/can1357/oh-my-pi/issues/2005)).
 ## [15.9.67] - 2026-06-06
 
 ### Fixed

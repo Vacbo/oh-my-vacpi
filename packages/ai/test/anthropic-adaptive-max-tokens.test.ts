@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Effort } from "../src/model-thinking";
+import { Effort } from "../src/effort";
 import { streamAnthropic } from "../src/providers/anthropic";
 import { OUTPUT_FALLBACK_BUFFER } from "../src/stream";
 import type { Context, Model } from "../src/types";

@@ -14,7 +14,6 @@ import { formatDuration, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { reset as resetCapabilities } from "../../capability";
 import { clearClaudePluginRootsCache } from "../../discovery/helpers";
-import { loadCustomShare } from "../../export/custom-share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import {
 	diffMentalModelContent,
@@ -134,6 +133,7 @@ export class CommandController {
 		}
 
 		try {
+			const { loadCustomShare } = await import("../../export/custom-share");
 			const customShare = await loadCustomShare();
 			if (customShare) {
 				const loader = new BorderedLoader(this.ctx.ui, theme, "Sharing...");
@@ -509,7 +509,7 @@ export class CommandController {
 		const argumentText = text.slice(7).trim();
 		const action = argumentText.split(/\s+/, 1)[0]?.toLowerCase() || "view";
 		const agentDir = this.ctx.settings.getAgentDir();
-		const backend = resolveMemoryBackend(this.ctx.settings);
+		const backend = await resolveMemoryBackend(this.ctx.settings);
 
 		if (action === "view") {
 			const payload = await backend.buildDeveloperInstructions(agentDir, this.ctx.settings, this.ctx.session);
@@ -1323,6 +1323,8 @@ function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: numbe
 	if (email) return email;
 	const accountId = (report.metadata?.accountId as string | undefined) ?? limit.scope.accountId;
 	if (accountId) return accountId;
+	const projectId = (report.metadata?.projectId as string | undefined) ?? limit.scope.projectId;
+	if (projectId) return projectId;
 	return `account ${index + 1}`;
 }
 
@@ -1331,6 +1333,8 @@ function formatUnlimitedReportLabel(report: UsageReport, index: number): string 
 	if (email) return email;
 	const accountId = report.metadata?.accountId as string | undefined;
 	if (accountId) return accountId;
+	const projectId = report.metadata?.projectId as string | undefined;
+	if (projectId) return projectId;
 	return `account ${index + 1}`;
 }
 
@@ -1416,6 +1420,13 @@ function formatAggregateAmount(limits: UsageLimit[]): string {
 		return `${formatNumber(remainingPct)}% free`;
 	}
 
+	// Count unique accounts from limit scopes — not limits.length.
+	const uniqueAccountIds = new Set(
+		limits.map(limit => limit.scope.accountId).filter((id): id is string => typeof id === "string" && id.length > 0),
+	);
+	if (uniqueAccountIds.size > 0) return `${uniqueAccountIds.size} ${uniqueAccountIds.size === 1 ? "acct" : "accts"}`;
+	// No account IDs available — keep the pre-existing fallback so providers
+	// that don't populate scope.accountId still show a summary.
 	return `${limits.length} accts`;
 }
 
