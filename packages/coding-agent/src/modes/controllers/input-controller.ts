@@ -510,7 +510,7 @@ export class InputController {
 		// Skills live in the same `/`-prefix picker as builtin and extension commands,
 		// so record their usage too — otherwise `/skill:foo` would never gain frecency
 		// rank even after being picked many times.
-		this.ctx.session.settings.getStorage()?.recordSlashCommandUsage(commandName);
+		this.ctx.session.settings?.getStorage?.()?.recordSlashCommandUsage(commandName);
 		this.ctx.editor.addToHistory(text);
 		this.ctx.editor.setText("");
 		try {

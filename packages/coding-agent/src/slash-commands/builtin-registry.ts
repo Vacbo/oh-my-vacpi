@@ -1699,7 +1699,7 @@ export async function executeBuiltinSlashCommand(
 	}
 	// Record usage against the canonical name (alias resolution already happened
 	// in the lookup map) so subsequent `/`-prefix autocomplete can rank by MRU.
-	runtime.ctx.settings.getStorage()?.recordSlashCommandUsage(command.name);
+	runtime.ctx.settings?.getStorage?.()?.recordSlashCommandUsage(command.name);
 	if (command.handleTui) {
 		const result = await command.handleTui(parsed, runtime);
 		if (result && typeof result === "object" && "prompt" in result) return result.prompt;

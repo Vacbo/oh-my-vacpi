@@ -4594,7 +4594,7 @@ export class AgentSession {
 		if (!command) return false;
 
 		// Record usage so the slash command autocomplete can rank by MRU.
-		this.settings.getStorage()?.recordSlashCommandUsage(commandName);
+		this.settings?.getStorage?.()?.recordSlashCommandUsage(commandName);
 
 		// Get command context from extension runner (includes session control methods)
 		const ctx = this.#extensionRunner.createCommandContext();
