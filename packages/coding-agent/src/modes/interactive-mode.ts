@@ -2765,10 +2765,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleShareCommand();
 	}
 
-	handleCopyCommand(sub?: string) {
-		return this.#commandController.handleCopyCommand(sub);
-	}
-
 	handleTodoCommand(args: string): Promise<void> {
 		return this.#todoCommandController.handleTodoCommand(args);
 	}
@@ -2999,6 +2995,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showUserMessageSelector(): void {
 		this.#selectorController.showUserMessageSelector();
+	}
+
+	showCopySelector(): void {
+		this.#selectorController.showCopySelector();
 	}
 
 	showTreeSelector(): void {

@@ -6,6 +6,7 @@ import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-
 
 function createContext() {
 	const setEagerNativeScrollbackRebuild = vi.fn();
+	const ensureLoadingAnimation = vi.fn();
 	const pendingTools = new Map<string, unknown>();
 	const chatContainer = { addChild: vi.fn(), removeChild: vi.fn() };
 	const settings = Settings.instance;
@@ -27,8 +28,10 @@ function createContext() {
 		},
 		settings,
 		ui: { setEagerNativeScrollbackRebuild, requestRender: vi.fn() },
+		clearPinnedError: vi.fn(),
+		ensureLoadingAnimation,
 	} as unknown as InteractiveModeContext;
-	return { ctx, pendingTools, setEagerNativeScrollbackRebuild };
+	return { ctx, pendingTools, setEagerNativeScrollbackRebuild, ensureLoadingAnimation };
 }
 
 // A tool_execution_update for an id that is not pending is a no-op in its handler,
@@ -80,6 +83,19 @@ describe("EventController tool render mode", () => {
 		pendingTools.clear();
 		await controller.handleEvent(REFRESH_TRIGGER);
 		expect(setEagerNativeScrollbackRebuild).toHaveBeenLastCalledWith(false);
+	});
+
+	it("enables eager native scrollback rebuild before starting the idle Working loader", async () => {
+		Settings.instance.set("tui.rebuildScrollbackDuringStreaming", true);
+		const { ctx, ensureLoadingAnimation, setEagerNativeScrollbackRebuild } = createContext();
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent({ type: "agent_start" } as unknown as AgentSessionEvent);
+
+		expect(setEagerNativeScrollbackRebuild).toHaveBeenCalledWith(true);
+		expect(setEagerNativeScrollbackRebuild.mock.invocationCallOrder[0]!).toBeLessThan(
+			ensureLoadingAnimation.mock.invocationCallOrder[0]!,
+		);
 	});
 
 	it("enables eager native scrollback rebuild for foreground tools when setting is enabled", async () => {

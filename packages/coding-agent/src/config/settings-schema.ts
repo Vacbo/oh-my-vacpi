@@ -913,6 +913,15 @@ export const SETTINGS_SCHEMA = {
 				"Maximum wait between retries, in ms. When the provider asks us to wait longer than this and no credential or model fallback succeeds, the request fails fast instead of sleeping (e.g. 3-hour Anthropic rate-limit windows).",
 		},
 	},
+	"retry.modelFallback": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			label: "Retry Model Fallback",
+			description: "Allow retry recovery to switch to configured fallback models",
+		},
+	},
 	"retry.fallbackChains": { type: "record", default: {} as Record<string, string[]> },
 	"retry.fallbackRevertPolicy": {
 		type: "enum",
@@ -1866,7 +1875,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "editing",
 			label: "Hash Lines",
 			description:
-				"Include snapshot-tag headers and line numbers in read output for hashline edit mode (¶PATH#tag plus LINE:content)",
+				"Include snapshot-tag headers and line numbers in read output for hashline edit mode ([PATH#TAG] plus LINE:content)",
 		},
 	},
 
@@ -3419,6 +3428,7 @@ export interface RetrySettings {
 	maxRetries: number;
 	baseDelayMs: number;
 	maxDelayMs: number;
+	modelFallback: boolean;
 }
 
 export interface MemoriesSettings {
