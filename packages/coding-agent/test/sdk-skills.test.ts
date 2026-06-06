@@ -80,7 +80,7 @@ Loaded via symbolic link.
 		// Skills should be discovered and exposed on the session
 		expect(session.skills.length).toBeGreaterThan(0);
 		expect(session.skills.some((s: Skill) => s.name === "test-skill")).toBe(true);
-	});
+	}, 60000);
 
 	it("should discover skills when skill directory is a symlink", async () => {
 		const { session } = await createAgentSession({

@@ -998,10 +998,16 @@ async fn terminate_new_descendants<S: std::hash::BuildHasher + Sync>(baseline: &
 		}
 	}
 }
-fn terminate_background_jobs(shell: &mut BrushShell) {
+/// Aborts shell-internal background jobs and signals any external process
+/// groups/pids the jobs own. Returns the aborted internal tasks' join handles
+/// so callers that need a hard ordering guarantee can `await` them to observe
+/// that the tasks have actually stopped (production callers drop them, keeping
+/// the previous fire-and-forget behaviour).
+fn terminate_background_jobs(shell: &mut BrushShell) -> Vec<brush_core::jobs::JobJoinHandle> {
 	let mut targets = process::TerminationTargets::new();
+	let mut aborted = Vec::new();
 	for job in &mut shell.jobs_mut().jobs {
-		job.abort_internal_tasks();
+		aborted.append(&mut job.abort_internal_tasks());
 		if let Some(pgid) = job.process_group_id() {
 			targets.add_pgid(pgid);
 		}
@@ -1013,7 +1019,7 @@ fn terminate_background_jobs(shell: &mut BrushShell) {
 		// Shell-internal jobs were aborted above. Pure descendant cleanup is
 		// handled by `process_cancel_bridge` while the cancel was in flight;
 		// without job-tracked pgids or pids there is nothing else to signal here.
-		return;
+		return aborted;
 	}
 
 	targets.signal(process::TERM_SIGNAL);
@@ -1021,6 +1027,7 @@ fn terminate_background_jobs(shell: &mut BrushShell) {
 		time::sleep(Duration::from_millis(150)).await;
 		targets.signal(process::KILL_SIGNAL);
 	});
+	aborted
 }
 
 /// Apply per-command environment variables onto a freshly pushed
@@ -1981,9 +1988,26 @@ mod tests {
 		}
 		assert!(background_started, "background job did not reach its wait loop");
 
-		terminate_background_jobs(&mut session.shell);
+		// Abort the internal background job, then deterministically wait for the
+		// aborted tokio task(s) to actually finish before creating `release`.
+		// `JoinHandle::abort` only requests cancellation; awaiting the handle
+		// guarantees the task has stopped, so a correctly-cancelled job provably
+		// cannot observe `release` and write `marker`, regardless of scheduling
+		// under parallel load. This replaces the previous wall-clock sleep race.
+		let aborted = terminate_background_jobs(&mut session.shell);
+		assert!(!aborted.is_empty(), "expected an internal background task to abort");
+		for handle in aborted {
+			let join_result = handle.await;
+			assert!(
+				join_result.is_err_and(|err| err.is_cancelled()),
+				"internal background task should end via cancellation",
+			);
+		}
+
 		std::fs::write(&release, b"").expect("release marker");
-		time::sleep(Duration::from_millis(250)).await;
+		// Brief grace so any (incorrectly) surviving work would have a chance to
+		// run; correctness no longer depends on this sleep for synchronization.
+		time::sleep(Duration::from_millis(100)).await;
 		let marker_exists = marker.exists();
 		std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
 

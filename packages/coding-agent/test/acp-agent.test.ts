@@ -1128,7 +1128,7 @@ describe("ACP agent", () => {
 				listener({
 					type: "tool_execution_end",
 					toolCallId: "todo_1",
-					toolName: "todo",
+					toolName: "todo_write",
 					isError: false,
 					result: {
 						content: [{ type: "text", text: "updated" }],
@@ -1148,7 +1148,7 @@ describe("ACP agent", () => {
 				listener({
 					type: "tool_execution_end",
 					toolCallId: "todo_empty",
-					toolName: "todo",
+					toolName: "todo_write",
 					isError: false,
 					result: {
 						content: [{ type: "text", text: "cleared" }],
@@ -1187,7 +1187,7 @@ describe("ACP agent", () => {
 		stored.sessionManager.appendMessage({
 			role: "toolResult",
 			toolCallId: "todo_replay",
-			toolName: "todo",
+			toolName: "todo_write",
 			content: [{ type: "text", text: "updated" }],
 			details: {
 				phases: [{ name: "Replay", tasks: [{ content: "Restore plan", status: "pending" }] }],

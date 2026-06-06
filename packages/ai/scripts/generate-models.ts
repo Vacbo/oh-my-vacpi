@@ -27,8 +27,10 @@ import {
 	PROVIDER_DESCRIPTORS,
 } from "../src/provider-models/descriptors";
 import {
+	buildFireworksFirePassStaticSeed,
 	buildXaiOAuthStaticSeed,
 	clampFireworksKimiMaxTokens,
+	isFireworksFirePassRouterModelId,
 	isFireworksKimiK2ModelId,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	mapModelsDevToModels,
@@ -236,6 +238,9 @@ function applyFireworksKimiMaxTokensCap(models: readonly Model[]): Model[] {
 	const FIREWORKS_KIMI_PROVIDERS = new Set(["fireworks", "firepass"]);
 	return models.map(model => {
 		if (!FIREWORKS_KIMI_PROVIDERS.has(model.provider)) return model;
+		// The Fire Pass router model carries an authored 256K output budget — the
+		// cap only guards inflated values surfaced by Fireworks' `/v1/models`.
+		if (isFireworksFirePassRouterModelId(model.id)) return model;
 		if (!isFireworksKimiK2ModelId(model.id)) return model;
 		const capped = clampFireworksKimiMaxTokens(model.id, model.maxTokens);
 		if (capped === model.maxTokens) return model;
@@ -369,6 +374,13 @@ async function generateModels() {
 	// persisted `modelRoles.default = "xai-oauth/<id>"` is honored before the
 	// async refresh fires (interactive boot does not await refresh).
 	allModels.push(...buildXaiOAuthStaticSeed());
+
+	// Fire Pass router model (Kimi K2.6 Turbo) bundled under the `fireworks`
+	// provider. Its dedicated `fpk_…` keys reject `/v1/models`, so it is never
+	// discovered dynamically — seed it statically so `models.json` carries the
+	// canonical entry. Pushed before the prevModelsJson fallback so it lands in
+	// `fetchedKeys` and is exempt from the Kimi maxTokens cap (authored budget).
+	allModels.push(...buildFireworksFirePassStaticSeed());
 
 	const specialDiscoverySources = [
 		{ label: "Antigravity", fetch: fetchAntigravityModels },

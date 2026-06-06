@@ -1086,6 +1086,49 @@ export function firepassModelManagerOptions(
 	};
 }
 
+/** Public catalog id for the Fire Pass Kimi K2.6 Turbo router model bundled under the `fireworks` provider. */
+export const FIREWORKS_FIRE_PASS_ROUTER_MODEL_ID = "routers/kimi-k2.6-turbo";
+
+/**
+ * True for the bundled Fire Pass router model (public `routers/kimi-k2.6-turbo`
+ * or canonical wire `accounts/fireworks/routers/kimi-k2p6-turbo`). Fire Pass is
+ * a flat subscription whose 256K output budget is authored, not discovered, so
+ * it is exempt from the Fireworks Kimi `maxTokens` cap (#1849) — that cap only
+ * guards inflated values surfaced by `/v1/models`.
+ */
+export function isFireworksFirePassRouterModelId(modelId: string): boolean {
+	return modelId === FIREWORKS_FIRE_PASS_ROUTER_MODEL_ID || modelId === "accounts/fireworks/routers/kimi-k2p6-turbo";
+}
+
+/**
+ * Render the Fire Pass router model (Kimi K2.6 Turbo) as a `fireworks` provider
+ * entry. Fire Pass keys reject `/v1/models`, so the router model is never
+ * dynamically discovered — this static seed is the single source of truth
+ * bundled into `models.json` by `generate-models.ts`, making the synchronous
+ * `getBundledModel("fireworks", "routers/kimi-k2.6-turbo")` boot path resolve
+ * it. The friendly `routers/` id translates to the
+ * `accounts/fireworks/routers/kimi-k2p6-turbo` wire form at request time, and
+ * `getEnvApiKeyForModel` routes it to the dedicated `FIREWORKS_PASS_API_KEY`.
+ */
+export function buildFireworksFirePassStaticSeed(baseUrl?: string): Model<"openai-completions">[] {
+	const resolvedBaseUrl = baseUrl ?? "https://api.fireworks.ai/inference/v1";
+	return [
+		{
+			id: FIREWORKS_FIRE_PASS_ROUTER_MODEL_ID,
+			name: "Kimi K2.6 Turbo (Fire Pass)",
+			api: "openai-completions",
+			provider: "fireworks",
+			baseUrl: resolvedBaseUrl,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 256_000,
+			maxTokens: 256_000,
+			thinking: { mode: "effort", minLevel: Effort.Minimal, maxLevel: Effort.XHigh },
+		},
+	];
+}
+
 // ---------------------------------------------------------------------------
 // 7.7 Wafer (Pass + Serverless)
 // ---------------------------------------------------------------------------

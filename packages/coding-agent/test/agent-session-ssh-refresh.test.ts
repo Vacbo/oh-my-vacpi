@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { getSSHConfigPath, TempDir } from "@oh-my-pi/pi-utils";
+import { getConfigRootDir, getSSHConfigPath, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../src/capability";
 import { type SSHHost, sshCapability } from "../src/capability/ssh";
 import { Settings } from "../src/config/settings";
@@ -31,6 +34,18 @@ describe("AgentSession SSH tool refresh", () => {
 	const tempDirs: TempDir[] = [];
 	const sessions: AgentSession[] = [];
 
+	// Isolate the user-scope agent dir so SSH discovery does not read the
+	// developer's real ~/.omp/agent/ssh.json (which leaks hosts like "spark"
+	// into hermetic assertions on host counts and metadata invalidation).
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
+	let testAgentDir = "";
+
+	beforeEach(() => {
+		testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ssh-refresh-agent-"));
+		setAgentDir(testAgentDir);
+	});
+
 	afterEach(async () => {
 		for (const session of sessions.splice(0)) {
 			await session.dispose();
@@ -39,6 +54,13 @@ describe("AgentSession SSH tool refresh", () => {
 			tempDir.removeSync();
 		}
 		resetCapabilities();
+		if (originalAgentDir) {
+			setAgentDir(originalAgentDir);
+		} else {
+			setAgentDir(fallbackAgentDir);
+			delete process.env.PI_CODING_AGENT_DIR;
+		}
+		if (testAgentDir) fs.rmSync(testAgentDir, { recursive: true, force: true });
 	});
 
 	function createSession(

@@ -2293,7 +2293,7 @@ function buildParams(
 	const params: MessageCreateParamsStreaming = {
 		model: model.id,
 		messages: convertAnthropicMessages(context.messages, model, isOAuthToken),
-		max_tokens: options?.maxTokens || model.maxTokens,
+		max_tokens: options?.maxTokens || (model.maxTokens / 3) | 0,
 		stream: true,
 	};
 	if (options?.temperature !== undefined && !options?.thinkingEnabled) {

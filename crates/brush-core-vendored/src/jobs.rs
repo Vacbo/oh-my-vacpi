@@ -9,7 +9,8 @@ use futures::FutureExt;
 
 use crate::{ExecutionResult, error, processes, sys, trace_categories, traps};
 
-pub(crate) type JobJoinHandle = tokio::task::JoinHandle<Result<ExecutionResult, error::Error>>;
+/// Join handle for a shell-internal asynchronous job task.
+pub type JobJoinHandle = tokio::task::JoinHandle<Result<ExecutionResult, error::Error>>;
 pub(crate) type JobResult = (Job, Result<ExecutionResult, error::Error>);
 
 /// Manages the jobs that are currently managed by the shell.
@@ -437,24 +438,35 @@ impl Job {
 		}
 	}
 
-	/// Aborts shell-internal background tasks and drops their join handles.
+	/// Aborts shell-internal background tasks and returns their (now-aborted)
+	/// join handles so callers can await actual cancellation completion.
+	///
+	/// `JoinHandle::abort` only *requests* cancellation; the task keeps running
+	/// until its next `.await` point. Returning the handles lets a caller that
+	/// needs a hard ordering guarantee `await` each one and observe that the
+	/// task has truly stopped. Callers that want the previous fire-and-forget
+	/// behaviour can simply drop the returned vector.
 	///
 	/// External process jobs are intentionally left alone; callers that abort
 	/// internal tasks are still responsible for signalling any process trees
 	/// those tasks may have spawned.
-	pub fn abort_internal_tasks(&mut self) {
-		let mut aborted = false;
-		self.tasks.retain_mut(|task| {
-			if let JobTask::Internal(handle) = task {
-				handle.abort();
-				aborted = true;
-				return false;
+	pub fn abort_internal_tasks(&mut self) -> Vec<JobJoinHandle> {
+		let mut aborted = Vec::new();
+		let mut remaining = VecDeque::with_capacity(self.tasks.len());
+		while let Some(task) = self.tasks.pop_front() {
+			match task {
+				JobTask::Internal(handle) => {
+					handle.abort();
+					aborted.push(handle);
+				},
+				other => remaining.push_back(other),
 			}
-			true
-		});
-		if aborted && self.tasks.is_empty() {
+		}
+		self.tasks = remaining;
+		if !aborted.is_empty() && self.tasks.is_empty() {
 			self.state = JobState::Done;
 		}
+		aborted
 	}
 
 	/// Tries to retrieve a "representative" pid for the job.

@@ -1,9 +1,19 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { taskToolRenderer } from "../../src/task/render";
 import type { TaskToolDetails } from "../../src/task/types";
 
 describe("taskToolRenderer report_finding safety", () => {
+	beforeEach(async () => {
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true });
+	});
+
+	afterEach(() => {
+		resetSettingsForTest();
+	});
+
 	it("renders progress without crashing when report_finding payload is malformed", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
