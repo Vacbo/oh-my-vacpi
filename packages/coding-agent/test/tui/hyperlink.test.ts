@@ -6,12 +6,14 @@ import {
 	tryResolveInternalUrlSync,
 	uriHyperlink,
 	urlHyperlink,
+	urlHyperlinkAlways,
 } from "@oh-my-pi/pi-coding-agent/tui/hyperlink";
 import * as terminalCaps from "@oh-my-pi/pi-tui";
 
 // OSC 8 sequence markers
 const OSC = "\x1b]";
 const ST = "\x1b\\";
+const BEL = "\x07";
 const LINK_END = `${OSC}8;;${ST}`;
 const ORIGINAL_NO_COLOR = Bun.env.NO_COLOR;
 
@@ -19,6 +21,10 @@ const ORIGINAL_NO_COLOR = Bun.env.NO_COLOR;
 function extractLinkUri(text: string): string | undefined {
 	const match = text.match(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/);
 	return match?.[1];
+}
+
+function extractAnyTerminatorLinkUri(text: string): string | undefined {
+	return text.match(/\x1b\]8;[^;]*;([^\x1b\x07]+)(?:\x1b\\|\x07)/)?.[1];
 }
 
 /** Returns true if the string contains an OSC 8 hyperlink wrapping a given display text. */
@@ -131,6 +137,21 @@ describe("fileHyperlink", () => {
 		expect(uri).not.toContain(" ");
 	});
 
+	it("percent-encodes URL-reserved path bytes before appending query params", () => {
+		setHyperlinkMode("always");
+		const result = fileHyperlink("/Users/foo/a#b?c% d.ts", "a#b?c% d.ts", { line: 12 });
+		const uri = extractLinkUri(result);
+		expect(uri).toBe("file:///Users/foo/a%23b%3Fc%25%20d.ts?line=12");
+	});
+
+	it("resolves relative paths before building file URIs", () => {
+		setHyperlinkMode("always");
+		const result = fileHyperlink("relative file#1.ts", "relative file#1.ts");
+		const uri = extractLinkUri(result);
+		expect(uri).toBeDefined();
+		expect(decodeURIComponent(new URL(uri!).pathname)).toEndWith("/relative file#1.ts");
+	});
+
 	it("appends line and col as query params when provided", () => {
 		setHyperlinkMode("always");
 		const result = fileHyperlink("/Users/foo/bar.ts", "bar.ts", { line: 42, col: 7 });
@@ -199,6 +220,29 @@ describe("urlHyperlink", () => {
 	it("does not wrap non-HTTP URL schemes", () => {
 		setHyperlinkMode("always");
 		expect(urlHyperlink("ftp://example.com/file", "file")).toBe("file");
+	});
+});
+
+describe("urlHyperlinkAlways", () => {
+	it("wraps HTTP URLs in auto mode even when capability detection would suppress", () => {
+		setHyperlinkMode("auto");
+		Bun.env.NO_COLOR = "1"; // forces isHyperlinkEnabled() to false in auto mode
+		const result = urlHyperlinkAlways("www.example.com/path", "example");
+
+		expect(isHyperlinkEnabled()).toBe(false);
+		expect(result).toContain(`${OSC}8;`);
+		expect(result).toContain(`${OSC}8;;${BEL}`);
+		expect(extractAnyTerminatorLinkUri(result)).toBe("https://www.example.com/path");
+	});
+
+	it("returns plain text when the user opts out with tui.hyperlinks=off", () => {
+		setHyperlinkMode("off");
+		expect(urlHyperlinkAlways("https://example.com/path", "example")).toBe("example");
+	});
+
+	it("does not wrap non-HTTP URL schemes", () => {
+		setHyperlinkMode("always");
+		expect(urlHyperlinkAlways("ftp://example.com/file", "file")).toBe("file");
 	});
 });
 

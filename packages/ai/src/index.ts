@@ -3,6 +3,7 @@ export * from "./api-registry";
 export * from "./auth-broker";
 export { type AuthGatewayBootOptions, type ModelResolver, startAuthGateway } from "./auth-gateway/server";
 export * from "./auth-gateway/types";
+export * from "./auth-retry";
 export * from "./auth-storage";
 export * from "./effort";
 export * from "./model-cache";
@@ -28,6 +29,7 @@ export * from "./providers/openai-completions";
 export * from "./providers/openai-responses";
 export * from "./providers/synthetic";
 export * from "./rate-limit-utils";
+export * from "./registry";
 export * from "./stream";
 export { Type } from "./typebox-compat";
 export * from "./types";
@@ -43,13 +45,6 @@ export * from "./usage/zai";
 export * from "./utils/anthropic-auth";
 export * from "./utils/discovery";
 export * from "./utils/event-stream";
-export * from "./utils/oauth";
-export type {
-	OAuthCredentials,
-	OAuthProvider,
-	OAuthProviderId,
-	OAuthProviderInfo,
-} from "./utils/oauth/types";
 export * from "./utils/overflow";
 export * from "./utils/retry";
 export * from "./utils/schema";

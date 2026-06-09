@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { Effort } from "../src/effort";
-import { streamBedrock } from "../src/providers/amazon-bedrock";
-import type { Context, Model } from "../src/types";
+import { Effort } from "@oh-my-pi/pi-ai/effort";
+import { streamBedrock } from "@oh-my-pi/pi-ai/providers/amazon-bedrock";
+import type { Context, Model } from "@oh-my-pi/pi-ai/types";
 
 const originalSkipAuth = process.env.AWS_BEDROCK_SKIP_AUTH;
 
@@ -88,6 +88,18 @@ describe("issue #1373: Bedrock Claude thinkingDisplay", () => {
 			type: "adaptive",
 			display: "summarized",
 		});
+	});
+
+	it("defaults adaptive thinking to display=summarized on Fable/Mythos 5", async () => {
+		for (const id of ["global.anthropic.claude-fable-5", "global.anthropic.claude-mythos-5"] as const) {
+			const payload = await captureBedrockPayload(adaptiveModel(id), {
+				reasoning: Effort.High,
+			});
+			expect(payload.additionalModelRequestFields?.thinking).toMatchObject({
+				type: "adaptive",
+				display: "summarized",
+			});
+		}
 	});
 
 	it("respects explicit thinkingDisplay='omitted' on Opus 4.7+", async () => {

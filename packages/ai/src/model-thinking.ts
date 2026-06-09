@@ -43,7 +43,7 @@ type SemVer = {
 };
 
 type GeminiKind = "pro" | "flash";
-type AnthropicKind = "opus" | "sonnet";
+type AnthropicKind = "opus" | "sonnet" | "fable" | "mythos";
 type OpenAIVariant = "base" | "codex" | "codex-max" | "codex-mini" | "codex-spark" | "mini" | "max" | "nano";
 
 const CODEX_GPT_5_4_PRIORITY_BY_VARIANT: Partial<Record<OpenAIVariant, number>> = {
@@ -355,7 +355,8 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 			? Effort.Max
 			: requireSupportedEffort(model, effort);
 	if (anthropicModelHasRealXHighEffort(model)) {
-		// Opus 4.7+ on the Messages API exposes the full five-tier adaptive scale
+		// Opus 4.7+ and Fable/Mythos 5 on the Messages API expose the full
+		// five-tier adaptive scale
 		// (low/medium/high/xhigh/max). Shift our user-facing efforts up one notch so
 		// the top tier reaches the genuine "max" and "high" lands on Anthropic's
 		// recommended "xhigh" coding/agentic default.
@@ -390,44 +391,43 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 }
 
 /**
- * Returns true for Anthropic models with Opus 4.7 API restrictions:
+ * Returns true for Anthropic models with Opus 4.7+/Fable/Mythos API restrictions:
  * - Sampling parameters (temperature/top_p/top_k) return 400 error
  * - Thinking content is omitted by default (needs display: "summarized")
  */
 export function hasOpus47ApiRestrictions(modelId: string): boolean {
 	const parsed = parseAnthropicModel(getCanonicalModelId(modelId));
 	if (!parsed) return false;
-	return semverGte(parsed.version, "4.7") && parsed.kind === "opus";
+	return (parsed.kind === "opus" && semverGte(parsed.version, "4.7")) || isFableOrMythos(parsed.kind);
 }
 /**
  * Mid-conversation `role: "system"` messages (system instructions appended at
  * non-first positions in the `messages` array) are supported starting with
- * Claude Opus 4.8. Earlier Claude models reject the role.
+ * Claude Opus 4.8 and the Claude Fable/Mythos 5 generation. Earlier Claude
+ * models reject the role.
  * @see https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
  */
 export function supportsMidConversationSystemMessages(modelId: string): boolean {
 	const parsed = parseAnthropicModel(getCanonicalModelId(modelId));
 	if (!parsed) return false;
-	return parsed.kind === "opus" && semverGte(parsed.version, "4.8");
+	return (parsed.kind === "opus" && semverGte(parsed.version, "4.8")) || isFableOrMythos(parsed.kind);
 }
 
-/**
- * Claude Opus 4.8 must emit at most one tool call per turn: the Anthropic
- * Messages provider sends `tool_choice.disable_parallel_tool_use = true` for
- * this model. Scoped to exactly 4.8 — earlier and later Opus versions keep
- * Anthropic's default parallel tool-calling.
- */
-export function disablesParallelToolUse(modelId: string): boolean {
+export function isAnthropicFableOrMythosModel(modelId: string): boolean {
 	const parsed = parseAnthropicModel(getCanonicalModelId(modelId));
-	if (!parsed) return false;
-	return parsed.kind === "opus" && semverEqual(parsed.version, "4.8");
+	return parsed !== null && isFableOrMythos(parsed.kind);
+}
+
+function isFableOrMythos(kind: AnthropicKind): boolean {
+	return kind === "fable" || kind === "mythos";
 }
 
 function anthropicModelHasRealXHighEffort<TApi extends Api>(model: ApiModel<TApi>): boolean {
 	if (model.api !== "anthropic-messages") return false;
 	const parsedModel = parseKnownModel(model.id);
-	if (parsedModel.family !== "anthropic" || parsedModel.kind !== "opus") return false;
-	return semverGte(parsedModel.version, "4.7");
+	if (parsedModel.family !== "anthropic") return false;
+	if (isFableOrMythos(parsedModel.kind)) return true;
+	return parsedModel.kind === "opus" && semverGte(parsedModel.version, "4.7");
 }
 function applyGeneratedModelPolicy(model: ApiModel<Api>): void {
 	const copilotLimits = model.provider === "github-copilot" ? COPILOT_GENERATED_LIMITS[model.id] : undefined;
@@ -489,6 +489,19 @@ function applyAnthropicCatalogPolicy(model: ApiModel<Api>, parsedModel: Anthropi
 		model.cost.cacheWrite = 6.25;
 		model.contextWindow = 1000000;
 		model.maxTokens = 128000;
+	}
+
+	// Claude Fable/Mythos 5: Anthropic's /v1/models omits token limits and
+	// pricing, and models.dev lags new releases. Pin authoritative values from
+	// the model card (1M context / 128k output) and pricing docs ($10 in / $50
+	// out per MTok).
+	if (model.provider === "anthropic" && isFableOrMythos(parsedModel.kind)) {
+		model.contextWindow = 1_000_000;
+		model.maxTokens = 128_000;
+		model.cost.input = 10;
+		model.cost.output = 50;
+		model.cost.cacheRead = 1;
+		model.cost.cacheWrite = 12.5;
 	}
 }
 
@@ -621,14 +634,14 @@ function inferAnthropicSupportedEfforts<TApi extends Api>(
 		(model.api === "anthropic-messages" || model.api === "bedrock-converse-stream") &&
 		semverGte(parsedModel.version, "4.6")
 	) {
-		if (parsedModel.kind !== "opus") {
+		if (parsedModel.kind !== "opus" && !isFableOrMythos(parsedModel.kind)) {
 			return DEFAULT_REASONING_EFFORTS;
 		}
-		// Opus 4.7+ on the Messages API adds a dedicated "xhigh" tier between "high" and "max".
-		// Bedrock Converse's adaptive output_config.effort does not accept "xhigh" — both
-		// Opus 4.6 and 4.7 on Bedrock collapse to the same ladder [minimal..high, max].
-		const opus47OnMessages = semverGte(parsedModel.version, "4.7") && model.api === "anthropic-messages";
-		return opus47OnMessages ? ANTHROPIC_OPUS_47_PLUS_EFFORTS : ANTHROPIC_OPUS_46_EFFORTS;
+		// Opus 4.7+ (and Fable/Mythos 5) on the Messages API add a dedicated "xhigh" tier between
+		// "high" and "max". Bedrock Converse's adaptive output_config.effort does not accept "xhigh" —
+		// those models on Bedrock collapse to the same ladder [minimal..high, max].
+		const xhighOnMessages = semverGte(parsedModel.version, "4.7") && model.api === "anthropic-messages";
+		return xhighOnMessages ? ANTHROPIC_OPUS_47_PLUS_EFFORTS : ANTHROPIC_OPUS_46_EFFORTS;
 	}
 	return inferFallbackEfforts(model);
 }
@@ -684,7 +697,10 @@ function inferThinkingControlMode<TApi extends Api>(
 
 		case "bedrock-converse-stream":
 			if (parsedModel.family === "anthropic") {
-				if (semverGte(parsedModel.version, "4.6") && parsedModel.kind === "opus") {
+				if (
+					semverGte(parsedModel.version, "4.6") &&
+					(parsedModel.kind === "opus" || isFableOrMythos(parsedModel.kind))
+				) {
 					return "anthropic-adaptive";
 				}
 				if (semverGte(parsedModel.version, "4.5")) {
@@ -724,7 +740,7 @@ function parseGeminiModel(modelId: string): GeminiModel | null {
 }
 
 function parseAnthropicModel(modelId: string): AnthropicModel | null {
-	const match = /claude-(opus|sonnet)-(\d{1,2}(?:[.-]\d{1,2}){0,2})\b/.exec(modelId);
+	const match = /claude-(opus|sonnet|fable|mythos)-(\d{1,2}(?:[.-]\d{1,2}){0,2})\b/.exec(modelId);
 	if (!match) {
 		return null;
 	}

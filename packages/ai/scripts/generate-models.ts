@@ -27,6 +27,7 @@ import {
 	PROVIDER_DESCRIPTORS,
 } from "../src/provider-models/descriptors";
 import {
+	ANTHROPIC_CURATED_FALLBACK_MODELS,
 	buildFireworksFirePassStaticSeed,
 	buildXaiOAuthStaticSeed,
 	clampFireworksKimiMaxTokens,
@@ -34,15 +35,16 @@ import {
 	isFireworksKimiK2ModelId,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	mapModelsDevToModels,
+	stripFireworksDeepSeekThinkingToggle,
 	UNK_CONTEXT_WINDOW,
 	UNK_MAX_TOKENS,
 } from "../src/provider-models/openai-compat";
 import { getGitLabDuoModels } from "../src/providers/gitlab-duo";
 import { JWT_CLAIM_PATH } from "../src/providers/openai-codex/constants";
+import type { OAuthProvider } from "../src/registry/oauth/types";
 import type { Model } from "../src/types";
 import { fetchAntigravityDiscoveryModels } from "../src/utils/discovery/antigravity";
 import { fetchCodexModels } from "../src/utils/discovery/codex";
-import type { OAuthProvider } from "../src/utils/oauth/types";
 
 const packageRoot = path.join(import.meta.dir, "..");
 
@@ -248,6 +250,18 @@ function applyFireworksKimiMaxTokensCap(models: readonly Model[]): Model[] {
 	});
 }
 
+/**
+ * Fireworks' DeepSeek V4 endpoint accepts the user's effort through
+ * `reasoning_effort` and rejects the DeepSeek-native binary `thinking` toggle
+ * when both are present. Strip stale reference metadata from generated fallbacks.
+ */
+function applyFireworksDeepSeekReasoningShape(models: readonly Model[]): Model[] {
+	return models.map(model => {
+		if (model.provider !== "fireworks" || model.api !== "openai-completions") return model;
+		return stripFireworksDeepSeekThinkingToggle(model, model.id);
+	});
+}
+
 const ANTIGRAVITY_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 
 async function getOAuthAccessFromStorage(provider: OAuthProvider): Promise<OAuthAccess | null> {
@@ -374,6 +388,11 @@ async function generateModels() {
 	// persisted `modelRoles.default = "xai-oauth/<id>"` is honored before the
 	// async refresh fires (interactive boot does not await refresh).
 	allModels.push(...buildXaiOAuthStaticSeed());
+	// Seed Anthropic models that are live on the first-party API or in limited
+	// release but that models.dev has not catalogued yet (e.g. Claude Fable 5 /
+	// Mythos 5). Deduped behind upstream entries; metadata is pinned in
+	// applyAnthropicCatalogPolicy.
+	allModels.push(...ANTHROPIC_CURATED_FALLBACK_MODELS);
 
 	// Fire Pass router model (Kimi K2.6 Turbo) bundled under the `fireworks`
 	// provider. Its dedicated `fpk_…` keys reject `/v1/models`, so it is never
@@ -405,6 +424,9 @@ async function generateModels() {
 			modelsDevAuthoritativeProviders.add(model.provider);
 		}
 	}
+	if (catalogProviderModels.some(model => model.provider === "aimlapi")) {
+		modelsDevAuthoritativeProviders.add("aimlapi");
+	}
 	// Merge previous models.json entries as fallback for provider/model pairs not
 	// fetched dynamically. Providers that models.dev covers authoritatively keep
 	// the upstream list exactly, so retired entries from the previous snapshot do
@@ -428,6 +450,7 @@ async function generateModels() {
 	allModels = applyPremiumMultiplierOverrides(allModels);
 	allModels = applyCodexPricingFallback(allModels);
 	allModels = applyFireworksKimiMaxTokensCap(allModels);
+	allModels = applyFireworksDeepSeekReasoningShape(allModels);
 	applyGeneratedModelPolicies(allModels);
 	linkOpenAIPromotionTargets(allModels);
 

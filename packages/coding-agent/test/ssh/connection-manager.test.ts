@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import * as connectionManager from "../../src/ssh/connection-manager";
-import { isMountedByDeviceBoundary } from "../../src/ssh/sshfs-mount";
+import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
+import { isMountedByDeviceBoundary } from "@oh-my-pi/pi-coding-agent/ssh/sshfs-mount";
 
 describe("buildRemoteCommand", () => {
 	it("includes -n and OpenSSH ControlMaster options on Unix-like platforms", async () => {

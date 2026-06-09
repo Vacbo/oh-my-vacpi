@@ -10,7 +10,6 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import {
 	type CredentialDisabledEvent,
-	isUsageLimitError,
 	type Message,
 	type Model,
 	type SimpleStreamOptions,
@@ -24,7 +23,6 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import {
 	$env,
 	$flag,
-	extractRetryHint,
 	getAgentDbPath,
 	getAgentDir,
 	getAuthBrokerSnapshotCachePath,
@@ -39,10 +37,13 @@ import { type AsyncJob, AsyncJobManager, isBackgroundJobSupportEnabled } from ".
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
+import { createApiKeyResolver } from "./config/api-key-resolver";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { ModelRegistry } from "./config/model-registry";
 import {
+	defaultModelPerProvider,
 	formatModelString,
+	getModelMatchPreferences,
 	parseModelPattern,
 	parseModelString,
 	resolveAllowedModels,
@@ -61,10 +62,11 @@ import {
 	type LoadedCustomCommand,
 	loadCustomCommands as loadCustomCommandsInternal,
 } from "./extensibility/custom-commands";
-import { discoverAndLoadCustomTools } from "./extensibility/custom-tools";
+import { discoverCustomToolPaths, loadCustomTools, type ToolPathWithSource } from "./extensibility/custom-tools";
 import type { CustomTool, CustomToolContext, CustomToolSessionEvent } from "./extensibility/custom-tools/types";
 import {
 	discoverAndLoadExtensions,
+	discoverExtensionPaths,
 	type ExtensionContext,
 	type ExtensionFactory,
 	ExtensionRunner,
@@ -90,6 +92,7 @@ import { discoverAndLoadMCPTools, MCPManager, type MCPToolsLoadResult } from "./
 import { resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
+import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
 	collectEnvSecrets,
@@ -110,7 +113,12 @@ import {
 	writeAuthBrokerSnapshotCache,
 } from "./session/auth-storage";
 import { type LiveSessionRegistration, registerLiveSession } from "./session/live-session-registry";
-import { type CustomMessage, convertToLlm, wrapSteeringForModel } from "./session/messages";
+import {
+	type CustomMessage,
+	convertToLlm,
+	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
+	wrapSteeringForModel,
+} from "./session/messages";
 import { getRestorableSessionModels, SessionManager } from "./session/session-manager";
 import { closeAllConnections } from "./ssh/connection-manager";
 import { unmountAll } from "./ssh/sshfs-mount";
@@ -143,10 +151,12 @@ import {
 	BUILTIN_TOOLS,
 	computeEssentialBuiltinNames,
 	createTools,
+	type DeferredDiagnosticsEntry,
 	discoverStartupLspServers,
 	EditTool,
 	EvalTool,
 	FindTool,
+	filterInitialToolsForDiscoveryAll,
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isImageProviderPreference,
@@ -229,6 +239,42 @@ function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): CustomMessag
 	};
 }
 
+type LateDiagnosticsDetails = {
+	files: Array<{ path: string; summary: string; errored: boolean; messages: string[] }>;
+};
+
+function buildLateDiagnosticsBatchMessage(
+	entries: DeferredDiagnosticsEntry[],
+): CustomMessage<LateDiagnosticsDetails> | null {
+	if (entries.length === 0) return null;
+	const files = entries.map(entry => ({
+		path: entry.path,
+		summary: entry.summary,
+		messages: entry.messages,
+		errored: entry.errored,
+	}));
+	const details: LateDiagnosticsDetails = {
+		files: files.map(file => ({
+			path: file.path,
+			summary: file.summary,
+			errored: file.errored,
+			messages: file.messages,
+		})),
+	};
+	return {
+		role: "custom",
+		customType: LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
+		content: prompt.render(lateDiagnosticTemplate, {
+			multiple: files.length > 1,
+			files,
+		}),
+		display: true,
+		attribution: "agent",
+		details,
+		timestamp: Date.now(),
+	};
+}
+
 function buildMcpNotificationBatchMessage(entries: McpNotificationEntry[]): AgentMessage | null {
 	const resources: McpNotificationEntry[] = [];
 	const seen = new Set<string>();
@@ -281,6 +327,8 @@ export interface CreateAgentSessionOptions {
 	/** Optional provider-facing session identifier for prompt caches and sticky auth selection.
 	 * Keeps persisted session files isolated while reusing provider-side caches. */
 	providerSessionId?: string;
+	/** Optional provider-facing prompt cache key, distinct from request lineage. */
+	providerPromptCacheKey?: string;
 
 	/** Custom tools to register (in addition to built-in tools). Accepts both CustomTool and ToolDefinition. */
 	customTools?: (CustomTool | ToolDefinition)[];
@@ -291,10 +339,41 @@ export interface CreateAgentSessionOptions {
 	/** Disable extension discovery (explicit paths still load). */
 	disableExtensionDiscovery?: boolean;
 	/**
-	 * Pre-loaded extensions (skips file discovery).
-	 * @internal Used by CLI when extensions are loaded early to parse custom flags.
+	 * Pre-loaded extensions (skips file discovery and the per-session factory
+	 * call). Used by the CLI when extensions are loaded early to parse custom
+	 * flags — the same process owns the returned instances, so reusing them is
+	 * safe.
+	 *
+	 * NEVER pass this across session boundaries (e.g. parent → subagent).
+	 * `Extension` instances close over a parent-bound `ExtensionAPI` (cwd,
+	 * eventBus, runtime), and reusing them would route tools/handlers/commands
+	 * back through the parent. For subagents, forward
+	 * {@link preloadedExtensionPaths} instead.
+	 *
+	 * @internal
 	 */
 	preloadedExtensions?: LoadExtensionsResult;
+	/**
+	 * Pre-discovered extension source paths. When provided, the filesystem-scan
+	 * inside `discoverExtensionPaths()` is skipped — the session still calls
+	 * `loadExtensions()` itself so each `Extension` is bound to THIS session's
+	 * `ExtensionAPI` (cwd, eventBus, runtime).
+	 *
+	 * This is the safe pass-through for parent → subagent forwarding.
+	 */
+	preloadedExtensionPaths?: string[];
+	/**
+	 * Pre-discovered custom-tool source paths from `.omp/tools/`, `.claude/tools/`,
+	 * plugins, etc. When provided, the filesystem-scan inside
+	 * `discoverCustomToolPaths()` is skipped — subagents inherit the parent's
+	 * scan result and call `loadCustomTools()` themselves so each session binds
+	 * tools to its OWN `CustomToolAPI` (cwd, exec, pushPendingAction, UI).
+	 *
+	 * Forwarding the loaded `LoadedCustomTool[]` instances directly would reuse
+	 * the parent's session-bound API and route tool execution back through the
+	 * parent — wrong for isolated tasks and for pending-action routing.
+	 */
+	preloadedCustomToolPaths?: ToolPathWithSource[];
 
 	/** Shared event bus for tool/extension communication. Default: creates new bus. */
 	eventBus?: EventBus;
@@ -522,6 +601,26 @@ export async function discoverExtensions(cwd?: string): Promise<LoadExtensionsRe
 }
 
 /**
+ * Path-only counterpart of {@link loadSessionExtensions}: the FS-heavy scan
+ * without the per-session module load. Subagents reuse the parent's path list
+ * (cached on {@link ToolSession.extensionPaths}) and rebuild Extension
+ * instances themselves so each session's `ExtensionAPI` (cwd, eventBus,
+ * runtime) is its own.
+ */
+export async function discoverSessionExtensionPaths(
+	options: Pick<CreateAgentSessionOptions, "disableExtensionDiscovery" | "additionalExtensionPaths">,
+	cwd: string,
+	settings: Settings,
+): Promise<string[]> {
+	if (options.disableExtensionDiscovery) {
+		return options.additionalExtensionPaths ?? [];
+	}
+	const configuredPaths = [...(options.additionalExtensionPaths ?? []), ...(settings.get("extensions") ?? [])];
+	const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
+	return discoverExtensionPaths(configuredPaths, cwd, disabledExtensionIds);
+}
+
+/**
  * Load the discovered/configured extensions for a session — everything {@link
  * createAgentSession} would load except the inline factory extensions it appends
  * itself. Extracted so the CLI can resolve extension-registered flags (and thus
@@ -536,23 +635,8 @@ export async function loadSessionExtensions(
 	settings: Settings,
 	eventBus: EventBus,
 ): Promise<LoadExtensionsResult> {
-	let result: LoadExtensionsResult;
-	if (options.disableExtensionDiscovery) {
-		const configuredPaths = options.additionalExtensionPaths ?? [];
-		result = await logger.time("loadExtensions", loadExtensions, configuredPaths, cwd, eventBus);
-	} else {
-		// Merge CLI extension paths with settings extension paths.
-		const configuredPaths = [...(options.additionalExtensionPaths ?? []), ...(settings.get("extensions") ?? [])];
-		const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
-		result = await logger.time(
-			"discoverAndLoadExtensions",
-			discoverAndLoadExtensions,
-			configuredPaths,
-			cwd,
-			eventBus,
-			disabledExtensionIds,
-		);
-	}
+	const paths = await discoverSessionExtensionPaths(options, cwd, settings);
+	const result = await logger.time("loadExtensions", loadExtensions, paths, cwd, eventBus);
 	for (const { path, error } of result.errors) {
 		logger.error("Failed to load extension", { path, error });
 	}
@@ -711,6 +795,7 @@ function customToolToDefinition(tool: CustomTool): ToolDefinition {
 		parameters: tool.parameters,
 		hidden: tool.hidden,
 		deferrable: tool.deferrable,
+		approval: typeof tool.approval === "function" ? tool.approval.bind(tool) : tool.approval,
 		mcpServerName: tool.mcpServerName,
 		mcpToolName: tool.mcpToolName,
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
@@ -1032,9 +1117,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const hasServiceTierEntry = existingBranch.some(entry => entry.type === "service_tier_change");
 
 	const hasExplicitModel = options.model !== undefined || options.modelPattern !== undefined;
-	const modelMatchPreferences = {
-		usageOrder: settings.getStorage()?.getModelUsageOrder(),
-	};
+	const modelMatchPreferences = getModelMatchPreferences(settings);
 	const allowedModels = await logger.time("resolveAllowedModels", () =>
 		resolveAllowedModels(modelRegistry, settings, modelMatchPreferences),
 	);
@@ -1150,23 +1233,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 
 	// Discover rules and bucket them in one pass to avoid repeated scans over large rule sets.
-	const { ttsrManager, rulebookRules, alwaysApplyRules } = await logger.time("discoverTtsrRules", async () => {
-		const { TtsrManager } = await import("./export/ttsr");
-		const ttsrSettings = settings.getGroup("ttsr");
-		const ttsrManager = new TtsrManager(ttsrSettings);
-		const rulesResult =
-			options.rules !== undefined
-				? { items: options.rules, warnings: undefined }
-				: await loadCapability<Rule>(ruleCapability.id, { cwd });
-		const { rulebookRules, alwaysApplyRules } = bucketRules(rulesResult.items, ttsrManager, {
-			builtinRules: ttsrSettings.builtinRules,
-			disabledRules: ttsrSettings.disabledRules,
-		});
-		if (existingSession.injectedTtsrRules.length > 0) {
-			ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
-		}
-		return { ttsrManager, rulebookRules, alwaysApplyRules };
-	});
+	const { ttsrManager, rulebookRules, alwaysApplyRules, allRules } = await logger.time(
+		"discoverTtsrRules",
+		async () => {
+			const { TtsrManager } = await import("./export/ttsr");
+			const ttsrSettings = settings.getGroup("ttsr");
+			const ttsrManager = new TtsrManager(ttsrSettings);
+			const rulesResult =
+				options.rules !== undefined
+					? { items: options.rules, warnings: undefined }
+					: await loadCapability<Rule>(ruleCapability.id, { cwd });
+			const { rulebookRules, alwaysApplyRules } = bucketRules(rulesResult.items, ttsrManager, {
+				builtinRules: ttsrSettings.builtinRules,
+				disabledRules: ttsrSettings.disabledRules,
+			});
+			if (existingSession.injectedTtsrRules.length > 0) {
+				ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
+			}
+			return { ttsrManager, rulebookRules, alwaysApplyRules, allRules: rulesResult.items };
+		},
+	);
 
 	// Resolve contextFiles up-front (it's needed before tool creation). The
 	// workspace tree scan is slow on large repos and we MUST NOT block startup on
@@ -1284,6 +1370,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				logger.warn("Failed to register live session", { error: String(error) });
 			}
 		}
+		// Per-path mutation counter shared across edit/write tools. Late-diagnostics
+		// entries capture it at fetch time and are dropped at injection if a newer
+		// mutation (any tool) bumped it in the meantime.
+		const fileMutationVersions = new Map<string, number>();
 		const toolSession: ToolSession = {
 			get cwd() {
 				return sessionManager.getCwd();
@@ -1300,6 +1390,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			contextFiles,
 			workspaceTree: resolvedWorkspaceTree,
 			skills,
+			rules: allRules,
 			eventBus,
 			outputSchema: options.outputSchema,
 			requireYieldTool: options.requireYieldTool,
@@ -1329,6 +1420,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),
 			getClientBridge: () => session?.clientBridge,
 			getCompactContext: () => session.formatCompactContext(),
+			queueDeferredDiagnostics: entry => session?.yieldQueue.enqueue(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, entry),
+			bumpFileMutationVersion: path => {
+				const next = (fileMutationVersions.get(path) ?? 0) + 1;
+				fileMutationVersions.set(path, next);
+				return next;
+			},
+			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
 			isMCPDiscoveryEnabled: () => session.isMCPDiscoveryEnabled(),
@@ -1390,7 +1488,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const getArtifactsDir = () => sessionManager.getArtifactsDir();
 		if (!options.parentTaskPrefix) {
 			setActiveSkills(skills);
-			setActiveRules([...rulebookRules, ...alwaysApplyRules]);
+			// Include TTSR rules so `rule://<name>` can resolve them too. They are
+			// registered with the manager and bucketed out before rulebook/always,
+			// so without this a TTSR-only rule (e.g. a triggered builtin) is not
+			// addressable and `rule://` reports "Available: none".
+			setActiveRules([...rulebookRules, ...alwaysApplyRules, ...ttsrManager.getRules()]);
 			if (asyncJobManager) AsyncJobManager.setInstance(asyncJobManager);
 		}
 		const localProtocolOptions = options.localProtocolOptions ?? {
@@ -1472,22 +1574,29 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			customTools.push(...getSearchTools());
 		}
 
-		// Discover and load custom tools from .omp/tools/, .claude/tools/, etc.
+		// Discover custom tools from `.omp/tools/`, `.claude/tools/`, plugins, etc.
+		// Subagents reuse the parent's scan via `preloadedCustomToolPaths` to skip
+		// the FS walk, but ALWAYS re-call `loadCustomTools` here so factories bind
+		// to THIS session's `CustomToolAPI` (cwd, exec, pushPendingAction, UI).
+		// Forwarding the parent's `LoadedCustomTool[]` directly would route tool
+		// execution back through the parent — wrong for isolated tasks and for
+		// pending-action queueing.
 		const builtInToolNames = builtinTools.map(t => t.name);
-		const discoveredCustomTools = await logger.time(
-			"discoverAndLoadCustomTools",
-			discoverAndLoadCustomTools,
-			[],
-			cwd,
-			builtInToolNames,
-			action => queueResolveHandler(toolSession, action),
+		const customToolPaths: ToolPathWithSource[] =
+			options.preloadedCustomToolPaths ??
+			(await logger.time("discoverCustomToolPaths", () => discoverCustomToolPaths([], cwd)));
+		const customToolsLoadResult = await logger.time("loadCustomTools", () =>
+			loadCustomTools(customToolPaths, cwd, builtInToolNames, action => queueResolveHandler(toolSession, action)),
 		);
-		for (const { path, error } of discoveredCustomTools.errors) {
+		for (const { path, error } of customToolsLoadResult.errors) {
 			logger.error("Custom tool load failed", { path, error });
 		}
-		if (discoveredCustomTools.tools.length > 0) {
-			customTools.push(...discoveredCustomTools.tools.map(loaded => loaded.tool));
+		if (customToolsLoadResult.tools.length > 0) {
+			customTools.push(...customToolsLoadResult.tools.map(loaded => loaded.tool));
 		}
+		// Forward the path list (NOT the loaded tools) to subagents so they
+		// re-bind under their own `CustomToolAPI` while skipping the FS scan.
+		toolSession.customToolPaths = customToolPaths;
 
 		const inlineExtensions: ExtensionFactory[] = options.extensions ? [...options.extensions] : [];
 		inlineExtensions.push((await import("./autoresearch")).createAutoresearchExtension);
@@ -1495,14 +1604,48 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			inlineExtensions.push(createCustomToolsExtension(customTools));
 		}
 
-		// Load extensions. A preloaded result (e.g. resolved by the CLI before
-		// session creation so it can classify `@file` args extension-aware without
-		// a session/breadcrumb existing yet) is reused as-is; otherwise discover now
-		// through the shared helper. Preloaded wins over `disableExtensionDiscovery`
-		// because the preloaded result already reflects that choice — re-running the
-		// loader here would double-load.
-		const extensionsResult: LoadExtensionsResult =
-			options.preloadedExtensions ?? (await loadSessionExtensions(options, cwd, settings, eventBus));
+		// Load extensions. Three paths:
+		//   1. `preloadedExtensions` (CLI): caller already loaded — reuse the
+		//      Extension instances. Shallow-clone `extensions` so the inline
+		//      push below cannot mutate the caller's array. `runtime` is shared
+		//      so flag values set pre-creation flow into the live session.
+		//   2. `preloadedExtensionPaths` (subagent): caller resolved paths;
+		//      skip the FS scan but always re-call `loadExtensions` here so
+		//      each `Extension` binds to THIS session's `ExtensionAPI`
+		//      (cwd, eventBus, runtime).
+		//   3. No preload: run the full session discovery.
+		// `disableExtensionDiscovery` is honored implicitly: a caller that set
+		// the flag and pre-resolved the result already reflects that choice.
+		let extensionPaths: string[];
+		let extensionsResult: LoadExtensionsResult;
+		if (options.preloadedExtensions) {
+			extensionsResult = {
+				...options.preloadedExtensions,
+				extensions: [...options.preloadedExtensions.extensions],
+			};
+			// Capture paths for downstream forwarding; filter inline-factory
+			// entries (`<inline-N>`) — those are per-session, not source paths.
+			extensionPaths = extensionsResult.extensions
+				.map(ext => ext.resolvedPath)
+				.filter(p => !p.startsWith("<inline"));
+		} else if (options.preloadedExtensionPaths) {
+			extensionPaths = options.preloadedExtensionPaths;
+			extensionsResult = await logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus);
+			for (const { path, error } of extensionsResult.errors) {
+				logger.error("Failed to load extension", { path, error });
+			}
+		} else {
+			extensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
+				discoverSessionExtensionPaths(options, cwd, settings),
+			);
+			extensionsResult = await logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus);
+			for (const { path, error } of extensionsResult.errors) {
+				logger.error("Failed to load extension", { path, error });
+			}
+		}
+		// Forward the source-path list (NOT the loaded instances) so subagents
+		// rebuild their own session-scoped extensions.
+		toolSession.extensionPaths = extensionPaths;
 
 		// Load inline extensions from factories
 		if (inlineExtensions.length > 0) {
@@ -1533,6 +1676,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			extensionsResult.runtime.pendingProviderRegistrations = [];
 		}
+		// Discover runtime (extension) provider catalogs now that they are
+		// registered. The startup refreshInBackground() ran before extensions
+		// loaded, so dynamic extension providers are only discovered here. Runs in
+		// the background (cache-aware) so startup is never blocked on the fetch; the
+		// model list re-renders when the catalog arrives, like other dynamic providers.
+		void modelRegistry.refreshRuntimeProviders().catch(error => {
+			logger.warn("runtime provider discovery failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 
 		// Retry session-model candidates now that extension providers are
 		// registered. The initial restore runs before extensions load, so a role
@@ -1571,9 +1724,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Resolve deferred --model pattern now that extension models are registered.
 		if (!model && options.modelPattern) {
 			const availableModels = modelRegistry.getAll();
-			const matchPreferences = {
-				usageOrder: settings.getStorage()?.getModelUsageOrder(),
-			};
+			const matchPreferences = getModelMatchPreferences(settings);
 			const { model: resolved } = parseModelPattern(options.modelPattern, availableModels, matchPreferences, {
 				modelRegistry,
 			});
@@ -1592,10 +1743,28 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Re-resolve the allowed set: extension factories above may have
 			// registered providers/models that weren't visible at startup.
 			const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
-			for (const candidate of fallbackCandidates) {
-				if (await hasModelApiKey(candidate)) {
-					model = candidate;
+			// Prefer each provider's configured default model
+			// (DEFAULT_MODEL_PER_PROVIDER) over raw catalog order. Without this the
+			// first-run fallback picks whatever model sorts first in models.json for
+			// the winning provider (e.g. anthropic's claude-3-5-sonnet-20240620)
+			// instead of the intended provider default (claude-sonnet-4-6). Mirrors
+			// findInitialModel's precedence.
+			for (const [provider, defaultId] of Object.entries(defaultModelPerProvider)) {
+				const preferred = fallbackCandidates.find(
+					candidate => candidate.provider === provider && candidate.id === defaultId,
+				);
+				if (preferred && (await hasModelApiKey(preferred))) {
+					model = preferred;
 					break;
+				}
+			}
+			// Otherwise, first available model with a valid API key.
+			if (!model) {
+				for (const candidate of fallbackCandidates) {
+					if (await hasModelApiKey(candidate)) {
+						model = candidate;
+						break;
+					}
 				}
 			}
 			if (model) {
@@ -1898,19 +2067,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// from the initial set unless they were explicitly requested or restored from persistence.
 		// The model finds them via search_tool_bm25 and activates them on demand.
 		if (effectiveDiscoveryMode === "all") {
-			const essentialBuiltinNames = new Set(computeEssentialBuiltinNames(settings));
-			const explicitlyRequestedToolNames = new Set(options.toolNames?.map(name => name.toLowerCase()) ?? []);
-			// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
-			// activation persistence is a follow-up). MCP names won't collide with built-in names.
-			const restoredDiscoveredNames = new Set(existingSession.selectedMCPToolNames);
-			initialToolNames = initialToolNames.filter(name => {
-				const tool = toolRegistry.get(name);
-				if (!tool?.loadMode) return true; // not a built-in — leave MCP/custom/extension to existing logic
-				if (tool.loadMode === "essential") return true;
-				if (essentialBuiltinNames.has(name)) return true;
-				if (explicitlyRequestedToolNames.has(name)) return true;
-				if (restoredDiscoveredNames.has(name)) return true;
-				return false;
+			// Tools a forced tool_choice will target must stay active, or the named
+			// choice references a tool absent from the request (provider 400). Eager
+			// todos force a named `todo` choice on the first turn.
+			const forceActive = new Set<string>();
+			if (settings.get("todo.eager") && settings.get("todo.enabled") && toolRegistry.has("todo")) {
+				forceActive.add("todo");
+			}
+			initialToolNames = filterInitialToolsForDiscoveryAll(initialToolNames, {
+				loadModeOf: name => toolRegistry.get(name)?.loadMode,
+				essentialNames: new Set(computeEssentialBuiltinNames(settings)),
+				explicitlyRequested: new Set(options.toolNames?.map(name => name.toLowerCase()) ?? []),
+				// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
+				// activation persistence is a follow-up). MCP names won't collide with built-in names.
+				restored: new Set(existingSession.selectedMCPToolNames),
+				forceActive,
 			});
 		}
 
@@ -2020,6 +2191,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			onPayload,
 			onResponse,
 			sessionId: providerSessionId,
+			promptCacheKey: options.providerPromptCacheKey,
 			transformContext,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
 			followUpMode: settings.get("followUpMode") ?? "one-at-a-time",
@@ -2036,9 +2208,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),
-			getApiKey: async provider => {
+			getApiKey: async (provider, ctx) => {
 				// Read agent.sessionId at call time so credential selection stays aligned
 				// with metadataResolver after /new, fork, resume, or branch switches.
+				// Retry steps (ctx carries an auth error) drive the central a/b/c
+				// policy — force-refresh the same account, then rotate to a sibling —
+				// and may legitimately yield no key when every account is exhausted.
+				if (ctx?.error !== undefined) {
+					return createApiKeyResolver(modelRegistry, provider, { sessionId: agent.sessionId })(ctx);
+				}
 				const key = await modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
 				if (!key) {
 					throw new Error(`No API key found for provider "${provider}"`);
@@ -2052,40 +2230,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				return streamSimple(streamModel, context, {
 					...streamOptions,
 					openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
-					onAuthError: async (provider, oldKey, error) => {
-						const message = error instanceof Error ? error.message : String(error);
-						// streamSimple invokes this for both 401 auth failures AND
-						// rotatable usage-limit errors (Codex usage_limit_reached,
-						// Anthropic usage_limit_reached, etc.). The two need
-						// different storage actions: a real 401 means the credential
-						// is bad and should be marked suspect; a usage limit just
-						// means this account is parked until reset and should be
-						// temporarily blocked so a sibling can pick the request up.
-						if (isUsageLimitError(message)) {
-							const retryAfterMs = extractRetryHint(undefined, message);
-							const switched = await modelRegistry.authStorage.markUsageLimitReached(provider, agent.sessionId, {
-								retryAfterMs,
-								signal: streamOptions?.signal,
-							});
-							logger.debug("Retrying provider request after usage-limit block", {
-								provider,
-								switched,
-								retryAfterMs,
-								error: message,
-							});
-							if (!switched) return undefined;
-							return modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
-						}
-						await modelRegistry.authStorage.invalidateCredentialMatching(provider, oldKey, {
-							signal: streamOptions?.signal,
-							sessionId: agent.sessionId,
-						});
-						logger.debug("Retrying provider request after credential invalidation", {
-							provider,
-							error: message,
-						});
-						return modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
-					},
 				});
 			},
 			cursorExecHandlers,
@@ -2195,6 +2339,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 		session.yieldQueue.register<McpNotificationEntry>("mcp-notification", {
 			build: buildMcpNotificationBatchMessage,
+		});
+		session.yieldQueue.register<DeferredDiagnosticsEntry>(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, {
+			isStale: entry => entry.isStale(),
+			build: buildLateDiagnosticsBatchMessage,
 		});
 
 		// Attach the live session to the pre-registered ref so peers can route IRC

@@ -553,6 +553,7 @@ export class MCPManager {
 				Promise.allSettled(connectionTasks.map(task => task.tracked.promise)),
 				delay(STARTUP_TIMEOUT_MS),
 			]);
+
 			for (const task of connectionTasks) {
 				const { name } = task;
 				if (task.tracked.status === "fulfilled") {

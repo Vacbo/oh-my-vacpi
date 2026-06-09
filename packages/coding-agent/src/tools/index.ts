@@ -1,12 +1,14 @@
 import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { ToolChoice } from "@oh-my-pi/pi-ai";
+import type { FetchImpl, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
+import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import { Settings } from "../config/settings";
 import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
@@ -60,11 +62,7 @@ import { TuiObserveTool } from "./tui-observe";
 import { WriteTool } from "./write";
 import { YieldTool } from "./yield";
 
-// Exa MCP tools (22 tools)
-
 export * from "../edit";
-export * from "../exa";
-export type * from "../exa/types";
 export * from "../goals";
 export * from "../lsp";
 export * from "../session/streaming-output";
@@ -157,12 +155,37 @@ export type {
 	DiscoverableToolSource,
 } from "../tool-discovery/tool-index";
 
+/**
+ * A late LSP diagnostics result that arrived after the edit/write tool already
+ * returned. Surfaced to the model and the transcript via
+ * {@link ToolSession.queueDeferredDiagnostics}, batched through the session
+ * yield queue like background-job results.
+ */
+export interface DeferredDiagnosticsEntry {
+	/** Absolute path the diagnostics belong to (the renderer shortens it). */
+	path: string;
+	/** One-line severity summary, e.g. "2 errors". */
+	summary: string;
+	/** Formatted, ready-to-display diagnostic lines. */
+	messages: string[];
+	/** True when any message is error severity. */
+	errored: boolean;
+	/**
+	 * Evaluated at injection time (in the dispatcher's stale check): drop the entry
+	 * when a newer mutation to the same file has superseded it, so the model never
+	 * sees diagnostics for stale content.
+	 */
+	isStale(): boolean;
+}
+
 /** Session context for tool factories */
 export interface ToolSession {
 	/** Current working directory */
 	cwd: string;
 	/** Whether UI is available */
 	hasUI: boolean;
+	/** Optional fetch implementation injected into the URL read pipeline (tests, proxies). Defaults to global fetch. */
+	fetch?: FetchImpl;
 	/** Skip Python kernel availability check and warmup */
 	skipPythonPreflight?: boolean;
 	/** Pre-loaded context files (AGENTS.md, etc) */
@@ -173,6 +196,21 @@ export interface ToolSession {
 	skills?: Skill[];
 	/** Pre-loaded prompt templates */
 	promptTemplates?: PromptTemplate[];
+	/** Pre-loaded rules (forwarded to subagents to skip re-discovery). */
+	rules?: Rule[];
+	/**
+	 * Pre-discovered extension source paths. Forwarded to subagents so they
+	 * skip the FS scan but still re-bind extensions to their own session-scoped
+	 * `ExtensionAPI` (cwd, eventBus, runtime). Inline extension factories
+	 * (`<inline-N>`) are NOT included — those are session-local.
+	 */
+	extensionPaths?: string[];
+	/**
+	 * Pre-discovered custom-tool source paths from `.omp/tools/`, `.claude/tools/`,
+	 * plugins, etc. Forwarded to subagents so they skip the FS scan but still
+	 * re-bind tools to their own session-scoped `CustomToolAPI`.
+	 */
+	customToolPaths?: ToolPathWithSource[];
 	/** Whether LSP integrations are enabled */
 	enableLsp?: boolean;
 	/** Whether an edit-capable tool is available in this session (controls hashline output) */
@@ -324,6 +362,15 @@ export interface ToolSession {
 
 	/** Queue a hidden message to be injected at the next agent turn. */
 	queueDeferredMessage?(message: CustomMessage): void;
+	/** Queue late LSP diagnostics (arrived after an edit/write returned) to be shown
+	 *  in the transcript and delivered to the model at the next yield, like background
+	 *  job results. */
+	queueDeferredDiagnostics?(entry: DeferredDiagnosticsEntry): void;
+	/** Bump and return the session-global mutation counter for `path`. Edit/write
+	 *  tools call this on every file mutation so stale late-diagnostics can be dropped. */
+	bumpFileMutationVersion?(path: string): number;
+	/** Read the current session-global mutation counter for `path` (0 if never mutated). */
+	getFileMutationVersion?(path: string): number;
 	/** Get the active OpenTelemetry config so subagent dispatch can forward
 	 *  the parent's tracer/hooks with the subagent's own identity stamped. */
 	getTelemetry?: () => AgentTelemetryConfig | undefined;
@@ -348,6 +395,38 @@ export function computeEssentialBuiltinNames(settings: Settings): string[] {
 		return cleaned.filter(name => name in BUILTIN_TOOLS);
 	}
 	return [...DEFAULT_ESSENTIAL_TOOL_NAMES];
+}
+
+/**
+ * Filter the initial active tool set when `tools.discoveryMode === "all"`.
+ *
+ * Non-essential discoverable built-ins are hidden — the model rediscovers them
+ * via `search_tool_bm25` and activates them on demand. A tool survives hiding
+ * when it is essential, explicitly requested, restored from a prior selection,
+ * or required by a forced tool_choice feature (`forceActive`). The last case is
+ * load-bearing: a named tool_choice (e.g. the eager `todo` prelude) must
+ * reference a tool present in the request, or the provider rejects it with 400.
+ */
+export function filterInitialToolsForDiscoveryAll(
+	initialToolNames: string[],
+	opts: {
+		loadModeOf: (name: string) => BuiltinToolLoadMode | undefined;
+		essentialNames: ReadonlySet<string>;
+		explicitlyRequested: ReadonlySet<string>;
+		restored: ReadonlySet<string>;
+		forceActive: ReadonlySet<string>;
+	},
+): string[] {
+	return initialToolNames.filter(name => {
+		const loadMode = opts.loadModeOf(name);
+		if (!loadMode) return true; // not a built-in — leave MCP/custom/extension to existing logic
+		if (loadMode === "essential") return true;
+		if (opts.essentialNames.has(name)) return true;
+		if (opts.explicitlyRequested.has(name)) return true;
+		if (opts.restored.has(name)) return true;
+		if (opts.forceActive.has(name)) return true;
+		return false;
+	});
 }
 
 /**
@@ -473,7 +552,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const isToolAllowed = (name: string) => {
 		if (name === "goal") return goalEnabled && goalModeActive;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
-		if (name === "bash") return true;
+		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
 		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo_write") return !includeYield && session.settings.get("todo.enabled");

@@ -12,7 +12,6 @@ function createContext() {
 	const settings = Settings.instance;
 	const ctx = {
 		isInitialized: true,
-		isBackgrounded: false,
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		pendingTools,
@@ -20,6 +19,7 @@ function createContext() {
 		hideThinkingBlock: false,
 		editor: { getText: vi.fn(() => "") },
 		flushPendingModelSwitch: vi.fn(),
+		sessionManager: { getSessionName: () => undefined },
 		session: {
 			agent: { state: { messages: [] } },
 			isCompacting: false,

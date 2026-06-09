@@ -53,12 +53,14 @@ describe("githubToolRenderer", () => {
 		};
 
 		const component = githubToolRenderer.renderResult(result, { expanded: false, isPartial: true }, uiTheme);
-		const rendered = sanitizeText(component.render(64).join("\n"));
+		// Width 120: the upstream framed header truncates its title at narrow widths;
+		// the contract under test is the semantic content, not the truncation.
+		const rendered = sanitizeText(component.render(120).join("\n"));
 
 		expect(toolRenderers.github).toBeDefined();
 		expect(rendered).toContain("watching run #23856332053 on v12-security/v12x");
 		expect(rendered).toContain("CI  dev  #23856332053");
-		expect(rendered).toContain(`${uiTheme.status.success} Workflow Lint`);
+		expect(rendered).toContain(`${uiTheme.symbol("tool.gh")} Workflow Lint`);
 		expect(rendered).toContain(`${uiTheme.status.enabled} Frontend Checks`);
 		expect(rendered).toContain(`${uiTheme.status.shadowed} Rust Tests`);
 		expect(rendered).toContain("55s");

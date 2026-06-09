@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { hookFetch } from "@oh-my-pi/pi-utils";
+import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import { searchAnthropic } from "../../src/web/search/providers/anthropic";
 
 type CapturedRequest = {
@@ -88,8 +88,8 @@ describe("searchAnthropic headers", () => {
 		}
 	});
 
-	function mockFetch(responseBody: unknown): Disposable {
-		return hookFetch((url, init) => {
+	function mockFetch(responseBody: unknown): FetchImpl {
+		return async (url, init) => {
 			capturedRequest = {
 				url: typeof url === "string" ? url : url.toString(),
 				headers: init?.headers,
@@ -100,14 +100,14 @@ describe("searchAnthropic headers", () => {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});
-		});
+		};
 	}
 
 	it("includes web-search beta header and sends API key in X-Api-Key mode", async () => {
 		process.env.ANTHROPIC_SEARCH_API_KEY = "sk-ant-api-test";
-		using _hook = mockFetch(makeAnthropicResponse());
+		const fetchImpl = mockFetch(makeAnthropicResponse());
 
-		await searchAnthropic({ query: "test api key mode" });
+		await searchAnthropic({ query: "test api key mode", fetch: fetchImpl });
 
 		expect(capturedRequest).not.toBeNull();
 		expect(capturedRequest?.url).toBe(`${ANTHROPIC_BASE_URL}/v1/messages?beta=true`);
@@ -119,9 +119,9 @@ describe("searchAnthropic headers", () => {
 
 	it("includes web-search beta header and sends OAuth token in Authorization mode", async () => {
 		process.env.ANTHROPIC_SEARCH_API_KEY = "sk-ant-oat-test";
-		using _hook = mockFetch(makeAnthropicResponse());
+		const fetchImpl = mockFetch(makeAnthropicResponse());
 
-		await searchAnthropic({ query: "test oauth mode" });
+		await searchAnthropic({ query: "test oauth mode", fetch: fetchImpl });
 
 		expect(capturedRequest).not.toBeNull();
 		expect(getHeaderCaseInsensitive(capturedRequest?.headers, "anthropic-beta")).toContain(WEB_SEARCH_BETA);
