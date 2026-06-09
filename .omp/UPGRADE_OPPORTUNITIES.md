@@ -41,6 +41,62 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-09 — Fork Anthropic max_tokens policy is interleaved inside upstream's buildParams   `[open]` `[high]`
+
+**Where**: `packages/ai/src/providers/anthropic.ts` (`buildParams` max_tokens default, `ensureMaxTokensForThinking`), `packages/ai/test/anthropic-alignment.test.ts`.
+
+**Problem**: The fork's output-budget policy (the `/3` no-explicit-maxTokens default plus the adaptive-thinking raise with caller-override skip) is spliced line-by-line into upstream's `buildParams` and `ensureMaxTokensForThinking`. This is the third consecutive merge (v15.10.0, v15.10.9, v15.10.10) that conflicted on exactly these lines; v15.10.10 also changed the cap semantics under us (unconditional 64k became OAuth-conditional `maxOutputTokens`), so the fork code had to be re-derived rather than re-applied.
+
+**Fix sketch**: Extract the entire fork policy into one fork-owned function, e.g. `applyForkOutputBudget(params, model, options, maxOutputTokens)`, called once at the end of `buildParams`. Upstream restructures then produce at most a one-line conflict at the callsite instead of three multi-line conflicts in interleaved bodies. The 2026-06-09 resolution kept the inline shape; do the extraction as a standalone commit after the merge settles.
+
+## 2026-06-09 — Fork-contract assertions live inside upstream test files   `[open]` `[med]`
+
+**Where**: `packages/ai/test/anthropic-alignment.test.ts` (the `/3` default tests, the API-key ceiling test rewritten this merge), `packages/coding-agent/test/agent-session-eager-todo.test.ts`.
+
+**Problem**: Fork behavior divergences are tested by editing upstream's test files in place. Upstream rewrites these files every release, so each merge surfaces them as conflicts or post-merge failures that need manual re-derivation (this merge: upstream's new "keeps the full model output ceiling for API-key requests" test asserted their no-`/3` default and had to be split into a fork pair).
+
+**Fix sketch**: Move fork-contract tests into fork-owned files (e.g. `packages/ai/test/fork-anthropic-output-budget.test.ts`) and leave upstream's files byte-identical to upstream wherever the contract genuinely diverges; delete the upstream test of the replaced default in one tightly-scoped hunk instead of rewriting it. Merges then auto-resolve the fork files and the diff against upstream stays reviewable.
+
+## 2026-06-09 — TeeTerminal mirrors the Terminal interface member-by-member   `[open]` `[med]`
+
+**Where**: `packages/tui/src/terminal.ts` (`TeeTerminal`).
+
+**Problem**: The fork's `TeeTerminal` re-implements all ~17 members of `Terminal` as manual one-line forwards. Every upstream interface change breaks the fork build: v15.10.10 removed `Terminal.isNativeViewportAtBottom()` and the stale forward was the only `bun check` failure of the whole merge. The only real logic is the `write()` tap.
+
+**Fix sketch**: Either (a) build the tee with a `Proxy` over `inner` that special-cases `write`, so interface drift is absorbed automatically, or (b) propose a `onWrite?: TerminalWriteListener` tap upstream on `ProcessTerminal` itself, which would delete the fork class entirely. Option (b) is the durable one; the recorder use case (terminal snapshots) is not fork-specific in principle.
+
+## 2026-06-09 — DirResolver memoization makes XDG-based test isolation order-dependent   `[open]` `[med]`
+
+**Where**: `packages/utils/src/dirs.ts` (`DirResolver`, module-level `dirs` singleton, `RESOLVER_HOME` captured at load), `packages/coding-agent/test/plugin-extensions-discovery.test.ts`.
+
+**Problem**: `getPluginsDir()` resolves through a module-level `DirResolver` that captures env state and memoizes subdir paths. Tests that point `XDG_DATA_HOME` at a temp dir only get the temp path if no earlier test file in the same process already resolved the plugins dir. In the v15.10.10 full suite, all 9 `plugin-extensions-discovery` tests fail deterministically with their own isolation guard ("getPluginsDir() returned ~/.omp/plugins, outside tempXdgDataHome") while passing standalone. The guard throwing instead of writing to the real `~/.omp/plugins` is good defensive design; the underlying cached-singleton-vs-env-mutation pattern is the flaw. Confirmed upstream-inherent on a pristine v15.10.10 worktree: the same guard trips in upstream's own full suite (1 to 9 tests depending on parallel scheduling), so this is not caused by fork changes.
+
+**Fix sketch**: Give `pi-utils` an explicit test seam, e.g. `resetDirResolver()` (sibling of the existing `setAgentDir`), and call it from the test's `beforeEach` after setting XDG vars. Alternatively the test could `spyOn(piUtils, "getPluginsDir")` like `plugin-install-local.test.ts` already does, which sidesteps the singleton entirely; the inconsistency between the two test files' isolation strategies is itself a smell. Candidate for an upstream PR.
+
+## 2026-06-09 — wrapFetchForCch silently changes the FetchImpl body contract   `[open]` `[low]`
+
+**Where**: `packages/ai/src/providers/anthropic.ts` (`wrapFetchForCch`), consumer mocks like `packages/coding-agent/test/tools/web-search-anthropic.test.ts`.
+
+**Problem**: The cch wrapper re-issues the request with `body` converted from `string` to `Uint8Array`. Type-correct (both are `BodyInit`), but every downstream `FetchImpl` consumer that assumed string bodies breaks at runtime, not compile time; the fork's web-search mock failed with an opaque `JSON Parse error` this merge. Anything else that wraps or intercepts fetch (auth-gateway, stats capture, future test mocks) has the same latent hazard.
+
+**Fix sketch**: Fixed the fork mock to decode both shapes. Longer term, a shared test helper (`decodeFetchBody(init)`) in pi-ai's test utils would keep the knowledge in one place; grep for other `init.body as string` assumptions when touching auth-gateway interceptors.
+
+## 2026-06-09 — Removed settings disappear silently from settings-schema   `[open]` `[low]`
+
+**Where**: `packages/coding-agent/src/config/settings-schema.ts`.
+
+**Problem**: v15.10.10 deleted `clearOnShrink` (upstream) and the merge deleted the fork's `tui.rebuildScrollbackDuringStreaming`; both vanish from the schema and stale user config entries are ignored without a word. A user who opted into the fork setting gets a behavior change (always-on append-only commit semantics) with no signal about why or that their config line is now dead.
+
+**Fix sketch**: Add a `removedSettings: Record<string, string>` map (key to one-line reason) consulted at settings load; log one `logger.warn` per stale key found. A few lines, no schema machinery. Worth proposing upstream since they remove settings regularly.
+
+## 2026-06-09 — Changelog union-driver normalization is a manual chore every merge   `[open]` `[chore]`
+
+**Where**: `packages/*/CHANGELOG.md` (`merge=union` driver), `scripts/fix-changelogs.ts`.
+
+**Problem**: Every upstream merge requires the same hand-edits: insert the missing blank line at the seam between the fork's `### oh-my-vacpi (fork)` block and upstream's first versioned heading, move upstream entries out of `## [Unreleased]`, and prune fork entries superseded by upstream changes. Done by hand three merges in a row.
+
+**Fix sketch**: Extend `scripts/fix-changelogs.ts` with a `--post-merge` mode that fixes seam blank lines and flags (not auto-edits) fork entries mentioning identifiers that no longer exist in the tree. Wire it into the `omp update` merge-session prompt so the agent runs it instead of re-deriving the rules.
+
 ## 2026-05-26 — Hindsight integration: per-harness observability gaps   `[open]` `[med]`
 
 **Where**: `packages/coding-agent/src/hindsight/{state.ts,backend.ts,client.ts,content.ts}`, plus `packages/coding-agent/src/slash-commands/builtin-registry.ts` for the proposed `/memory list`.

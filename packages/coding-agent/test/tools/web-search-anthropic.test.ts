@@ -88,12 +88,20 @@ describe("searchAnthropic headers", () => {
 		}
 	});
 
+	function decodeBody(body: unknown): unknown {
+		if (!body) return null;
+		// OAuth requests flow through wrapFetchForCch, which re-sends the JSON
+		// body as a cch-patched Uint8Array; API-key requests keep the string.
+		const text = typeof body === "string" ? body : new TextDecoder().decode(body as Uint8Array);
+		return JSON.parse(text);
+	}
+
 	function mockFetch(responseBody: unknown): FetchImpl {
 		return async (url, init) => {
 			capturedRequest = {
 				url: typeof url === "string" ? url : url.toString(),
 				headers: init?.headers,
-				body: init?.body ? JSON.parse(init.body as string) : null,
+				body: decodeBody(init?.body) as Record<string, unknown> | null,
 			};
 
 			return new Response(JSON.stringify(responseBody), {

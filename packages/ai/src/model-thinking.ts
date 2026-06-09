@@ -422,6 +422,15 @@ function isFableOrMythos(kind: AnthropicKind): boolean {
 	return kind === "fable" || kind === "mythos";
 }
 
+function isOpenRouterAnthropicAdaptiveReasoningModel<TApi extends Api>(
+	parsedModel: AnthropicModel,
+	model: ApiModel<TApi>,
+): boolean {
+	if (model.api !== "openai-completions") return false;
+	if (model.provider !== "openrouter" && !model.baseUrl.includes("openrouter.ai")) return false;
+	return isFableOrMythos(parsedModel.kind) || (parsedModel.kind === "opus" && semverGte(parsedModel.version, "4.6"));
+}
+
 function anthropicModelHasRealXHighEffort<TApi extends Api>(model: ApiModel<TApi>): boolean {
 	if (model.api !== "anthropic-messages") return false;
 	const parsedModel = parseKnownModel(model.id);
@@ -642,6 +651,9 @@ function inferAnthropicSupportedEfforts<TApi extends Api>(
 		// those models on Bedrock collapse to the same ladder [minimal..high, max].
 		const xhighOnMessages = semverGte(parsedModel.version, "4.7") && model.api === "anthropic-messages";
 		return xhighOnMessages ? ANTHROPIC_OPUS_47_PLUS_EFFORTS : ANTHROPIC_OPUS_46_EFFORTS;
+	}
+	if (isOpenRouterAnthropicAdaptiveReasoningModel(parsedModel, model)) {
+		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	return inferFallbackEfforts(model);
 }

@@ -686,27 +686,6 @@ export const SETTINGS_SCHEMA = {
 		ui: { tab: "appearance", label: "Show Hardware Cursor", description: "Show terminal cursor for IME support" },
 	},
 
-	clearOnShrink: {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "appearance",
-			label: "Clear on Shrink",
-			description: "Clear empty rows when content shrinks (may cause flicker)",
-		},
-	},
-
-	"tui.rebuildScrollbackDuringStreaming": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "appearance",
-			label: "Rebuild Scrollback During Streaming",
-			description:
-				"Experimental: clear and replay terminal scrollback while assistant or tool output streams to keep native history cleaner. Can push mouse-scrolled terminals back to the latest message.",
-		},
-	},
-
 	// ────────────────────────────────────────────────────────────────────────
 	// Model
 	// ────────────────────────────────────────────────────────────────────────
