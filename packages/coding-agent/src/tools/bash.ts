@@ -18,7 +18,7 @@ import { highlightCode, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import { recordBashTuiSnapshot } from "../session/bash-tui-snapshots";
 import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from "../session/client-bridge";
-import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
@@ -432,7 +432,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 	}
 
-	#buildCompletedResult(
+	async #buildCompletedResult(
 		result: BashResult | BashInteractiveResult,
 		timeoutSec: number,
 		options: {
@@ -442,7 +442,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			wallTimeMs?: number;
 			tuiSnapshotId?: string;
 		} = {},
-	): AgentToolResult<BashToolDetails> {
+	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
 		const failedExit = exitCode !== undefined && exitCode !== 0;
 
@@ -484,7 +484,17 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		if (failedExit) {
 			details.exitCode = exitCode;
 		}
-		const resultBuilder = toolResult(details).text(outputText).truncationFromSummary(result, { direction: "tail" });
+		// Final defense at the tool-result boundary: no bash path (client bridge,
+		// head-retention spill, minimizer miss) may emit more than
+		// ~DEFAULT_MAX_BYTES inline. No-op for already-bounded output.
+		const cappedOutputText = await enforceInlineByteCap(outputText, {
+			label: "bash output",
+			saveArtifact: full => saveBashOriginalArtifact(this.session, full),
+		});
+
+		const resultBuilder = toolResult(details)
+			.text(cappedOutputText)
+			.truncationFromSummary(result, { direction: "tail" });
 		if (failedExit) resultBuilder.error();
 		return resultBuilder.done();
 	}
@@ -572,7 +582,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
 					const wallTimeMs = performance.now() - wallTimeStart;
-					const finalResult = this.#buildCompletedResult(result, options.timeoutSec, {
+					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
 						requestedTimeoutSec: options.requestedTimeoutSec,
 						notices: options.notices ?? [],
 						wallTimeMs,

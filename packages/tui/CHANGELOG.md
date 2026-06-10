@@ -23,6 +23,10 @@
 
 - Removed the fork's opt-in eager native-scrollback rebuild (`tui.rebuildScrollbackDuringStreaming`): upstream 15.10.10's append-only commit-ledger renderer makes committed scrollback immutable by design and deleted the `TUI.setEagerNativeScrollbackRebuild()` API the fork hook drove, solving the same history-cleanliness problem without the mouse-scroll yank tradeoff.
 
+## [15.11.0] - 2026-06-10
+### Added
+
+- Added support for asynchronous `onSubmit` handlers by allowing the callback to return a `Promise<void>`
 ## [15.10.11] - 2026-06-10
 
 ### Added
