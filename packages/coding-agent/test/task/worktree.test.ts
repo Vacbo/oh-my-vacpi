@@ -132,7 +132,10 @@ describe("worktree isolation helpers", () => {
 		expect(result).toEqual({ failed: [], merged: [taskBranch] });
 		expect(await fs.readFile(path.join(repo, "merged.txt"), "utf8")).toBe("task branch change\n");
 		expect(await runGit(repo, ["status", "--porcelain=v1"])).toBe("M  staged.txt");
-		expect(await runGit(repo, ["diff", "--cached", "--", "staged.txt"])).toContain("+local staged change");
+		// --no-ext-diff: assertion parses patch text; must not honor host diff.external.
+		expect(await runGit(repo, ["diff", "--no-ext-diff", "--cached", "--", "staged.txt"])).toContain(
+			"+local staged change",
+		);
 		expect(await runGit(repo, ["stash", "list"])).toBe("");
 	});
 

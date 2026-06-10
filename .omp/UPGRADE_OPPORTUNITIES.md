@@ -97,6 +97,14 @@ git fetch --all --tags
 
 **Still open (upstream)**: the `DirResolver` singleton flaw itself, and upstream's unguarded copy of the test. PR candidate: a `resetDirResolver()` seam plus the spy-based isolation. Process rule until then: NEVER run upstream's coding-agent suite against a real `$HOME`; use `HOME=$(mktemp -d)` for baseline classification runs.
 
+## 2026-06-09 — Machine-parsed `git diff` honors host diff.external   `[done]` `[high]`
+
+**Where**: `packages/coding-agent/src/utils/git.ts` (`buildDiffArgs`, `diff.has`); consumer `packages/coding-agent/src/task/worktree.ts` (`captureRepoDeltaPatch`, baseline capture, untracked patches).
+
+**Problem**: Every `git.diff()` output path is machine-consumed — parsed by `parseFileDiffs`/`parseNumstat`/`parseCommitDiffHunks` or piped into `git apply` — yet the invocation honored `diff.external`/`GIT_EXTERNAL_DIFF`. On a host with an external differ configured (here: `sem`), `git diff` emits presentation output instead of patch syntax, so `git apply` rejects the delta patch and task-worktree merge-back breaks at runtime. Surfaced as 3 deterministic test failures (`worktree.test.ts` ×2, `issue-966-repro`) that looked environmental but were a product bug. `git diff-tree` (used by `diff.tree`) is plumbing and already ignores external diff unless `--ext-diff` is passed; `jj diff --git` and `gh pr diff` are unaffected.
+
+**Fixed in fork**: `buildDiffArgs` now emits `git diff --no-ext-diff --no-textconv ...` (textconv output is equally un-applyable); `diff.has` adds `--no-ext-diff` so the `--quiet` exit code never depends on `diff.trustExitCode`. One test-side assertion in `worktree.test.ts` that shells `git diff` directly got the same flag. Upstream PR candidate: identical patch applies to upstream `utils/git.ts`, which has the same flaw.
+
 ## 2026-06-09 — wrapFetchForCch silently changes the FetchImpl body contract   `[open]` `[low]`
 
 **Where**: `packages/ai/src/providers/anthropic.ts` (`wrapFetchForCch`), consumer mocks like `packages/coding-agent/test/tools/web-search-anthropic.test.ts`.

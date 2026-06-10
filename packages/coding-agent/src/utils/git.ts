@@ -336,7 +336,10 @@ function trimScalar(text: string | undefined): string | undefined {
 // ════════════════════════════════════════════════════════════════════════════
 
 function buildDiffArgs(options: DiffOptions): string[] {
-	const args = ["diff"];
+	// Output is machine-parsed (parseFileDiffs/parseNumstat) or fed to `git apply`,
+	// so never honor diff.external/GIT_EXTERNAL_DIFF or textconv drivers: they
+	// replace patch syntax with presentation output that git apply rejects.
+	const args = ["diff", "--no-ext-diff", "--no-textconv"];
 	if (options.binary) args.push("--binary");
 	if (options.cached) args.push("--cached");
 	if (options.nameOnly) args.push("--name-only");
@@ -774,7 +777,9 @@ export const diff = Object.assign(
 		},
 		/** Check whether a diff exists (uses `--quiet` for efficiency). */
 		async has(cwd: string, options: Pick<DiffOptions, "cached" | "files" | "signal"> = {}): Promise<boolean> {
-			const args = ["diff"];
+			// Content-existence check: bypass diff.external so the exit code never
+			// depends on the driver's diff.trustExitCode configuration.
+			const args = ["diff", "--no-ext-diff"];
 			if (options.cached) args.push("--cached");
 			args.push("--quiet");
 			if (options.files?.length) args.push("--", ...options.files);
