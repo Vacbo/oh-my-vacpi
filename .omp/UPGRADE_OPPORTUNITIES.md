@@ -41,16 +41,18 @@ git fetch --all --tags
 
 ---
 
-## 2026-06-10 — Semantic diff rendering wraps `git diff` only; jj-colocated repos bypass it   `[open]` `[low]`
+## 2026-06-10 — `sem` entity diffs cover `git diff` only; jj-colocated repos bypass them   `[open]` `[low]`
 
-**Where**: Harness-side bash output wrapper (external to this repo; not in `packages/` or `crates/pi-shell/src/minimizer/`, confirmed by grep for its "N entities, M unchanged filtered out" summary). Native minimizer filters that would host a fork-side equivalent: `crates/pi-shell/src/minimizer/filters/` (cargo.rs et al.).
+**Where**: [`sem`](https://github.com/Ataraxy-Labs/sem) (Ataraxy Labs), installed environment-wide via `sem setup`, which replaces `git diff` output with entity-level diffs for everything that shells out to git. Not part of vacpi or the harness: it lives in Pedro's code environment, so do not grep this repo for its "N entities, M unchanged filtered out" summary. Fork-side surface that could host an equivalent: `crates/pi-shell/src/minimizer/filters/` (cargo.rs et al.).
 
-**Problem**: The semantic diff renderer triggers on `git diff` invocations and replaces raw hunks with an entity-level summary. Two gaps observed live (2026-06-10 session):
+**What sem is** (worth knowing when coding here): Rust + tree-sitter semantic VCS layer on git. Diffs at entity granularity (functions/classes/methods, 31 languages plus JSON/YAML/TOML/Markdown), three-phase matching (exact id, structural hash, >80% token fuzzy) so renames/moves and cosmetic-only changes are classified, not shown as add+delete pairs. Agent-native surfaces: `--format json|markdown|plain`, `sem impact <entity>` (dependency blast radius), `sem context <entity> --budget N` (token-budgeted LLM context), `sem blame`/`sem log` (entity history), an MCP server (`sem_diff`, `sem_impact`, `sem_context`, ...), and a `SKILL.md` in-repo.
 
-1. **No jj coverage.** This repo is jj-colocated and agents are steered toward jj commands, but `jj diff --git` returns raw hunks with no semantic rendering. Inverse problem too: when an agent needs raw bytes, `git diff` cannot provide them because the wrapper always rewrites markdown diffs, so the agent must know to flee to `jj diff` as the un-intercepted path. Behavior should be symmetric, render both or provide a raw escape hatch for both.
-2. **`git diff --output=<file>` is swallowed.** The wrapper intercepted the command, rendered the entity summary to stdout, and left the `--output` target empty (0 bytes). That silently destroys the requested raw capture, and no `[raw output: artifact://N]` footer was emitted as recovery. Flags that redirect output should either pass through unwrapped or be honored after rendering.
+**Problem**: Two gaps observed live (2026-06-10 session):
 
-**Fix sketch**: Teach the wrapper to recognize `jj diff` (and `jj show`, `jj interdiff`), normalize via `--git` format, and feed the same entity renderer. Alternatively, or additionally, implement the semantic diff as a native fork filter in `crates/pi-shell/src/minimizer/filters/` keyed on both `git diff` and `jj diff` command lines, so the capability ships with vacpi instead of depending on the external wrapper. Either way, pass through any invocation carrying `--output`/`-o` untouched.
+1. **No jj coverage.** This repo is jj-colocated and agents are steered toward jj commands, but jj never invokes `git diff` (it diffs the git object store itself), so `jj diff --git` returns raw line hunks with no entity rendering. Inverse problem too: when an agent needs raw bytes, `git diff` cannot provide them because sem always rewrites the output, so the agent must know to flee to `jj diff` as the un-intercepted path. Behavior should be symmetric: render both, and keep a raw escape hatch for both.
+2. **`git diff --output=<file>` is swallowed.** The sem-wrapped `git diff` rendered the entity summary to stdout and left the `--output` target empty (0 bytes), silently destroying the requested raw capture. Output-redirecting flags should either pass through unwrapped or be honored after rendering. Candidate upstream issue for Ataraxy-Labs/sem.
+
+**Fix sketch**: jj exposes the integration point natively: `ui.diff-formatter` in jj config invokes an external tool with left/right trees, so a small glue (or an upstream `sem diff <dirA> <dirB>` directory-compare mode; file-pair and `--stdin` modes already exist) gets `jj diff` the same rendering with zero interception hacks. Alternatively, or additionally, a native fork filter in `crates/pi-shell/src/minimizer/filters/` could shell to `sem diff --stdin` for git/jj diff output, so the capability ships with vacpi. Either way, pass through any invocation carrying `--output`/`-o` untouched.
 
 ## 2026-06-10 — Goal mode is TUI-only; `goal.continuationModes` has one consumer; headless `-p` lacks a budgeted objective primitive   `[open]` `[med]`
 
