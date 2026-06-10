@@ -79,6 +79,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
 import {
+	collectDiscoverableSkillEntries,
 	loadSkills as loadSkillsInternal,
 	type Skill,
 	type SkillWarning,
@@ -137,7 +138,11 @@ import {
 	resolveThinkingLevelForModel,
 	toReasoningEffort,
 } from "./thinking";
-import { countToolsForAutoDiscovery, resolveEffectiveToolDiscoveryMode } from "./tool-discovery/mode";
+import {
+	countToolsForAutoDiscovery,
+	isSkillDiscoverySearchMode,
+	resolveEffectiveToolDiscoveryMode,
+} from "./tool-discovery/mode";
 import {
 	collectDiscoverableTools,
 	type DiscoverableTool,
@@ -1883,7 +1888,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			settings,
 			countToolsForAutoDiscovery(toolRegistry.keys()),
 		);
-		if (effectiveDiscoveryMode !== "off" && !toolRegistry.has("search_tool_bm25")) {
+		const skillDiscoveryActive = isSkillDiscoverySearchMode(settings);
+		if ((effectiveDiscoveryMode !== "off" || skillDiscoveryActive) && !toolRegistry.has("search_tool_bm25")) {
 			const searchTool: Tool = new SearchToolBm25Tool(toolSession);
 			toolRegistry.set(
 				searchTool.name,
@@ -1932,10 +1938,25 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							{ source: "builtin" },
 						)
 					: [];
-			const discoverableToolsForDesc: DiscoverableTool[] = [...discoverableBuiltinTools, ...discoverableMCPTools];
-			const discoverableToolSummary = summarizeDiscoverableTools(discoverableToolsForDesc);
+			// Discovery-hidden skills join the description corpus so the search tool's prompt
+			// advertises them; they are excluded from the MCP discovery-notice computation.
+			const discoverableSkillEntries =
+				skillDiscoveryActive && toolNames.includes("search_tool_bm25")
+					? collectDiscoverableSkillEntries(skills, skillsSettings)
+					: [];
+			const discoverableToolsForDesc: DiscoverableTool[] = [
+				...discoverableBuiltinTools,
+				...discoverableMCPTools,
+				...discoverableSkillEntries,
+			];
+			const discoverableToolSummary = summarizeDiscoverableTools([
+				...discoverableBuiltinTools,
+				...discoverableMCPTools,
+			]);
 			const hasDiscoverableTools =
-				mcpDiscoveryEnabled && toolNames.includes("search_tool_bm25") && discoverableToolsForDesc.length > 0;
+				mcpDiscoveryEnabled &&
+				toolNames.includes("search_tool_bm25") &&
+				discoverableBuiltinTools.length + discoverableMCPTools.length > 0;
 			const promptTools = buildSystemPromptToolMetadata(tools, {
 				search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
 			});
@@ -1968,7 +1989,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				toolNames,
 				rules: rulebookRules,
 				alwaysApplyRules,
-				skillsSettings: settings.getGroup("skills"),
+				skillsSettings,
 				appendSystemPrompt: appendPrompt,
 				repeatToolDescriptions,
 				intentField,

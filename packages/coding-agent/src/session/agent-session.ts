@@ -155,7 +155,7 @@ import type {
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import type { HookCommandContext } from "../extensibility/hooks/types";
-import type { Skill, SkillWarning } from "../extensibility/skills";
+import { collectDiscoverableSkillEntries, type Skill, type SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
 import { GoalRuntime } from "../goals/runtime";
 import type { Goal, GoalModeState } from "../goals/state";
@@ -3451,18 +3451,26 @@ export class AgentSession {
 	}
 
 	isToolDiscoveryEnabled(): boolean {
-		return this.#resolveEffectiveDiscoveryMode() !== "off";
+		// Gates search_tool_bm25 overall: skill discovery keeps it usable with tool discovery off.
+		return this.#resolveEffectiveDiscoveryMode() !== "off" || this.#collectDiscoverableSkills().length > 0;
 	}
 
 	getDiscoverableTools(filter?: { source?: DiscoverableTool["source"] }): DiscoverableTool[] {
 		// For "all" mode we combine built-in registry entries + MCP tools.
 		// For "mcp-only" mode we only return MCP tools.
+		// Discovery-hidden skills (skills.discoveryMode === "search") join regardless of mode.
 		const mode = this.#resolveEffectiveDiscoveryMode();
 		const activeNames = new Set(this.getActiveToolNames());
-		const mcpTools = Array.from(this.#discoverableMCPTools.values()).filter(t => !activeNames.has(t.name));
+		const mcpTools =
+			mode === "off" ? [] : Array.from(this.#discoverableMCPTools.values()).filter(t => !activeNames.has(t.name));
 		const builtinTools: DiscoverableTool[] = mode === "all" ? this.#collectDiscoverableBuiltinTools() : [];
-		const allTools = [...builtinTools, ...mcpTools];
+		const allTools = [...builtinTools, ...mcpTools, ...this.#collectDiscoverableSkills()];
 		return filter?.source ? allTools.filter(t => t.source === filter.source) : allTools;
+	}
+
+	/** Discovery-hidden skills as BM25 corpus entries (empty unless skills.discoveryMode === "search"). */
+	#collectDiscoverableSkills(): DiscoverableTool[] {
+		return collectDiscoverableSkillEntries(this.#skills, this.#skillsSettings);
 	}
 
 	/** Collect built-in tools the model can discover via search_tool_bm25. Restricted to tool

@@ -1,11 +1,17 @@
 Search hidden tool metadata to discover and activate tools.
 
 Activate hidden tools (MCP and built-in) when you need a capability not in your active tool set.
+{{#if discoverableSkillCount}}
+Skills are also discoverable here: matches are not activated; each returns a `skill://<name>` URI — read it to load the skill.
+{{/if}}
 {{#if hasDiscoverableMCPServers}}
 Discoverable MCP servers in this session: {{#list discoverableMCPServerSummaries join=", "}}{{this}}{{/list}}.
 {{/if}}
 {{#if hasDiscoverableBuiltinTools}}
 Discoverable built-in tools: {{#list discoverableBuiltinToolNames join=", "}}{{this}}{{/list}}.
+{{/if}}
+{{#if discoverableSkillCount}}
+Discoverable skills: {{discoverableSkillCount}}.
 {{/if}}
 {{#if discoverableToolCount}}
 Total discoverable tools available: {{discoverableToolCount}}.
@@ -36,5 +42,6 @@ Not for repository/file/code search. Tool discovery only.
 Returns JSON with:
 - `query`
 - `activated_tools` — tools activated by this search call
+- `skills` — skill matches as `{name, description, read}`; read the `skill://` URI, no activation needed (omitted when none)
 - `match_count` — number of ranked matches returned by the search
 - `total_tools`

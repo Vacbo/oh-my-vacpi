@@ -22,3 +22,12 @@ export function resolveEffectiveToolDiscoveryMode(settings: Settings, toolCount:
 	if (configuredMode === "auto" && toolCount > TOOL_DISCOVERY_AUTO_THRESHOLD) return "mcp-only";
 	return "off";
 }
+
+/**
+ * Skill discovery is a sibling knob to tool discovery: when `skills.discoveryMode === "search"`,
+ * unpinned skills leave the system prompt `<skills>` listing and join the BM25 corpus instead.
+ * It keeps `search_tool_bm25` alive even when tool discovery itself resolves to "off".
+ */
+export function isSkillDiscoverySearchMode(settings: Settings): boolean {
+	return settings.get("skills.discoveryMode") === "search";
+}

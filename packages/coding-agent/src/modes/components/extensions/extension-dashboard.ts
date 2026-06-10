@@ -36,9 +36,16 @@ import {
 	refreshState,
 	toggleProvider,
 } from "./state-manager";
-import type { DashboardState } from "./types";
+import type { DashboardState, Extension } from "./types";
 
-const EXT_FOOTER = " ↑/↓: navigate  Space: toggle  ←/→: provider  Esc: close";
+const EXT_FOOTER = " ↑/↓: navigate  Space: toggle  ^p: pin skill  ←/→: provider  Esc: close";
+
+/** Toggle a literal skill name in a pinnedSkills list; glob patterns are never touched. */
+export function toggleSkillPinEntry(pinned: readonly string[], name: string): string[] {
+	const index = pinned.indexOf(name);
+	if (index !== -1) return pinned.toSpliced(index, 1);
+	return [...pinned, name];
+}
 
 export class ExtensionDashboard extends Container {
 	#state!: DashboardState;
@@ -47,6 +54,8 @@ export class ExtensionDashboard extends Container {
 	#refreshToken = 0;
 	#builtRows = -1;
 	#builtCols = -1;
+	/** Compiled skills.pinnedSkills globs; refreshed on every pin toggle. */
+	#pinnedGlobs: Array<{ pattern: string; glob: Bun.Glob }> = [];
 
 	onClose?: () => void;
 	onRequestRender?: () => void;
@@ -72,6 +81,7 @@ export class ExtensionDashboard extends Container {
 	async #init(): Promise<void> {
 		const sm = this.settings ?? (await Settings.init());
 		const disabledIds = sm ? ((sm.get("disabledExtensions") as string[]) ?? []) : [];
+		this.#loadPinnedGlobs();
 		this.#state = await createInitialState(this.cwd, disabledIds);
 
 		// Calculate max visible items based on terminal height
@@ -84,11 +94,13 @@ export class ExtensionDashboard extends Container {
 			{
 				onSelectionChange: ext => {
 					this.#state.selected = ext;
-					this.#inspector.setExtension(ext);
+					this.#inspector.setExtension(ext, this.#pinMeta(ext));
 				},
 				onToggle: (extensionId, enabled) => {
 					this.#handleExtensionToggle(extensionId, enabled);
 				},
+				isPinned: ext => this.#isSkillPinned(ext),
+				onPinToggle: ext => this.#handleSkillPinToggle(ext),
 				onMasterToggle: providerId => {
 					this.#handleProviderToggle(providerId);
 				},
@@ -101,7 +113,7 @@ export class ExtensionDashboard extends Container {
 		// Create inspector
 		this.#inspector = new InspectorPanel();
 		if (this.#state.selected) {
-			this.#inspector.setExtension(this.#state.selected);
+			this.#inspector.setExtension(this.#state.selected, this.#pinMeta(this.#state.selected));
 		}
 
 		this.#buildLayout();
@@ -110,6 +122,53 @@ export class ExtensionDashboard extends Container {
 	#getActiveProviderId(): string | null {
 		const tab = this.#state.tabs[this.#state.activeTabIndex];
 		return tab && tab.id !== "all" ? tab.id : null;
+	}
+
+	#settingsInstance(): Settings | null {
+		try {
+			return this.settings ?? Settings.instance;
+		} catch {
+			return null;
+		}
+	}
+
+	#loadPinnedGlobs(): void {
+		const patterns = this.#settingsInstance()?.get("skills.pinnedSkills") ?? [];
+		this.#pinnedGlobs = patterns.map(pattern => ({ pattern, glob: new Bun.Glob(pattern) }));
+	}
+
+	/** First skills.pinnedSkills pattern matching the skill name, or undefined. */
+	#pinnedBy(ext: Extension): string | undefined {
+		if (ext.kind !== "skill") return undefined;
+		return this.#pinnedGlobs.find(({ glob }) => glob.match(ext.name))?.pattern;
+	}
+
+	#isSkillPinned(ext: Extension): boolean {
+		return this.#pinnedBy(ext) !== undefined;
+	}
+
+	#pinMeta(ext: Extension | null): { pinned?: boolean; pinnedVia?: string } {
+		if (ext?.kind !== "skill") return {};
+		const via = this.#pinnedBy(ext);
+		return { pinned: via !== undefined, pinnedVia: via };
+	}
+
+	/**
+	 * Toggle a skill in skills.pinnedSkills by literal name. A skill pinned only
+	 * through a glob (e.g. `cmux*`) gains a literal entry on first toggle; removing
+	 * the glob itself stays a config-file edit (the inspector shows the source pattern).
+	 */
+	#handleSkillPinToggle(ext: Extension): void {
+		if (ext.kind !== "skill") return;
+		const sm = this.#settingsInstance();
+		if (!sm) return;
+
+		sm.set("skills.pinnedSkills", toggleSkillPinEntry(sm.get("skills.pinnedSkills") ?? [], ext.name));
+
+		this.#loadPinnedGlobs();
+		this.#inspector.setExtension(this.#state.selected, this.#pinMeta(this.#state.selected));
+		this.#buildLayout();
+		this.onRequestRender?.();
 	}
 
 	/** Live terminal height so the dashboard tracks resize while open. */
@@ -263,7 +322,7 @@ export class ExtensionDashboard extends Container {
 		this.#mainList.setMasterSwitchProvider(this.#getActiveProviderId());
 
 		if (this.#state.selected) {
-			this.#inspector.setExtension(this.#state.selected);
+			this.#inspector.setExtension(this.#state.selected, this.#pinMeta(this.#state.selected));
 		}
 
 		this.#buildLayout();
@@ -274,7 +333,7 @@ export class ExtensionDashboard extends Container {
 		this.#state = applyDisabledExtensionsToState(this.#state, disabledIds);
 		this.#mainList.setExtensions(this.#state.searchFiltered);
 		if (this.#state.selected) {
-			this.#inspector.setExtension(this.#state.selected);
+			this.#inspector.setExtension(this.#state.selected, this.#pinMeta(this.#state.selected));
 		}
 		this.#buildLayout();
 		this.onRequestRender?.();
@@ -308,7 +367,7 @@ export class ExtensionDashboard extends Container {
 		this.#mainList.resetSelection();
 
 		if (this.#state.selected) {
-			this.#inspector.setExtension(this.#state.selected);
+			this.#inspector.setExtension(this.#state.selected, this.#pinMeta(this.#state.selected));
 		}
 
 		this.#buildLayout();

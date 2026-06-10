@@ -11,11 +11,12 @@ import { systemPromptCapability } from "./capability/system-prompt";
 import type { SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
-import { loadSkills, type Skill } from "./extensibility/skills";
+import { loadSkills, partitionSkillsForPrompt, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
+import { TOOL_DISCOVERY_SEARCH_TOOL_NAME } from "./tool-discovery/mode";
 import { shortenPath } from "./tools/render-utils";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
@@ -550,9 +551,13 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 
 	// Filter skills for the rendered system prompt:
 	// - require the `read` tool so the model can actually fetch skill content;
-	// - drop skills with frontmatter `hide: true` (still loadable via skill:// and /skill:<name>).
+	// - drop skills with frontmatter `hide: true` (still loadable via skill:// and /skill:<name>);
+	// - under skills.discoveryMode === "search", collapse unpinned skills into the BM25
+	//   corpus and surface only a roster line (rendered when discoverableSkillCount > 0).
 	const hasRead = tools?.has("read");
-	const filteredSkills = hasRead ? skills.filter(skill => skill.hide !== true) : [];
+	const skillPartition = hasRead
+		? partitionSkillsForPrompt(skills, skillsSettings, toolNames.includes(TOOL_DISCOVERY_SEARCH_TOOL_NAME))
+		: { listed: [], discoverable: [] };
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
 		resolvedCustomPrompt,
@@ -574,7 +579,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		contextFiles,
 		agentsMdSearch: { files: agentsMdFiles },
 		workspaceTree,
-		skills: filteredSkills,
+		skills: skillPartition.listed,
+		discoverableSkillCount: skillPartition.discoverable.length,
 		rules: rules ?? [],
 		alwaysApplyRules: injectedAlwaysApplyRules,
 		date,

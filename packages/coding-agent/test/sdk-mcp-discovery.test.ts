@@ -133,6 +133,65 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getDiscoverableTools({ source: "mcp" })).toHaveLength(TOOL_DISCOVERY_AUTO_THRESHOLD + 1);
 	});
 
+	it("skills.discoveryMode=search hides unpinned skills behind search_tool_bm25", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "skills.discoveryMode": "search", "skills.pinnedSkills": ["pinned-*"] }),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [
+				{
+					name: "pinned-skill",
+					description: "Always visible skill",
+					filePath: path.join(tempDir, "pinned-skill/SKILL.md"),
+					baseDir: path.join(tempDir, "pinned-skill"),
+					source: "claude:user",
+				},
+				{
+					name: "hidden-git-surgery",
+					description: "Deep git history surgery recipes",
+					filePath: path.join(tempDir, "hidden-git-surgery/SKILL.md"),
+					baseDir: path.join(tempDir, "hidden-git-surgery"),
+					source: "claude:user",
+				},
+				{
+					name: "hidden-docker-builds",
+					description: "Multi-stage Docker build optimization",
+					filePath: path.join(tempDir, "hidden-docker-builds/SKILL.md"),
+					baseDir: path.join(tempDir, "hidden-docker-builds"),
+					source: "claude:user",
+				},
+			],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		// The search tool exists even though tool discovery itself resolves to "off".
+		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
+		expect(session.isToolDiscoveryEnabled()).toBe(true);
+
+		// Prompt: pinned skill listed, unpinned collapsed into the roster line.
+		const rendered = session.systemPrompt.join("\n");
+		expect(rendered).toContain("- pinned-skill: Always visible skill");
+		expect(rendered).not.toContain("hidden-git-surgery");
+		expect(rendered).not.toContain("hidden-docker-builds");
+		expect(rendered).toContain("2 more skills are loaded but unlisted");
+
+		// Corpus: unpinned skills are discoverable as skill-source entries.
+		expect(
+			session
+				.getDiscoverableTools({ source: "skill" })
+				.map(t => t.name)
+				.sort(),
+		).toEqual(["skill:hidden-docker-builds", "skill:hidden-git-surgery"]);
+	});
+
 	it("advertises discovery guidance for builtin-only tools.discoveryMode all sessions", async () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,

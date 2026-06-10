@@ -71,6 +71,17 @@ function builtinTool(name: string, summary: string, schemaKeys: string[] = []): 
 	};
 }
 
+/** Helper to create a discoverable skill corpus entry. */
+function skillEntry(name: string, summary: string): DiscoverableTool {
+	return {
+		name: `skill:${name}`,
+		label: name,
+		summary,
+		source: "skill",
+		schemaKeys: [],
+	};
+}
+
 describe("SearchToolBm25Tool", () => {
 	const discoverableTools: DiscoverableTool[] = [
 		mcpTool(
@@ -208,6 +219,52 @@ describe("SearchToolBm25Tool", () => {
 		const names = result.details?.tools.map(t => t.name) ?? [];
 		expect(names).toContain("find");
 	});
+
+	it("returns skill matches without activating them and embeds skill:// reads", async () => {
+		const session = createSession([
+			...discoverableTools,
+			skillEntry("caveman", "Ultra-compressed communication mode that cuts token usage"),
+		]);
+		const tool = new SearchToolBm25Tool(session);
+
+		const result = await tool.execute("call-skill", { query: "caveman compressed communication" });
+		const skillMatch = result.details?.tools.find(t => t.name === "skill:caveman");
+		expect(skillMatch?.skill_uri).toBe("skill://caveman");
+		// Skills are never activated: the toolset stays untouched.
+		expect(result.details?.activated_tools).not.toContain("skill:caveman");
+		expect(session.getSelected()).not.toContain("skill:caveman");
+		// The model-facing content carries name + description + read URI.
+		const content = JSON.parse((result.content[0] as { text: string }).text);
+		expect(content.skills).toContainEqual({
+			name: "caveman",
+			description: "Ultra-compressed communication mode that cuts token usage",
+			read: "skill://caveman",
+		});
+	});
+
+	it("executes with tool discovery disabled when the corpus carries skills", async () => {
+		const session = createSession([skillEntry("git-helper", "Advanced git workflows and rebase recipes")], {
+			isMCPDiscoveryEnabled: () => false,
+			settings: Settings.isolated({ "skills.discoveryMode": "search" }),
+		});
+		const tool = new SearchToolBm25Tool(session);
+
+		const result = await tool.execute("call-skill-only", { query: "git rebase workflows" });
+		expect(result.details?.activated_tools).toEqual([]);
+		expect(result.details?.tools.map(t => t.name)).toContain("skill:git-helper");
+	});
+
+	it("creates the tool when only skills.discoveryMode is active", () => {
+		const searchModeSession = createSession([], {
+			settings: Settings.isolated({ "skills.discoveryMode": "search", "mcp.discoveryMode": false }),
+		});
+		expect(SearchToolBm25Tool.createIf(searchModeSession)).not.toBeNull();
+
+		const offSession = createSession([], {
+			settings: Settings.isolated({ "mcp.discoveryMode": false }),
+		});
+		expect(SearchToolBm25Tool.createIf(offSession)).toBeNull();
+	});
 });
 
 describe("renderSearchToolBm25Description", () => {
@@ -260,5 +317,24 @@ describe("renderSearchToolBm25Description", () => {
 		]);
 
 		expect(rendered).toContain("Total discoverable tools available: 3.");
+	});
+
+	it("counts skills on their own line and keeps them out of the tool total", () => {
+		const rendered = renderSearchToolBm25Description([
+			builtinTool("write", "Create or overwrite a file"),
+			mcpTool("mcp__slack_post_message", "slack", "post_message", "Post a message to Slack", ["channel"]),
+			skillEntry("caveman", "Ultra-compressed communication mode"),
+			skillEntry("git-helper", "Advanced git workflows"),
+		]);
+
+		expect(rendered).toContain("Discoverable skills: 2.");
+		expect(rendered).toContain("Total discoverable tools available: 2.");
+		// Skill names must not leak into the built-in tool roster.
+		expect(rendered).not.toContain("caveman");
+	});
+
+	it("omits the skill lines when the corpus has no skills", () => {
+		const rendered = renderSearchToolBm25Description([builtinTool("write", "Create or overwrite a file")]);
+		expect(rendered).not.toContain("Discoverable skills:");
 	});
 });

@@ -27,6 +27,10 @@ export interface ExtensionListCallbacks {
 	onToggle?: (extensionId: string, enabled: boolean) => void;
 	/** Called when master switch is toggled */
 	onMasterToggle?: (providerId: string) => void;
+	/** Pin state lookup for skill rows (renders the `(pinned)` badge). */
+	isPinned?: (ext: Extension) => boolean;
+	/** Called when the pin toggle (ctrl+p) fires on a skill row. */
+	onPinToggle?: (ext: Extension) => void;
 	/** Provider ID for master switch (null = no master switch) */
 	masterSwitchProvider?: string | null;
 }
@@ -225,6 +229,11 @@ export class ExtensionList implements Component {
 		// Pad name
 		const namePadded = this.#padText(name, nameWidth);
 		line += namePadded;
+
+		// Pin badge for pinned skills (kept out of the padded name so it never truncates away)
+		if (ext.kind === "skill" && this.callbacks.isPinned?.(ext)) {
+			line += `  ${theme.fg("warning", "(pinned)")}`;
+		}
 
 		// Trigger hint
 		if (ext.trigger) {
@@ -449,6 +458,16 @@ export class ExtensionList implements Component {
 					const newEnabled = item.item.state === "disabled";
 					this.callbacks.onToggle?.(item.item.id, newEnabled);
 				}
+			}
+			return;
+		}
+
+		// Ctrl+P: Toggle pin on skill rows (after nav matchers so emacs-style
+		// ctrl+p rebinds of tui.select.up keep winning).
+		if (matchesKey(data, "ctrl+p")) {
+			const item = this.#listItems[this.#selectedIndex];
+			if (item?.type === "extension" && item.item.kind === "skill") {
+				this.callbacks.onPinToggle?.(item.item);
 			}
 			return;
 		}

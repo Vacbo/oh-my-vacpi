@@ -39,6 +39,11 @@ If a skill applies, you MUST read `skill://<name>` before proceeding.
 {{/list}}
 </skills>
 {{/if}}
+{{#if discoverableSkillCount}}
+<skills-discovery>
+{{discoverableSkillCount}} more skills are loaded but unlisted. Call `search_tool_bm25` describing the capability you need before assuming no skill exists; skill matches return `skill://<name>` URIs to read.
+</skills-discovery>
+{{/if}}
 {{#if alwaysApplyRules.length}}
 {{#each alwaysApplyRules}}
 {{content}}

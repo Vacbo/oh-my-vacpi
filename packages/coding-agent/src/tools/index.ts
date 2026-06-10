@@ -25,7 +25,11 @@ import type { CustomMessage } from "../session/messages";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
 import type { AgentOutputManager } from "../task/output-manager";
-import { countToolsForAutoDiscovery, resolveEffectiveToolDiscoveryMode } from "../tool-discovery/mode";
+import {
+	countToolsForAutoDiscovery,
+	isSkillDiscoverySearchMode,
+	resolveEffectiveToolDiscoveryMode,
+} from "../tool-discovery/mode";
 import type { DiscoverableTool, DiscoverableToolSearchIndex } from "../tool-discovery/tool-index";
 import type { EventBus } from "../utils/event-bus";
 import { WebSearchTool } from "../web/search";
@@ -566,7 +570,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		session.settings,
 		countToolsForAutoDiscovery(requestedTools ?? Object.keys(BUILTIN_TOOLS)),
 	);
-	const discoveryActive = effectiveDiscoveryMode !== "off";
+	const discoveryActive = effectiveDiscoveryMode !== "off" || isSkillDiscoverySearchMode(session.settings);
 
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
@@ -584,7 +588,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "render_mermaid") return session.settings.get("renderMermaid.enabled");
 		if (name === "inspect_image") return session.settings.get("inspect_image.enabled");
 		if (name === "web_search") return session.settings.get("web_search.enabled");
-		// search_tool_bm25 is allowed when either legacy mcp.discoveryMode or new tools.discoveryMode is active.
+		// search_tool_bm25 is allowed when legacy mcp.discoveryMode, tools.discoveryMode, or skills.discoveryMode=search is active.
 		if (name === "search_tool_bm25") return discoveryActive;
 		if (name === "browser") return session.settings.get("browser.enabled");
 		if (name === "tui_observe") return session.settings.get("tui.observe.enabled");

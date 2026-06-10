@@ -22,23 +22,45 @@ import type {
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
 import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
-import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
+import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
 import { getTabBarTheme } from "../shared";
 import { DynamicBorder } from "./dynamic-border";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
-import { getSettingsForTab, type SettingDef } from "./settings-defs";
+import {
+	applyArraySuggestion,
+	formatSettingTextValue,
+	getSettingsForTab,
+	parseSettingArrayText,
+	type SettingDef,
+	suggestArrayEntries,
+} from "./settings-defs";
 import { getPreset } from "./status-line/presets";
 
 /**
  * A submenu component for selecting from a list of options.
  */
+/** Typing-time suggestions for a text setting backed by a known value pool. */
+export interface TextInputSuggest {
+	/** Candidate pool (e.g. discovered skill names). */
+	pool: readonly string[];
+	/** Plural noun for the match-count footer, e.g. "skills". */
+	noun: string;
+}
+
 /**
  * Submenu component for free-text string settings.
  * Mirrors the ConfigInputSubmenu pattern from plugin-settings.ts.
+ * With a `suggest` pool, ranks the closest entries under the input while
+ * typing (Tab accepts, ↑/↓ choose) and shows a live glob match count.
  */
-class TextInputSubmenu extends Container {
+export class TextInputSubmenu extends Container {
 	#input: Input;
+	#suggest?: TextInputSuggest;
+	#suggestItems: string[] = [];
+	#selected = 0;
+	#suggestText: Text;
+	#matchText: Text;
 
 	constructor(
 		label: string,
@@ -46,8 +68,10 @@ class TextInputSubmenu extends Container {
 		currentValue: string,
 		private readonly onSubmit: (value: string) => void,
 		private readonly onCancel: () => void,
+		suggest?: TextInputSuggest,
 	) {
 		super();
+		this.#suggest = suggest;
 
 		this.addChild(new Text(theme.bold(theme.fg("accent", label)), 0, 0));
 		if (description) {
@@ -66,12 +90,71 @@ class TextInputSubmenu extends Container {
 			this.onSubmit(value); // empty string clears the setting
 		};
 		this.addChild(this.#input);
+		this.#suggestText = new Text("", 0, 0);
+		this.#matchText = new Text("", 0, 0);
+		if (suggest) {
+			this.addChild(this.#suggestText);
+			this.addChild(new Spacer(1));
+			this.addChild(this.#matchText);
+		}
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to cancel · Clear field to unset"), 0, 0));
+		const hints = suggest
+			? "  Enter to save · Esc to cancel · Tab to accept · ↑/↓ to choose"
+			: "  Enter to save · Esc to cancel · Clear field to unset";
+		this.addChild(new Text(theme.fg("dim", hints), 0, 0));
+		this.#refreshSuggestions();
+	}
+
+	/** Current suggestion list, top match first (test seam). */
+	get suggestions(): readonly string[] {
+		return this.#suggestItems;
+	}
+
+	getValue(): string {
+		return this.#input.getValue();
+	}
+
+	#refreshSuggestions(): void {
+		if (!this.#suggest) return;
+		const state = suggestArrayEntries(this.#input.getValue(), this.#suggest.pool);
+		this.#suggestItems = state.items;
+		this.#selected = Math.min(this.#selected, Math.max(0, state.items.length - 1));
+		const cursor = theme.nav.cursor;
+		const lines = state.items.map((item, i) =>
+			i === this.#selected ? theme.fg("accent", `${cursor} ${item}`) : theme.fg("dim", `  ${item}`),
+		);
+		this.#suggestText.setText(lines.join("\n"));
+		this.#matchText.setText(
+			theme.fg("muted", `  matches ${state.matchCount} of ${state.poolSize} ${this.#suggest.noun}`),
+		);
 	}
 
 	handleInput(data: string): void {
+		if (this.#suggestItems.length > 0) {
+			if (matchesSelectUp(data)) {
+				this.#selected = (this.#selected - 1 + this.#suggestItems.length) % this.#suggestItems.length;
+				this.#refreshSuggestions();
+				return;
+			}
+			if (matchesSelectDown(data)) {
+				this.#selected = (this.#selected + 1) % this.#suggestItems.length;
+				this.#refreshSuggestions();
+				return;
+			}
+			if (data === "\t") {
+				const item = this.#suggestItems[this.#selected];
+				if (item) {
+					this.#input.setValue(applyArraySuggestion(this.#input.getValue(), item));
+					this.#input.handleInput("\x05"); // cursor to end
+					this.#selected = 0;
+					this.#refreshSuggestions();
+				}
+				return;
+			}
+		}
 		handleInputOrEscape(data, this.#input, this.onCancel);
+		this.#selected = 0;
+		this.#refreshSuggestions();
 	}
 }
 
@@ -187,6 +270,8 @@ export interface SettingsRuntimeContext {
 	availableThemes: string[];
 	/** Working directory for plugins tab */
 	cwd: string;
+	/** Discovered skill names for pinnedSkills typing suggestions (visible skills only) */
+	skillNames?: readonly string[];
 }
 
 /** Status line settings subset for preview */
@@ -333,7 +418,7 @@ export class SettingsSelectorComponent extends Container {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: (currentValue as string) ?? "",
+					currentValue: formatSettingTextValue(currentValue),
 					submenu: (cv, done) => this.#createTextInput(def, cv, done),
 					changed,
 				};
@@ -348,7 +433,14 @@ export class SettingsSelectorComponent extends Container {
 	}
 
 	#isChanged(def: SettingDef, currentValue: unknown): boolean {
-		return !Object.is(currentValue, getDefault(def.path));
+		const defaultValue: unknown = getDefault(def.path);
+		if (Array.isArray(currentValue) && Array.isArray(defaultValue)) {
+			return (
+				currentValue.length !== defaultValue.length ||
+				currentValue.some((item, index) => !Object.is(item, defaultValue[index]))
+			);
+		}
+		return !Object.is(currentValue, defaultValue);
 	}
 
 	#getSubmenuCurrentValue(path: SettingPath, value: unknown): string {
@@ -463,6 +555,10 @@ export class SettingsSelectorComponent extends Container {
 		currentValue: string,
 		done: (value?: string) => void,
 	): Container {
+		const suggest =
+			def.path === "skills.pinnedSkills" && this.context.skillNames?.length
+				? { pool: this.context.skillNames, noun: "skills" }
+				: undefined;
 		this.#textInputActive = true;
 		const wrappedDone = (value?: string) => {
 			this.#textInputActive = false;
@@ -480,6 +576,7 @@ export class SettingsSelectorComponent extends Container {
 				wrappedDone(value);
 			},
 			() => wrappedDone(),
+			suggest,
 		);
 	}
 
@@ -497,6 +594,8 @@ export class SettingsSelectorComponent extends Container {
 			settings.set(path, Number(value) as never);
 		} else if (typeof currentValue === "boolean") {
 			settings.set(path, (value === "true") as never);
+		} else if (Array.isArray(currentValue)) {
+			settings.set(path, parseSettingArrayText(value) as never);
 		} else {
 			settings.set(path, value as never);
 		}

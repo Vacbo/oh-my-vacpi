@@ -7,6 +7,7 @@ import type { SkillsSettings } from "../config/settings";
 import { type Skill as CapabilitySkill, loadCapability } from "../discovery";
 import { compareSkillOrder, scanSkillsFromDir } from "../discovery/helpers";
 import type { SkillPromptDetails } from "../session/messages";
+import type { DiscoverableTool } from "../tool-discovery/tool-index";
 import { expandTilde } from "../tools/path-utils";
 export interface Skill {
 	name: string;
@@ -20,6 +21,11 @@ export interface Skill {
 	 * prompt's `<skills>` listing.
 	 */
 	hide?: boolean;
+	/**
+	 * Capped SKILL.md body excerpt used only as BM25 corpus text for skill discovery.
+	 * Populated at load time when `skills.discoveryMode === "search"`; never rendered.
+	 */
+	searchText?: string;
 	/** Source metadata for display */
 	_source?: SourceMeta;
 }
@@ -89,6 +95,18 @@ export async function loadSkillsFromDir(options: LoadSkillsFromDirOptions): Prom
 	};
 }
 
+/** Cap on the SKILL.md body excerpt indexed for discovery search. */
+const SKILL_SEARCH_TEXT_LIMIT = 2000;
+
+/** Body excerpt for the discovery corpus; only retained when discovery search mode is on. */
+function skillSearchText(
+	content: string | undefined,
+	discoveryMode: SkillsSettings["discoveryMode"],
+): string | undefined {
+	if (discoveryMode !== "search" || !content) return undefined;
+	return content.slice(0, SKILL_SEARCH_TEXT_LIMIT);
+}
+
 export interface LoadSkillsOptions extends SkillsSettings {
 	/** Working directory for project-local skills. Default: getProjectDir() */
 	cwd?: string;
@@ -111,6 +129,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		ignoredSkills = [],
 		includeSkills = [],
 		disabledExtensions = [],
+		discoveryMode,
 	} = options;
 
 	// Early return if skills are disabled
@@ -198,6 +217,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 				baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 				source: `${capSkill._source.provider}:${capSkill.level}`,
 				hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
+				searchText: skillSearchText(capSkill.content, discoveryMode),
 				_source: capSkill._source,
 			});
 			realPathSet.add(resolvedPath);
@@ -235,6 +255,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 					baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 					source: "custom:user",
 					hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
+					searchText: skillSearchText(capSkill.content, discoveryMode),
 					_source: { ...capSkill._source, providerName: "Custom" },
 				},
 				path: capSkill.path,
@@ -277,6 +298,63 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		skills,
 		warnings: [...(result.warnings ?? []).map(w => ({ skillPath: "", message: w })), ...collisionWarnings],
 	};
+}
+
+export interface SkillPromptPartition {
+	/** Skills rendered as summary lines in the system prompt `<skills>` listing. */
+	listed: Skill[];
+	/** Skills hidden from the listing but indexed in the `search_tool_bm25` BM25 corpus. */
+	discoverable: Skill[];
+}
+
+/**
+ * Split skills between the rendered `<skills>` listing and the BM25 discovery corpus.
+ *
+ * Frontmatter-hidden skills (`hide: true` / `disable-model-invocation: true`) land in
+ * neither bucket: they stay explicitly opt-in via `/skill:<name>` and `skill://<name>`.
+ * Discovery only applies when `skills.discoveryMode === "search"` AND the search tool is
+ * actually available; otherwise hiding a skill would make it unreachable.
+ */
+export function partitionSkillsForPrompt(
+	skills: readonly Skill[],
+	settings: SkillsSettings | undefined,
+	searchToolAvailable: boolean,
+): SkillPromptPartition {
+	const visible = skills.filter(skill => skill.hide !== true);
+	if (settings?.discoveryMode !== "search" || !searchToolAvailable) {
+		return { listed: visible, discoverable: [] };
+	}
+	const pinned = (settings.pinnedSkills ?? []).map(pattern => new Bun.Glob(pattern));
+	const listed: Skill[] = [];
+	const discoverable: Skill[] = [];
+	for (const skill of visible) {
+		(pinned.some(glob => glob.match(skill.name)) ? listed : discoverable).push(skill);
+	}
+	return { listed, discoverable };
+}
+
+/** Corpus entry name for a discoverable skill (mirrors the `/skill:<name>` command naming). */
+export function discoverableSkillEntryName(skillName: string): string {
+	return `skill:${skillName}`;
+}
+
+/**
+ * Map discovery-hidden skills to BM25 corpus entries for `search_tool_bm25`.
+ * Skill matches are never "activated": the search result carries the `skill://<name>`
+ * URI and the model reads it directly; no toolset mutation, no persisted state.
+ */
+export function collectDiscoverableSkillEntries(
+	skills: readonly Skill[],
+	settings: SkillsSettings | undefined,
+): DiscoverableTool[] {
+	return partitionSkillsForPrompt(skills, settings, true).discoverable.map(skill => ({
+		name: discoverableSkillEntryName(skill.name),
+		label: skill.name,
+		summary: skill.description,
+		source: "skill",
+		schemaKeys: [],
+		searchText: skill.searchText,
+	}));
 }
 
 export interface BuiltSkillPromptMessage {

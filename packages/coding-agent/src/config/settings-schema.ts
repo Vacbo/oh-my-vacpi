@@ -2966,6 +2966,30 @@ export const SETTINGS_SCHEMA = {
 
 	"skills.includeSkills": { type: "array", default: [] as string[] },
 
+	"skills.discoveryMode": {
+		type: "enum",
+		values: ["all", "search"] as const,
+		default: "all",
+		ui: {
+			tab: "tools",
+			label: "Skill Discovery",
+			description:
+				"all: list every skill in the system prompt. search: list only pinned skills; the rest stay loaded but are found on demand via search_tool_bm25",
+		},
+	},
+
+	"skills.pinnedSkills": {
+		type: "array",
+		default: [] as string[],
+		ui: {
+			tab: "tools",
+			label: "Pinned Skills",
+			description:
+				"Comma-separated globs for skills that stay listed in the system prompt under search discovery (e.g. cmux*, caveman)",
+			condition: "skillDiscoverySearchActive",
+		},
+	},
+
 	// Commands
 	"commands.enableClaudeUser": {
 		type: "boolean",
@@ -3478,6 +3502,14 @@ export interface SkillsSettings {
 	customDirectories?: string[];
 	ignoredSkills?: string[];
 	includeSkills?: string[];
+	/**
+	 * "all" (default): every visible skill renders one summary line in the system prompt.
+	 * "search": only skills matching `pinnedSkills` render; the rest join the
+	 * `search_tool_bm25` BM25 corpus and are surfaced on demand as `skill://<name>` reads.
+	 */
+	discoveryMode?: "all" | "search";
+	/** Glob patterns for skills that stay listed in the system prompt under discoveryMode "search". */
+	pinnedSkills?: string[];
 	disabledExtensions?: string[];
 }
 

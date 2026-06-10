@@ -99,6 +99,7 @@ export class SelectorController {
 						thinkingLevel: this.ctx.session.thinkingLevel,
 						availableThemes,
 						cwd: getProjectDir(),
+						skillNames: this.ctx.session.skills.filter(skill => skill.hide !== true).map(skill => skill.name),
 					},
 					{
 						onChange: (id, value) => this.handleSettingChange(id, value),

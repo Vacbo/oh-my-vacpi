@@ -8,7 +8,7 @@
  * (or `options: "runtime"` for runtime-injected lists like themes).
  */
 
-import { TERMINAL } from "@oh-my-pi/pi-tui";
+import { fuzzyFilter, TERMINAL } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import {
 	type AnyUiMetadata,
@@ -93,6 +93,13 @@ const CONDITIONS: Record<string, () => boolean> = {
 			return false;
 		}
 	},
+	skillDiscoverySearchActive: () => {
+		try {
+			return Settings.instance.get("skills.discoveryMode") === "search";
+		} catch {
+			return false;
+		}
+	},
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -145,6 +152,11 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 		return { ...base, type: "text" };
 	}
 
+	if (schemaType === "array") {
+		// Arrays render as comma-separated text inputs.
+		return { ...base, type: "text" };
+	}
+
 	return null;
 }
 
@@ -186,4 +198,76 @@ export function getDisplayDefault(path: SettingPath): string {
 	if (value === undefined) return "";
 	if (typeof value === "boolean") return value ? "true" : "false";
 	return String(value);
+}
+
+/** Render an array setting (or any value) as comma-separated text-input content. */
+export function formatSettingTextValue(value: unknown): string {
+	if (Array.isArray(value)) return value.join(", ");
+	return typeof value === "string" ? value : "";
+}
+
+/** Parse comma-separated text-input content back into a string array. */
+export function parseSettingArrayText(value: string): string[] {
+	return value
+		.split(",")
+		.map(item => item.trim())
+		.filter(item => item.length > 0);
+}
+/** Result of ranking pool entries against the segment being typed in an array text input. */
+export interface ArraySuggestState {
+	/** Ranked candidates for the segment currently being typed (capped). */
+	items: string[];
+	/** Pool entries matched by the full comma list, after glob expansion. */
+	matchCount: number;
+	poolSize: number;
+}
+
+const GLOB_CHARS = /[*?[\]{}]/;
+
+function globMatches(pattern: string, pool: readonly string[]): string[] {
+	try {
+		const glob = new Bun.Glob(pattern);
+		return pool.filter(name => glob.match(name));
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Rank pool entries against the last (in-progress) segment of a comma-separated
+ * array input, and count how many pool entries the full list currently matches.
+ * Glob segments preview their actual matches; literal segments fuzzy-rank the
+ * pool. Entries already covered by committed segments are not re-suggested.
+ */
+export function suggestArrayEntries(text: string, pool: readonly string[], limit = 5): ArraySuggestState {
+	const lastComma = text.lastIndexOf(",");
+	const typing = text.slice(lastComma + 1).trim();
+	const committed = lastComma >= 0 ? parseSettingArrayText(text.slice(0, lastComma)) : [];
+
+	const matched = new Set<string>();
+	for (const segment of typing ? [...committed, typing] : committed) {
+		for (const name of globMatches(segment, pool)) matched.add(name);
+	}
+
+	let items: string[] = [];
+	if (typing) {
+		const covered = new Set(committed.flatMap(segment => globMatches(segment, pool)));
+		const open = pool.filter(name => !covered.has(name));
+		items = GLOB_CHARS.test(typing)
+			? globMatches(typing, open).sort().slice(0, limit)
+			: fuzzyFilter(open, typing, name => name).slice(0, limit);
+	}
+
+	return { items, matchCount: matched.size, poolSize: pool.length };
+}
+
+/**
+ * Replace the in-progress last segment with the accepted suggestion, normalizing
+ * separators. The trailing ", " primes the next segment so the suggestion list
+ * resets after an accept; saving strips it via parseSettingArrayText.
+ */
+export function applyArraySuggestion(text: string, item: string): string {
+	const lastComma = text.lastIndexOf(",");
+	const committed = lastComma >= 0 ? parseSettingArrayText(text.slice(0, lastComma)) : [];
+	return `${[...committed, item].join(", ")}, `;
 }

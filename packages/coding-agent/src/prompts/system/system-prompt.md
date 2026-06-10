@@ -129,6 +129,11 @@ ENV
 {{/each}}
 </skills>
 {{/if}}
+{{#if discoverableSkillCount}}
+<skills-discovery>
+{{discoverableSkillCount}} more skills are loaded but unlisted to keep context lean. Call `{{toolRefs.search_tool_bm25}}` describing the capability you need before assuming no skill exists; skill matches return `skill://<name>` URIs — read the match to apply it.
+</skills-discovery>
+{{/if}}
 
 {{#if alwaysApplyRules.length}}
 <generic-rules>

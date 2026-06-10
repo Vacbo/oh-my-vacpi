@@ -6,7 +6,7 @@ import * as z from "zod/v4";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import searchToolBm25Description from "../prompts/tools/search-tool-bm25.md" with { type: "text" };
-import { resolveEffectiveToolDiscoveryMode } from "../tool-discovery/mode";
+import { isSkillDiscoverySearchMode, resolveEffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import {
 	buildDiscoverableToolSearchIndex,
 	type DiscoverableTool,
@@ -41,6 +41,8 @@ interface SearchToolBm25Match {
 	server_name?: string;
 	mcp_tool_name?: string;
 	schema_keys: string[];
+	/** Set for skill matches: the `skill://<name>` URI the model reads to load the skill. */
+	skill_uri?: string;
 	score: number;
 }
 
@@ -61,14 +63,21 @@ function formatMatch(tool: DiscoverableTool, score: number): SearchToolBm25Match
 		server_name: tool.serverName,
 		mcp_tool_name: tool.mcpToolName,
 		schema_keys: tool.schemaKeys,
+		skill_uri: tool.source === "skill" ? `skill://${tool.label}` : undefined,
 		score: Number(score.toFixed(6)),
 	};
 }
 
 function buildSearchToolBm25Content(details: SearchToolBm25Details): string {
+	// Skill matches are not activated; hand the model name + description + URI so it can
+	// read the relevant ones directly. Tool matches surface via activated_tools + schemas.
+	const skills = details.tools
+		.filter(match => match.skill_uri !== undefined)
+		.map(match => ({ name: match.label, description: match.description, read: match.skill_uri }));
 	return JSON.stringify({
 		query: details.query,
 		activated_tools: details.activated_tools,
+		...(skills.length > 0 ? { skills } : {}),
 		match_count: details.tools.length,
 		total_tools: details.total_tools,
 	});
@@ -142,7 +151,8 @@ function isDiscoveryEnabled(session: ToolSession): boolean {
 }
 
 export function renderSearchToolBm25Description(discoverableTools: DiscoverableTool[] = []): string {
-	const summary = summarizeDiscoverableTools(discoverableTools);
+	const skillCount = filterBySource(discoverableTools, "skill").length;
+	const summary = summarizeDiscoverableTools(discoverableTools.filter(t => t.source !== "skill"));
 	const builtinToolNames = filterBySource(discoverableTools, "builtin")
 		.map(t => t.name)
 		.sort();
@@ -152,6 +162,7 @@ export function renderSearchToolBm25Description(discoverableTools: DiscoverableT
 		hasDiscoverableMCPServers: summary.servers.length > 0,
 		discoverableBuiltinToolNames: builtinToolNames,
 		hasDiscoverableBuiltinTools: builtinToolNames.length > 0,
+		discoverableSkillCount: skillCount,
 	});
 }
 
@@ -220,7 +231,13 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 	static createIf(session: ToolSession): SearchToolBm25Tool | null {
 		// Direct createTools() calls do not know the final MCP/extension catalog yet, so
 		// auto mode is activated later by createAgentSession after the full registry exists.
-		if (resolveEffectiveToolDiscoveryMode(session.settings, 0) === "off") return null;
+		// Skill discovery ("search" mode) keeps the tool alive even with tool discovery off.
+		if (
+			resolveEffectiveToolDiscoveryMode(session.settings, 0) === "off" &&
+			!isSkillDiscoverySearchMode(session.settings)
+		) {
+			return null;
+		}
 		return supportsToolDiscoveryExecution(session) ? new SearchToolBm25Tool(session) : null;
 	}
 
@@ -234,11 +251,6 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 		if (!supportsToolDiscoveryExecution(this.session)) {
 			throw new ToolError("Tool discovery is unavailable in this session.");
 		}
-		if (!isDiscoveryEnabled(this.session)) {
-			throw new ToolError(
-				"Tool discovery is disabled. Enable tools.discoveryMode or mcp.discoveryMode to use search_tool_bm25.",
-			);
-		}
 
 		const query = params.query.trim();
 		if (query.length === 0) {
@@ -250,6 +262,14 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 		}
 
 		const searchIndex = getDiscoverableToolSearchIndexForExecution(this.session);
+		// Skill discovery rides this tool without tool discovery: the gate passes when either
+		// discovery mode is active or the corpus carries skill entries.
+		const hasDiscoverableSkills = searchIndex.documents.some(doc => doc.tool.source === "skill");
+		if (!isDiscoveryEnabled(this.session) && !hasDiscoverableSkills) {
+			throw new ToolError(
+				"Tool discovery is disabled. Enable tools.discoveryMode, mcp.discoveryMode, or skills.discoveryMode to use search_tool_bm25.",
+			);
+		}
 		const selectedToolNames = new Set(getSelectedToolNames(this.session));
 		let ranked: Array<{ tool: DiscoverableTool; score: number }> = [];
 		try {
@@ -262,11 +282,13 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 			}
 			throw error;
 		}
+		// Skill matches are never activated — they resolve to skill:// reads in the result.
+		const toolMatches = ranked.filter(result => result.tool.source !== "skill");
 		const activated =
-			ranked.length > 0
+			toolMatches.length > 0
 				? await activateTools(
 						this.session,
-						ranked.map(result => result.tool.name),
+						toolMatches.map(result => result.tool.name),
 					)
 				: [];
 

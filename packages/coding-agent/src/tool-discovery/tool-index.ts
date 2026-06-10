@@ -2,7 +2,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 
 // ─── Generic Tool Discovery Types ────────────────────────────────────────────
 
-export type DiscoverableToolSource = "builtin" | "mcp" | "extension" | "custom";
+export type DiscoverableToolSource = "builtin" | "mcp" | "extension" | "custom" | "skill";
 
 export interface DiscoverableTool {
 	name: string;
@@ -15,6 +15,8 @@ export interface DiscoverableTool {
 	/** MCP only */
 	mcpToolName?: string;
 	schemaKeys: string[];
+	/** Extra index-only text (e.g. SKILL.md body excerpt). Searched, never displayed. */
+	searchText?: string;
 }
 
 export interface DiscoverableToolServerSummary {
@@ -56,6 +58,7 @@ const FIELD_WEIGHTS = {
 	mcpToolName: 4,
 	summary: 2,
 	schemaKey: 1,
+	searchText: 1,
 } as const;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -109,6 +112,7 @@ function buildSearchDocument(tool: DiscoverableTool): DiscoverableToolSearchDocu
 	for (const schemaKey of tool.schemaKeys) {
 		addWeightedTokens(termFrequencies, schemaKey, FIELD_WEIGHTS.schemaKey);
 	}
+	addWeightedTokens(termFrequencies, tool.searchText, FIELD_WEIGHTS.searchText);
 	const length = Array.from(termFrequencies.values()).reduce((sum, value) => sum + value, 0);
 	return { tool, termFrequencies, length };
 }
