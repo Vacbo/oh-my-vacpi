@@ -326,13 +326,16 @@ export class ToolsDashboard extends Container {
 		return Math.max(3, this.#computeBodyHeight() - 3);
 	}
 
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		if (this.#terminalRows() !== this.#builtRows || this.#uiWidth() !== this.#builtCols) {
 			this.#buildLayout();
 		}
-		const lines = super.render(width);
-		// Pad to the full viewport so the dashboard covers the screen.
+		const rendered = super.render(width);
+		// Pad to the full viewport so the dashboard covers the screen. Render
+		// results are component-owned and immutable — copy before padding.
 		const rows = this.#terminalRows();
+		if (rendered.length >= rows) return rendered;
+		const lines = rendered.slice();
 		while (lines.length < rows) lines.push("");
 		return lines;
 	}

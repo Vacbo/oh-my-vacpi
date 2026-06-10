@@ -43,7 +43,7 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import { generateCommitMessage } from "../utils/commit-message-generator";
 import * as git from "../utils/git";
-import { discoverAgents, getAgent } from "./discovery";
+import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { runSubprocess } from "./executor";
 import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimit, Semaphore } from "./parallel";
@@ -119,6 +119,7 @@ export type {
 	AgentDefinition,
 	AgentProgress,
 	SingleResult,
+	SubagentEventPayload,
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
 	TaskParams,
@@ -242,6 +243,88 @@ function validateTaskModeParams(simpleMode: TaskSimpleMode, params: TaskParams):
 	return "task.simple is set to independent, so the task tool does not accept `context` or `schema`. Put all required background and output expectations inside each task assignment or the selected agent definition.";
 }
 
+/** Sentinel for async jobs whose subagent finished with a failing result; batch counters are already updated. */
+class TaskJobError extends Error {}
+
+/**
+ * Validate task ids: every task needs a non-empty id and ids must be unique
+ * (case-insensitive). Returns a problem description, or undefined when valid.
+ */
+function validateTaskIds(tasks: TaskParams["tasks"]): string | undefined {
+	const missingTaskIndexes: number[] = [];
+	const idIndexes = new Map<string, number[]>();
+
+	for (let i = 0; i < tasks.length; i++) {
+		const id = tasks[i]?.id;
+		if (typeof id !== "string" || id.trim() === "") {
+			missingTaskIndexes.push(i);
+			continue;
+		}
+		const normalizedId = id.toLowerCase();
+		const indexes = idIndexes.get(normalizedId);
+		if (indexes) {
+			indexes.push(i);
+		} else {
+			idIndexes.set(normalizedId, [i]);
+		}
+	}
+
+	const duplicateIds: Array<{ id: string; indexes: number[] }> = [];
+	for (const [normalizedId, indexes] of idIndexes.entries()) {
+		if (indexes.length > 1) {
+			duplicateIds.push({
+				id: tasks[indexes[0]]?.id ?? normalizedId,
+				indexes,
+			});
+		}
+	}
+
+	if (missingTaskIndexes.length === 0 && duplicateIds.length === 0) {
+		return undefined;
+	}
+
+	const problems: string[] = [];
+	if (missingTaskIndexes.length > 0) {
+		problems.push(`Missing task ids at indexes: ${missingTaskIndexes.join(", ")}`);
+	}
+	if (duplicateIds.length > 0) {
+		const details = duplicateIds.map(entry => `${entry.id} (indexes ${entry.indexes.join(", ")})`).join("; ");
+		problems.push(`Duplicate task ids detected (case-insensitive): ${details}`);
+	}
+	return `Invalid tasks: ${problems.join(". ")}`;
+}
+
+/**
+ * Process-level memo for create-time agent discovery, keyed by resolved cwd.
+ *
+ * `TaskTool.create` runs for every (sub)agent session in this process and the
+ * walk-up + plugin-registry scan in `discoverAgents` is identical for a given
+ * cwd, so repeat creations reuse the first scan. Execution-time discovery
+ * (`#executeSync`) intentionally stays fresh. The memo also tracks the live
+ * `discoverAgents` binding: test spies swap that binding, which invalidates
+ * the memo automatically.
+ */
+const discoveryMemo = new Map<string, Promise<DiscoveryResult>>();
+let discoveryMemoFn: typeof discoverAgents | undefined;
+
+function discoverAgentsForCreate(cwd: string): Promise<DiscoveryResult> {
+	const fn = discoverAgents;
+	if (discoveryMemoFn !== fn) {
+		discoveryMemoFn = fn;
+		discoveryMemo.clear();
+	}
+	const key = path.resolve(cwd);
+	let pending = discoveryMemo.get(key);
+	if (!pending) {
+		pending = fn(cwd);
+		discoveryMemo.set(key, pending);
+		pending.catch(() => {
+			if (discoveryMemo.get(key) === pending) discoveryMemo.delete(key);
+		});
+	}
+	return pending;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tool Class
 // ═══════════════════════════════════════════════════════════════════════════
@@ -325,12 +408,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * Create a TaskTool instance with async agent discovery.
 	 */
 	static async create(session: ToolSession): Promise<TaskTool> {
-		const { agents } = await discoverAgents(session.cwd);
+		const { agents } = await discoverAgentsForCreate(session.cwd);
 		return new TaskTool(session, agents);
 	}
 
 	async execute(
-		_toolCallId: string,
+		toolCallId: string,
 		rawParams: unknown,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
@@ -345,7 +428,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const asyncEnabled = this.session.settings.get("async.enabled");
 		const selectedAgent = this.#discoveredAgents.find(agent => agent.name === params.agent);
 		if (!asyncEnabled || selectedAgent?.blocking === true) {
-			return this.#executeSync(_toolCallId, params, signal, onUpdate);
+			return this.#executeSync(toolCallId, params, signal, onUpdate);
 		}
 
 		const manager = this.session.asyncJobManager;
@@ -355,12 +438,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			// to the sync path keeps the tool usable; only background/job-poll
 			// semantics are lost.
 			logger.warn("task: async.enabled but no AsyncJobManager registered; falling back to sync execution");
-			return this.#executeSync(_toolCallId, params, signal, onUpdate);
+			return this.#executeSync(toolCallId, params, signal, onUpdate);
 		}
 
 		const taskItems = params.tasks ?? [];
 		if (taskItems.length === 0) {
-			return this.#executeSync(_toolCallId, params, signal, onUpdate);
+			return this.#executeSync(toolCallId, params, signal, onUpdate);
+		}
+
+		const taskIdProblem = validateTaskIds(taskItems);
+		if (taskIdProblem) {
+			return createTaskModeError(taskIdProblem);
 		}
 
 		const outputManager =
@@ -396,9 +484,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		let failedJobs = 0;
 
 		const getProgressSnapshot = (): AgentProgress[] => {
+			// Shallow copies: top-level fields are reassigned (never mutated in
+			// place) and the large nested payloads (extractedToolData) are
+			// immutable once attached — structuredClone here cost O(batch × payload)
+			// per progress event.
 			return Array.from(progressByTaskId.values())
 				.sort((a, b) => a.index - b.index)
-				.map(progress => structuredClone(progress));
+				.map(progress => ({ ...progress }));
 		};
 
 		const buildAsyncDetails = (state: "running" | "completed" | "failed", jobId: string): TaskToolDetails => ({
@@ -424,6 +516,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const taskItem = taskItems[i];
 			if (signal?.aborted) {
 				failedSchedules.push(`${taskItem.id}: cancelled before scheduling`);
+				completedJobs += 1;
 				const progress = progressByTaskId.get(taskItem.id);
 				if (progress) {
 					progress.status = "aborted";
@@ -438,7 +531,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const jobId = manager.register(
 					"task",
 					label,
-					async ({ signal: runSignal, reportProgress }) => {
+					async ({ signal: runSignal, reportProgress, markRunning }) => {
 						const startedAt = Date.now();
 						const progress = progressByTaskId.get(taskItem.id);
 						await semaphore.acquire();
@@ -447,8 +540,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							if (progress) {
 								progress.status = "aborted";
 							}
+							completedJobs += 1;
+							failedJobs += 1;
 							throw new Error("Aborted before execution");
 						}
+						markRunning();
 						if (progress) {
 							progress.status = "running";
 						}
@@ -457,17 +553,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							buildAsyncDetails("running", startedJobs[0]?.jobId ?? label) as unknown as Record<string, unknown>,
 						);
 						try {
-							const result = await this.#executeSync(_toolCallId, singleParams, runSignal, undefined, [
-								uniqueId,
-							]);
+							const result = await this.#executeSync(toolCallId, singleParams, runSignal, undefined, [uniqueId]);
 							const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 							const singleResult = result.details?.results[0];
+							// A missing per-task result means #executeSync failed at the
+							// tool level (results: []) — treat it as a failure, not success.
+							const resultFailed =
+								!singleResult || (singleResult.aborted ?? false) || singleResult.exitCode !== 0;
 							if (progress) {
-								progress.status = singleResult?.aborted
-									? "aborted"
-									: (singleResult?.exitCode ?? 0) === 0
-										? "completed"
-										: "failed";
+								progress.status = singleResult?.aborted ? "aborted" : resultFailed ? "failed" : "completed";
 								progress.durationMs = singleResult?.durationMs ?? Math.max(0, Date.now() - startedAt);
 								progress.tokens = singleResult?.tokens ?? 0;
 								progress.contextTokens = singleResult?.contextTokens;
@@ -478,7 +572,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 								progress.retryState = undefined;
 							}
 							completedJobs += 1;
-							if (singleResult && ((singleResult.aborted ?? false) || singleResult.exitCode !== 0)) {
+							if (resultFailed) {
 								failedJobs += 1;
 							}
 							const remaining = taskItems.length - completedJobs;
@@ -498,8 +592,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 									`Background task batch complete: ${completedJobs}/${taskItems.length} finished.`,
 								);
 							}
+							if (resultFailed) {
+								// Mark the job itself failed; counters above are already updated.
+								throw new TaskJobError(finalText);
+							}
 							return finalText;
 						} catch (error) {
+							if (error instanceof TaskJobError) {
+								throw error;
+							}
 							if (progress) {
 								progress.status = "failed";
 								progress.durationMs = Math.max(0, Date.now() - startedAt);
@@ -530,6 +631,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					},
 					{
 						id: label,
+						queued: true,
 						ownerId: this.session.getAgentId?.() ?? undefined,
 						onProgress: (text, details) => {
 							const progressDetails =
@@ -543,6 +645,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				failedSchedules.push(`${taskItem.id}: ${message}`);
+				completedJobs += 1;
 				const progress = progressByTaskId.get(taskItem.id);
 				if (progress) {
 					progress.status = "failed";
@@ -603,7 +706,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}
 
 	async #executeSync(
-		_toolCallId: string,
+		toolCallId: string,
 		params: TaskParams,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
@@ -734,45 +837,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 
 		const tasks = params.tasks;
-		const missingTaskIndexes: number[] = [];
-		const idIndexes = new Map<string, number[]>();
-
-		for (let i = 0; i < tasks.length; i++) {
-			const id = tasks[i]?.id;
-			if (typeof id !== "string" || id.trim() === "") {
-				missingTaskIndexes.push(i);
-				continue;
-			}
-			const normalizedId = id.toLowerCase();
-			const indexes = idIndexes.get(normalizedId);
-			if (indexes) {
-				indexes.push(i);
-			} else {
-				idIndexes.set(normalizedId, [i]);
-			}
-		}
-
-		const duplicateIds: Array<{ id: string; indexes: number[] }> = [];
-		for (const [normalizedId, indexes] of idIndexes.entries()) {
-			if (indexes.length > 1) {
-				duplicateIds.push({
-					id: tasks[indexes[0]]?.id ?? normalizedId,
-					indexes,
-				});
-			}
-		}
-
-		if (missingTaskIndexes.length > 0 || duplicateIds.length > 0) {
-			const problems: string[] = [];
-			if (missingTaskIndexes.length > 0) {
-				problems.push(`Missing task ids at indexes: ${missingTaskIndexes.join(", ")}`);
-			}
-			if (duplicateIds.length > 0) {
-				const details = duplicateIds.map(entry => `${entry.id} (indexes ${entry.indexes.join(", ")})`).join("; ");
-				problems.push(`Duplicate task ids detected (case-insensitive): ${details}`);
-			}
+		const taskIdProblem = validateTaskIds(tasks);
+		if (taskIdProblem) {
 			return {
-				content: [{ type: "text", text: `Invalid tasks: ${problems.join(". ")}` }],
+				content: [{ type: "text", text: taskIdProblem }],
 				details: {
 					projectAgentsDir,
 					results: [],
@@ -951,7 +1019,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 			emitProgress();
 
-			const runTask = async (task: (typeof tasksWithUniqueIds)[number], index: number) => {
+			const runTask = async (
+				task: (typeof tasksWithUniqueIds)[number],
+				index: number,
+				workerSignal?: AbortSignal,
+			) => {
 				if (!isIsolated) {
 					return runSubprocess({
 						cwd: this.session.cwd,
@@ -962,6 +1034,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						planReference,
 						description: task.description,
 						index,
+						parentToolCallId: toolCallId,
 						id: task.id,
 						taskDepth,
 						modelOverride,
@@ -973,12 +1046,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						artifactsDir: effectiveArtifactsDir,
 						contextFile: contextFilePath,
 						enableLsp: subagentLspEnabled,
-						signal,
+						signal: workerSignal ?? signal,
 						eventBus: this.session.eventBus,
 						onProgress: progress => {
-							progressMap.set(index, {
-								...structuredClone(progress),
-							});
+							// Shallow snapshot; recentTools is mutated in place by the
+							// executor, the rest is reassigned or immutable. A deep clone
+							// here cost O(extractedToolData) per progress event.
+							progressMap.set(index, { ...progress, recentTools: progress.recentTools.slice() });
 							emitProgress();
 						},
 						authStorage: this.session.authStorage,
@@ -1023,6 +1097,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						planReference,
 						description: task.description,
 						index,
+						parentToolCallId: toolCallId,
 						id: task.id,
 						taskDepth,
 						modelOverride,
@@ -1034,12 +1109,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						artifactsDir: effectiveArtifactsDir,
 						contextFile: contextFilePath,
 						enableLsp: subagentLspEnabled,
-						signal,
+						signal: workerSignal ?? signal,
 						eventBus: this.session.eventBus,
 						onProgress: progress => {
-							progressMap.set(index, {
-								...structuredClone(progress),
-							});
+							progressMap.set(index, { ...progress, recentTools: progress.recentTools.slice() });
 							emitProgress();
 						},
 						authStorage: this.session.authStorage,
@@ -1226,6 +1299,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 								const conflictPart = mergeResult.conflict ? `\nConflict: ${mergeResult.conflict}` : "";
 								mergeSummary = `\n\n<system-notification>Branch merge failed. ${mergedPart}${failedPart}${conflictPart}\nUnmerged branches remain for manual resolution.</system-notification>`;
 							}
+							if (mergeResult.stashConflict) {
+								mergeSummary += `\n\n<system-notification>${mergeResult.stashConflict}</system-notification>`;
+							}
 						}
 
 						// Clean up merged branches (keep failed ones for manual resolution)
@@ -1234,9 +1310,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							await cleanupTaskBranches(repoRoot, allBranches);
 						}
 					} else {
-						// Patch mode: combine and apply patches
-						const patchesInOrder = results.map(result => result.patchPath).filter(Boolean) as string[];
-						const missingPatch = results.some(result => !result.patchPath);
+						// Patch mode: apply patches from successful tasks. Failed or
+						// aborted siblings must not block completed work from landing.
+						const successfulResults = results.filter(r => r.exitCode === 0 && !r.error && !r.aborted);
+						const patchesInOrder = successfulResults.map(result => result.patchPath).filter(Boolean) as string[];
+						const missingPatch = successfulResults.some(result => !result.patchPath);
 						if (missingPatch) {
 							changesApplied = false;
 							hadAnyChanges = false;

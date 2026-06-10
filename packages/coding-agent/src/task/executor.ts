@@ -162,6 +162,7 @@ export interface ExecutorOptions {
 	description?: string;
 	index: number;
 	id: string;
+	parentToolCallId?: string;
 	modelOverride?: string | string[];
 	/**
 	 * Active model selector of the parent session, used as an auth-aware fallback
@@ -840,6 +841,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				agent: agent.name,
 				agentSource: agent.source,
 				task,
+				parentToolCallId: options.parentToolCallId,
 				assignment,
 				progress: { ...progress },
 				sessionFile: subtaskSessionFile,
@@ -922,20 +924,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		progress.recentOutput = [];
 	};
 
+	const emitSubagentEvent = (event: AgentSessionEvent) => {
+		if (!options.eventBus) return;
+		options.eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, {
+			id,
+			event,
+		});
+	};
+
 	const processEvent = (event: AgentEvent) => {
 		if (resolved) return;
-
-		if (options.eventBus) {
-			options.eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, {
-				index,
-				agent: agent.name,
-				agentSource: agent.source,
-				task,
-				assignment,
-				event,
-			});
-		}
-
 		const now = Date.now();
 		let flushProgress = false;
 
@@ -1285,59 +1283,67 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			const { normalized: normalizedOutputSchema } = normalizeSchema(outputSchema);
 
-			const { session } = await awaitAbortable(
-				createAgentSession({
-					cwd: worktree ?? cwd,
-					authStorage,
-					modelRegistry,
-					settings: subagentSettings,
-					model,
-					thinkingLevel: effectiveThinkingLevel,
-					toolNames,
-					outputSchema,
-					requireYieldTool: true,
-					contextFiles: options.contextFiles,
-					skills: options.skills,
-					promptTemplates: options.promptTemplates,
-					workspaceTree: options.workspaceTree,
-					rules: options.rules,
-					preloadedExtensionPaths: options.preloadedExtensionPaths,
-					preloadedCustomToolPaths: options.preloadedCustomToolPaths,
-					systemPrompt: defaultPrompt => {
-						const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
-							agent: agent.systemPrompt,
-							context: options.context?.trim() ?? "",
-							planReference: options.planReference?.content ?? "",
-							planReferencePath: options.planReference?.path ?? "",
-							worktree: worktree ?? "",
-							outputSchema: normalizedOutputSchema,
-							contextFile: contextFileForPrompt,
-							ircPeers: ircEnabled ? renderIrcPeerRoster(id) : "",
-							ircSelfId: ircEnabled ? id : "",
-						});
-						return defaultPrompt.length === 0
-							? [subagentPrompt]
-							: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
-					},
-					sessionManager,
-					hasUI: false,
-					spawns: spawnsEnv,
-					taskDepth: childDepth,
-					parentHindsightSessionState: options.parentHindsightSessionState,
-					parentMnemopiSessionState: options.parentMnemopiSessionState,
-					parentTaskPrefix: id,
-					agentId: id,
-					agentDisplayName: agent.name,
-					enableLsp: lspEnabled,
-					skipPythonPreflight,
-					enableMCP,
-					mcpManager: options.mcpManager,
-					customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
-					localProtocolOptions: options.localProtocolOptions,
-					telemetry: subagentTelemetry,
-					parentEvalSessionId: options.parentEvalSessionId,
-				}),
-			);
+			const sessionPromise = createAgentSession({
+				cwd: worktree ?? cwd,
+				authStorage,
+				modelRegistry,
+				settings: subagentSettings,
+				model,
+				thinkingLevel: effectiveThinkingLevel,
+				toolNames,
+				outputSchema,
+				requireYieldTool: true,
+				contextFiles: options.contextFiles,
+				skills: options.skills,
+				promptTemplates: options.promptTemplates,
+				workspaceTree: options.workspaceTree,
+				rules: options.rules,
+				preloadedExtensionPaths: options.preloadedExtensionPaths,
+				preloadedCustomToolPaths: options.preloadedCustomToolPaths,
+				systemPrompt: defaultPrompt => {
+					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
+						agent: agent.systemPrompt,
+						context: options.context?.trim() ?? "",
+						planReference: options.planReference?.content ?? "",
+						planReferencePath: options.planReference?.path ?? "",
+						worktree: worktree ?? "",
+						outputSchema: normalizedOutputSchema,
+						contextFile: contextFileForPrompt,
+						ircPeers: ircEnabled ? renderIrcPeerRoster(id) : "",
+						ircSelfId: ircEnabled ? id : "",
+					});
+					return defaultPrompt.length === 0
+						? [subagentPrompt]
+						: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
+				},
+				sessionManager,
+				hasUI: false,
+				spawns: spawnsEnv,
+				taskDepth: childDepth,
+				parentHindsightSessionState: options.parentHindsightSessionState,
+				parentMnemopiSessionState: options.parentMnemopiSessionState,
+				parentTaskPrefix: id,
+				agentId: id,
+				agentDisplayName: agent.name,
+				enableLsp: lspEnabled,
+				skipPythonPreflight,
+				enableMCP,
+				mcpManager: options.mcpManager,
+				customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
+				localProtocolOptions: options.localProtocolOptions,
+				telemetry: subagentTelemetry,
+				parentEvalSessionId: options.parentEvalSessionId,
+			});
+			let session: AgentSession;
+			try {
+				({ session } = await awaitAbortable(sessionPromise));
+			} catch (err) {
+				// Abort raced session startup. The session may still resolve later
+				// holding live LSP/MCP child processes — dispose it when it does so
+				// a cancelled subagent cannot leak them.
+				void sessionPromise.then(created => created.session.dispose()).catch(() => {});
+				throw err;
+			}
 
 			activeSession = session;
 
@@ -1346,6 +1352,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				options.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 					id,
 					agent: agent.name,
+					parentToolCallId: options.parentToolCallId,
 					agentSource: agent.source,
 					description: options.description,
 					status: "started",
@@ -1444,6 +1451,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			const MAX_YIELD_RETRIES = 3;
 			unsubscribe = session.subscribe(event => {
+				emitSubagentEvent(event);
 				if (event.type === "auto_retry_start") {
 					progress.retryState = {
 						attempt: event.attempt,
@@ -1696,6 +1704,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		options.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id,
 			agent: agent.name,
+			parentToolCallId: options.parentToolCallId,
 			agentSource: agent.source,
 			description: options.description,
 			status: progress.status as "completed" | "failed" | "aborted",

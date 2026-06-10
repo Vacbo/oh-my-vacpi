@@ -125,6 +125,79 @@ let terminalEverStarted = false;
 
 const STD_INPUT_HANDLE = -10;
 const ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200;
+/** UTF-8 codepage id for SetConsoleCP/SetConsoleOutputCP. */
+const CP_UTF8 = 65001;
+
+/**
+ * Lazily-initialized closure re-asserting the UTF-8 console codepage, or
+ * `null` when unavailable (non-win32, FFI failure, console detached).
+ */
+let consoleCodepageGuard: (() => void) | null | undefined;
+
+/**
+ * Re-assert the UTF-8 console codepage before writing (win32 only).
+ *
+ * Bun sets both console codepages to UTF-8 (65001) at startup, and
+ * `process.stdout.write(string)` hands UTF-8 bytes to `WriteFile`, which
+ * conhost translates using the *current* console output codepage. Child
+ * processes spawned by tools (bash commands, MCP/LSP servers, eval kernels)
+ * share this console, and some flip the codepage behind our back: PHP >=7.1
+ * CLI issues the equivalent of `chcp` whenever `internal_encoding` mismatches
+ * the console codepage (php.net request #73716) and skips the restore when
+ * killed — and two PHP processes in a pipeline race their restores. Once the
+ * codepage falls back to an OEM page (437/850), every non-ASCII glyph the TUI
+ * paints is mis-translated: box-drawing borders degrade into `Γöé`/`ΓöÇ`
+ * mojibake on the next full repaint (most visibly ctrl+o expand, which
+ * rewrites every row).
+ *
+ * `GetConsoleOutputCP` is one cheap console call per `#safeWrite`; the setter
+ * only runs after a foreign flip. A reading of 0 means "no console" — leave
+ * that alone. Guarding the write chokepoint (rather than per-spawn cleanup)
+ * covers every console-sharing child and long-running processes that flip
+ * the codepage mid-session.
+ */
+function ensureWindowsConsoleUtf8(): void {
+	if (consoleCodepageGuard === undefined) consoleCodepageGuard = createConsoleCodepageGuard();
+	consoleCodepageGuard?.();
+}
+
+let lastWarnedCodepage = 0;
+
+function createConsoleCodepageGuard(): (() => void) | null {
+	if (process.platform !== "win32") return null;
+	try {
+		const kernel32 = dlopen("kernel32.dll", {
+			GetConsoleOutputCP: { args: [], returns: FFIType.u32 },
+			SetConsoleOutputCP: { args: [FFIType.u32], returns: FFIType.bool },
+			GetConsoleCP: { args: [], returns: FFIType.u32 },
+			SetConsoleCP: { args: [FFIType.u32], returns: FFIType.bool },
+		});
+		return () => {
+			try {
+				const outCp = kernel32.symbols.GetConsoleOutputCP();
+				if (outCp !== 0 && outCp !== CP_UTF8) {
+					kernel32.symbols.SetConsoleOutputCP(CP_UTF8);
+					if (outCp !== lastWarnedCodepage) {
+						lastWarnedCodepage = outCp;
+						logger.warn("console output codepage changed by a child process; restoring UTF-8", {
+							codepage: outCp,
+						});
+					}
+				}
+				const inCp = kernel32.symbols.GetConsoleCP();
+				if (inCp !== 0 && inCp !== CP_UTF8) {
+					kernel32.symbols.SetConsoleCP(CP_UTF8);
+				}
+			} catch {
+				// Console APIs failed (console detached mid-session); disable the guard.
+				consoleCodepageGuard = null;
+			}
+		};
+	} catch {
+		// bun:ffi unavailable; rendering proceeds without the guard.
+		return null;
+	}
+}
 /**
  * Emergency terminal restore - call this from signal/crash handlers
  * Resets terminal state without requiring access to the ProcessTerminal instance
@@ -134,6 +207,11 @@ export function emergencyTerminalRestore(): void {
 		const terminal = activeTerminal;
 		if (terminal) {
 			terminal.stop();
+			// stop() never touches the alternate screen — the TUI owns that
+			// state and exits it on the normal shutdown path. A crash while a
+			// fullscreen overlay is up would otherwise strand the shell on the
+			// alt buffer. Safe no-op when the alt screen is not active.
+			terminal.write("\x1b[?1049l");
 			terminal.showCursor();
 		} else if (terminalEverStarted) {
 			// Blind restore only if we know a terminal was started but lost track of it
@@ -147,6 +225,8 @@ export function emergencyTerminalRestore(): void {
 					"\x1b[?5522l" + // Disable enhanced paste notifications
 					"\x1b[<u" + // Pop kitty keyboard protocol
 					"\x1b[>4;0m" + // Disable modifyOtherKeys fallback
+					"\x1b[?1006l\x1b[?1003l\x1b[?1000l" + // Disable mouse tracking (fullscreen overlays)
+					"\x1b[?1049l" + // Leave the alternate screen (fullscreen overlays)
 					"\x1b[?25h", // Show cursor
 			);
 			if (process.stdin.setRawMode) {
@@ -528,7 +608,12 @@ export class ProcessTerminal implements Terminal {
 	 * to handle the case where the response arrives split across multiple events.
 	 */
 	#setupStdinBuffer(): void {
-		this.#stdinBuffer = new StdinBuffer({ timeout: 10 });
+		// 50ms balances two failure modes: a bare ESC keypress on legacy
+		// terminals waits this long before it is delivered, while a CSI key
+		// escape split across stdin reads (laggy ssh/tmux links) leaks as
+		// literal typed text if the flush fires between the fragments. 10ms
+		// proved too tight for split escapes (#1238 covered only probe replies).
+		this.#stdinBuffer = new StdinBuffer({ timeout: 50 });
 
 		// Kitty protocol response pattern: \x1b[?<flags>u
 		const kittyResponsePattern = /^\x1b\[\?(\d+)u$/;
@@ -893,6 +978,9 @@ export class ProcessTerminal implements Terminal {
 	/**
 	 * Start periodic OSC 11 re-queries for terminals without Mode 2031 (Warp, Alacritty, WezTerm).
 	 * Self-disables once Mode 2031 fires (push-based is better than polling).
+	 * The interval is deliberately long: each poll's OSC 11 + DA1 write clears
+	 * an active text selection on several terminals, so polling exists only to
+	 * eventually notice a rare OS theme switch, not to track it promptly.
 	 */
 	#startOsc11Poll(): void {
 		this.#stopOsc11Poll();
@@ -902,7 +990,7 @@ export class ProcessTerminal implements Terminal {
 				return;
 			}
 			this.#queryBackgroundColor();
-		}, 2_000);
+		}, 30_000);
 		this.#osc11PollTimer.unref();
 	}
 
@@ -1094,6 +1182,11 @@ export class ProcessTerminal implements Terminal {
 		this.#safeWrite("\x1b[?2004l");
 		this.#safeWrite("\x1b[?5522l");
 
+		// Disable mouse tracking (enabled only by fullscreen overlays; safe
+		// no-ops otherwise). Covers crash paths that reach stop() without the
+		// TUI's own overlay teardown running.
+		this.#safeWrite("\x1b[?1006l\x1b[?1003l\x1b[?1000l");
+
 		// Disable Mode 2031 appearance change notifications
 		this.#safeWrite("\x1b[?2031l");
 
@@ -1185,6 +1278,10 @@ export class ProcessTerminal implements Terminal {
 		// Skip control sequences when stdout isn't a TTY (piped output, tests, log
 		// files). They serve no purpose there and would surface as visible noise.
 		if (!process.stdout.isTTY) return;
+		// A console-sharing child process may have flipped the console codepage
+		// away from UTF-8; repair it before any bytes hit WriteFile so no frame
+		// is ever translated through an OEM codepage. See ensureWindowsConsoleUtf8.
+		if (process.platform === "win32") ensureWindowsConsoleUtf8();
 		try {
 			// Windows ConPTY drops viewport tracking when a single write exceeds
 			// ~32-64 KB: the host UI's scroll position stays parked at wherever

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { Effort } from "../src/effort";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { streamAnthropic } from "../src/providers/anthropic";
 import { OUTPUT_FALLBACK_BUFFER } from "../src/stream";
-import type { Context, Model } from "../src/types";
+import type { Context, Model, ModelSpec } from "../src/types";
 
-const baseAdaptiveModel: Model<"anthropic-messages"> = {
+const adaptiveSpec: ModelSpec<"anthropic-messages"> = {
 	id: "claude-opus-4-7",
 	name: "Claude Opus 4.7",
 	api: "anthropic-messages",
@@ -15,12 +15,9 @@ const baseAdaptiveModel: Model<"anthropic-messages"> = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 1_000_000,
 	maxTokens: 64_000,
-	thinking: {
-		mode: "anthropic-adaptive",
-		minLevel: Effort.Minimal,
-		maxLevel: Effort.XHigh,
-	},
 };
+// Sparse spec: buildModel derives the adaptive mode and the Opus 4.7 ladder.
+const baseAdaptiveModel = buildModel(adaptiveSpec);
 
 const baseContext: Context = {
 	systemPrompt: ["Stay concise."],
@@ -87,10 +84,10 @@ describe("Anthropic adaptive thinking — max_tokens ceiling", () => {
 	});
 
 	it("keeps the OUTPUT_FALLBACK_BUFFER behaviour for non-adaptive (budget) thinking", async () => {
-		const budgetModel: Model<"anthropic-messages"> = {
-			...baseAdaptiveModel,
+		const budgetModel: Model<"anthropic-messages"> = buildModel({
+			...adaptiveSpec,
 			compat: { disableAdaptiveThinking: true },
-		};
+		});
 		const params = await captureParams(budgetModel, { thinkingEnabled: true });
 
 		expect(params.thinking?.type).toBe("enabled");

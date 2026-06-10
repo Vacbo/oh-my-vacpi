@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 
-import { getBundledModel } from "../src/models";
+import { toFireworksPublicModelId, toFireworksWireModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { getEnvApiKeyForModel } from "../src/stream";
-import { toFireworksPublicModelId, toFireworksWireModelId } from "../src/utils/fireworks-model-id";
 
 describe("Fireworks model ID mapping", () => {
 	it("maps public router IDs to the Fireworks router wire path", () => {

@@ -19,6 +19,7 @@ import {
 	getOpenAICodexTransportDetails,
 	prewarmOpenAICodexResponses,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
 import type { Component } from "@oh-my-pi/pi-tui";
 import {
 	$env,
@@ -41,7 +42,6 @@ import { createApiKeyResolver } from "./config/api-key-resolver";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { ModelRegistry } from "./config/model-registry";
 import {
-	defaultModelPerProvider,
 	formatModelString,
 	getModelMatchPreferences,
 	parseModelPattern,
@@ -90,7 +90,7 @@ import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import { discoverAndLoadMCPTools, MCPManager, type MCPToolsLoadResult } from "./mcp";
-import { resolveMemoryBackend } from "./memory-backend";
+import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
@@ -100,6 +100,7 @@ import {
 	deobfuscateSessionContext,
 	loadSecrets,
 	obfuscateMessages,
+	obfuscateProviderContext,
 	SecretObfuscator,
 } from "./secrets";
 import { AgentSession } from "./session/agent-session";
@@ -136,6 +137,7 @@ import {
 	parseThinkingLevel,
 	resolveProvisionalAutoLevel,
 	resolveThinkingLevelForModel,
+	shouldDisableReasoning,
 	toReasoningEffort,
 } from "./thinking";
 import {
@@ -541,11 +543,18 @@ function resolveSnapshotTtlMs(): number {
  * override to re-mint access tokens when needed.
  */
 export async function discoverAuthStorage(agentDir: string = getDefaultAgentDir()): Promise<AuthStorage> {
-	const brokerConfig = await resolveAuthBrokerConfig();
+	const brokerConfigPromise = resolveAuthBrokerConfig();
+	const cachePath = getAuthBrokerSnapshotCachePath();
+	// Warm the encrypted snapshot cache into the page cache while the broker
+	// config resolves (it may shell out for a `!command` token). Decryption
+	// needs the resolved token, so the real cache read cannot start earlier.
+	void Bun.file(cachePath)
+		.arrayBuffer()
+		.catch(() => undefined);
+	const brokerConfig = await brokerConfigPromise;
 	if (brokerConfig) {
 		const client = new AuthBrokerClient({ url: brokerConfig.url, token: brokerConfig.token });
 		const ttlMs = resolveSnapshotTtlMs();
-		const cachePath = getAuthBrokerSnapshotCachePath();
 		const persist =
 			ttlMs > 0
 				? (snapshot: SnapshotResponse): void => {
@@ -1757,7 +1766,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// the winning provider (e.g. anthropic's claude-3-5-sonnet-20240620)
 			// instead of the intended provider default (claude-sonnet-4-6). Mirrors
 			// findInitialModel's precedence.
-			for (const [provider, defaultId] of Object.entries(defaultModelPerProvider)) {
+			for (const [provider, defaultId] of Object.entries(DEFAULT_MODEL_PER_PROVIDER)) {
 				const preferred = fallbackCandidates.find(
 					candidate => candidate.provider === provider && candidate.id === defaultId,
 				);
@@ -1811,6 +1820,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			cwd,
 			sessionManager,
 			modelRegistry,
+			() => (hasSession ? createSessionMemoryRuntimeContext(session, agentDir, cwd) : undefined),
 		);
 
 		credentialDisabledTarget = extensionRunner;
@@ -2180,6 +2190,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (!obfuscator?.hasSecrets()) return converted;
 			return obfuscateMessages(obfuscator, converted);
 		};
+
 		const transformContext = async (messages: AgentMessage[], _signal?: AbortSignal) => {
 			const withContext = await extensionRunner.emitContext(messages);
 			return wrapSteeringForModel(withContext);
@@ -2215,6 +2226,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				systemPrompt,
 				model,
 				thinkingLevel: toReasoningEffort(effectiveThinkingLevel),
+				disableReasoning: shouldDisableReasoning(effectiveThinkingLevel),
 				tools: initialTools,
 			},
 			convertToLlm: convertToLlmFinal,
@@ -2223,6 +2235,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionId: providerSessionId,
 			promptCacheKey: options.providerPromptCacheKey,
 			transformContext,
+			transformProviderContext: obfuscator ? context => obfuscateProviderContext(obfuscator, context) : undefined,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
 			followUpMode: settings.get("followUpMode") ?? "one-at-a-time",
 			interruptMode: settings.get("interruptMode") ?? "immediate",
@@ -2309,6 +2322,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
 			sessionManager,
 			settings,
+			autoApprove: options.autoApprove,
 			evalKernelOwnerId,
 			// Defined only for top-level sessions (creation is gated above).
 			// AgentSession uses this to decide whether it may dispose the global
@@ -2393,7 +2407,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		if (model?.api === "openai-codex-responses") {
-			const codexModel = model;
+			// `.api` equality doesn't narrow the generic; the guard makes this cast sound.
+			const codexModel = model as Model<"openai-codex-responses">;
 			const codexTransport = getOpenAICodexTransportDetails(codexModel, {
 				sessionId: providerSessionId,
 				baseUrl: codexModel.baseUrl,
@@ -2424,12 +2439,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		// Start LSP warmup in the background so startup does not block on language server initialization.
-		// Print/script invocations (`hasUI=false`) don't render the warmup status indicator AND typically
-		// finish before LSP servers would have stabilized — warming them just spends CPU parsing big
-		// `initialize` responses concurrently with the LLM stream consumer, jittering perceived latency.
-		// Tools that need an LSP server still spin one up on demand through `getOrCreateClient`.
+		// With `lsp.lazy` (the default) the warmup is skipped: recognized servers are still discovered and
+		// surfaced in the UI as "available", but cold-start on first use — the lsp tool or an edit/write
+		// touching a matching file type — through `getOrCreateClient`.
+		// Print/script invocations (`hasUI=false`) skip it regardless: they don't render the warmup status
+		// indicator AND typically finish before LSP servers would have stabilized — warming them just spends
+		// CPU parsing big `initialize` responses concurrently with the LLM stream consumer, jittering
+		// perceived latency.
 		let lspServers: CreateAgentSessionResult["lspServers"];
-		if (enableLsp && options.hasUI && settings.get("lsp.diagnosticsOnWrite")) {
+		if (enableLsp && options.hasUI && settings.get("lsp.lazy")) {
+			lspServers = discoverStartupLspServers(cwd, "available");
+		} else if (enableLsp && options.hasUI) {
 			lspServers = discoverStartupLspServers(cwd);
 			if (lspServers.length > 0) {
 				void (async () => {

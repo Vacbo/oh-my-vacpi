@@ -1,3 +1,4 @@
+import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { logger, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import type OpenAI from "openai";
 import type {
@@ -11,7 +12,6 @@ import type {
 	ResponseOutputMessage,
 	ResponseReasoningItem,
 } from "openai/resources/responses/responses";
-import { calculateCost } from "../models";
 import {
 	type Api,
 	type AssistantMessage,
@@ -459,6 +459,14 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 export interface ProcessResponsesStreamOptions {
 	onFirstToken?: () => void;
 	onOutputItemDone?: (item: ResponseOutputItem) => void;
+	/**
+	 * Called when a terminal `response.completed` or `response.incomplete` event
+	 * is successfully processed. Only invoked on the successful-completion path;
+	 * thrown failure (`response.failed`) and cancellation paths never call this.
+	 * Used by callers to detect premature stream closure (i.e. the stream ended
+	 * without a recognized terminal event).
+	 */
+	onCompleted?: () => void;
 }
 
 export async function processResponsesStream<TApi extends Api>(
@@ -664,32 +672,42 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.output_text.delta") {
 			const entry = lookupOpenItem(event);
 			if (entry?.item.type === "message" && entry.block.type === "text") {
-				const lastPart = entry.item.content?.[entry.item.content.length - 1];
-				if (lastPart?.type === "output_text") {
-					entry.block.text += event.delta;
-					lastPart.text += event.delta;
-					stream.push({
-						type: "text_delta",
-						contentIndex: contentIndexOf(entry.block),
-						delta: event.delta,
-						partial: output,
-					});
+				entry.item.content = entry.item.content || [];
+				let lastPart = entry.item.content[entry.item.content.length - 1];
+				if (lastPart?.type !== "output_text") {
+					// `content_part.added` never arrived (lossy proxy) — synthesize the
+					// part so live text still streams instead of freezing until the
+					// item's output_item.done recovers the final text.
+					lastPart = { type: "output_text", text: "", annotations: [] };
+					entry.item.content.push(lastPart);
 				}
+				entry.block.text += event.delta;
+				lastPart.text += event.delta;
+				stream.push({
+					type: "text_delta",
+					contentIndex: contentIndexOf(entry.block),
+					delta: event.delta,
+					partial: output,
+				});
 			}
 		} else if (event.type === "response.refusal.delta") {
 			const entry = lookupOpenItem(event);
 			if (entry?.item.type === "message" && entry.block.type === "text") {
-				const lastPart = entry.item.content?.[entry.item.content.length - 1];
-				if (lastPart?.type === "refusal") {
-					entry.block.text += event.delta;
-					lastPart.refusal += event.delta;
-					stream.push({
-						type: "text_delta",
-						contentIndex: contentIndexOf(entry.block),
-						delta: event.delta,
-						partial: output,
-					});
+				entry.item.content = entry.item.content || [];
+				let lastPart = entry.item.content[entry.item.content.length - 1];
+				if (lastPart?.type !== "refusal") {
+					// Same lossy-proxy hardening as the output_text branch above.
+					lastPart = { type: "refusal", refusal: "" };
+					entry.item.content.push(lastPart);
 				}
+				entry.block.text += event.delta;
+				lastPart.refusal += event.delta;
+				stream.push({
+					type: "text_delta",
+					contentIndex: contentIndexOf(entry.block),
+					delta: event.delta,
+					partial: output,
+				});
 			}
 		} else if (event.type === "response.function_call_arguments.delta") {
 			const entry = lookupOpenFunctionCallItem(event);
@@ -895,6 +913,7 @@ export async function processResponsesStream<TApi extends Api>(
 			if (output.content.some(block => block.type === "toolCall") && output.stopReason === "stop") {
 				output.stopReason = "toolUse";
 			}
+			options?.onCompleted?.();
 		} else if (event.type === "error") {
 			throw new Error(`Error Code ${event.code}: ${event.message}`);
 		} else if (event.type === "response.failed") {

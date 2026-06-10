@@ -2,6 +2,6 @@ Search long-term memory for relevant information. Returns raw matching entries r
 
 Use proactively — before answering questions about past conversations, user preferences, project decisions, or any topic where prior context would help accuracy. When in doubt, recall first.
 
-Prefer `recall` when you need specific facts or entries. Use `reflect` instead when you need a synthesised answer across many memories.
+Prefer `recall` when you need specific facts or entries. Use `reflect` instead when you need a synthesized answer across many memories.
 
 Optional `tags` narrow results by memory tag. Use `tagsMatch: "all"` when every tag must match; use `"any"` when any supplied tag is sufficient.

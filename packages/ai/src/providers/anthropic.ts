@@ -2,6 +2,11 @@ import * as nodeCrypto from "node:crypto";
 import * as fs from "node:fs";
 import { scheduler } from "node:timers/promises";
 import * as tls from "node:tls";
+import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
+import { mapEffortToAnthropicAdaptiveEffort } from "@oh-my-pi/pi-catalog/model-thinking";
+import { calculateCost } from "@oh-my-pi/pi-catalog/models";
+import { isAnthropicOAuthToken } from "@oh-my-pi/pi-catalog/utils";
+import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import {
 	$env,
 	extractHttpStatusFromError,
@@ -12,15 +17,7 @@ import {
 	logger,
 	readSseEvents,
 } from "@oh-my-pi/pi-utils";
-import {
-	hasOpus47ApiRestrictions,
-	isAnthropicFableOrMythosModel,
-	mapEffortToAnthropicAdaptiveEffort,
-	supportsMidConversationSystemMessages,
-} from "../model-thinking";
-import { calculateCost } from "../models";
 import { isUsageLimitError } from "../rate-limit-utils";
-import { parseGitHubCopilotApiKey } from "../registry/oauth/github-copilot";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
 import type {
 	Api,
@@ -47,13 +44,7 @@ import type {
 	Usage,
 } from "../types";
 import { resolveServiceTier } from "../types";
-import {
-	isAnthropicOAuthToken,
-	isRecord,
-	normalizeSystemPrompts,
-	normalizeToolCallId,
-	resolveCacheRetention,
-} from "../utils";
+import { isRecord, normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { isFoundryEnabled } from "../utils/foundry";
@@ -67,10 +58,13 @@ import { spillToDescription } from "../utils/schema/spill";
 import { createSdkStreamRequestOptions } from "../utils/sdk-stream-timeout";
 import { notifyRawSseEvent } from "../utils/sse-debug";
 import {
+	AnthropicApiError,
 	AnthropicConnectionTimeoutError,
 	type AnthropicFetchOptions,
 	AnthropicMessagesClient,
 	type AnthropicMessagesClientLike,
+	calculateAnthropicRetryDelayMs,
+	retryDelayFromHeaders,
 } from "./anthropic-client";
 import type {
 	ToolInputSchema as AnthropicToolInputSchema,
@@ -184,16 +178,6 @@ function isClaudeCodeClientUserAgent(userAgent: string | undefined): userAgent i
 	return userAgent.toLowerCase().startsWith("claude-cli");
 }
 
-export function isAnthropicApiBaseUrl(baseUrl?: string): boolean {
-	if (!baseUrl) return true;
-	try {
-		const url = new URL(baseUrl);
-		return url.protocol.toLowerCase() === "https:" && url.hostname.toLowerCase() === "api.anthropic.com";
-	} catch {
-		return false;
-	}
-}
-
 const sharedHeaders = {
 	"Accept-Encoding": "gzip, deflate, br, zstd",
 	Connection: "keep-alive",
@@ -219,9 +203,26 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 		extraBetas,
 	);
 	const acceptHeader = oauthToken ? "application/json" : stream ? "text/event-stream" : "application/json";
-	const modelHeaders = Object.fromEntries(
-		Object.entries(options.modelHeaders ?? {}).filter(([key]) => !enforcedHeaderKeys.has(key.toLowerCase())),
-	);
+	const modelHeaders: Record<string, string> = {};
+	const filteredEnforcedKeys: string[] = [];
+	for (const [key, value] of Object.entries(options.modelHeaders ?? {})) {
+		const lowerKey = key.toLowerCase();
+		if (enforcedHeaderKeys.has(lowerKey)) {
+			// User-Agent is filtered only to dedup the spread; every branch re-adds
+			// the caller's value explicitly, so it is not "ignored".
+			if (lowerKey !== "user-agent") filteredEnforcedKeys.push(key);
+			continue;
+		}
+		modelHeaders[key] = value;
+	}
+	if (filteredEnforcedKeys.length > 0) {
+		// Caller/env-supplied values (options.headers, ANTHROPIC_CUSTOM_HEADERS)
+		// for enforced headers are replaced by our own values; say so instead of
+		// dropping them silently. Keys only — values may carry credentials.
+		logger.debug("anthropic: ignoring caller-supplied enforced headers", {
+			headers: filteredEnforcedKeys,
+		});
+	}
 
 	if (options.isCloudflareAiGateway) {
 		return {
@@ -249,7 +250,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 			"x-client-request-id": nodeCrypto.randomUUID(),
 			"User-Agent": userAgent,
 		};
-	} else if (!isAnthropicApiBaseUrl(options.baseUrl)) {
+	} else if (!isOfficialAnthropicApiUrl(options.baseUrl)) {
 		return {
 			...modelHeaders,
 			Accept: acceptHeader,
@@ -295,22 +296,6 @@ type AnthropicOutputConfig = NonNullable<MessageCreateParamsStreaming["output_co
 
 const ANTHROPIC_STOP_SEQUENCES_MAX = 4;
 let warnedStopSequencesTrim = false;
-
-/**
- * Adaptive thinking `display` is supported starting with Claude Opus 4.7 and
- * Claude Fable/Mythos 5. Older adaptive-thinking models (Opus 4.6, Sonnet
- * 4.6+) reject the field.
- */
-function supportsAdaptiveThinkingDisplay(modelId: string): boolean {
-	if (/claude-(?:fable|mythos)-5\b/.test(modelId)) return true;
-	// Bound the minor to non-date digits: bare dated ids like
-	// `claude-opus-4-20250514` (Opus 4.0) must not parse as minor=20250514.
-	const match = /claude-opus-(\d+)-(\d{1,2})(?!\d)/.exec(modelId);
-	if (!match) return false;
-	const major = Number(match[1]);
-	const minor = Number(match[2]);
-	return major > 4 || (major === 4 && minor >= 7);
-}
 
 const ANTHROPIC_PROVIDER_SESSION_STATE_KEY = "anthropic-messages";
 
@@ -427,7 +412,6 @@ function dropAnthropicStrictTools(params: MessageCreateParamsStreaming): void {
 
 function getCacheControl(
 	model: Model<"anthropic-messages">,
-	baseUrl: string,
 	cacheRetention: CacheRetention | undefined,
 	isOAuthToken: boolean,
 ): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
@@ -435,10 +419,7 @@ function getCacheControl(
 	if (retention === "none") {
 		return { retention };
 	}
-	const ttl =
-		retention === "long" && isAnthropicApiBaseUrl(baseUrl) && getAnthropicCompat(model).supportsLongCacheRetention
-			? "1h"
-			: undefined;
+	const ttl = retention === "long" && model.compat.supportsLongCacheRetention ? "1h" : undefined;
 	return {
 		retention,
 		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
@@ -746,6 +727,15 @@ function countAnthropicImageBlocks(messages: Message[]): number {
 
 const ANTHROPIC_IMAGE_RESIZE_CONCURRENCY = 4;
 
+/**
+ * Memoized resize results keyed on ImageContent identity. Callers keep message
+ * objects stable across turns, so without this every request (and every
+ * in-provider retry of a fresh turn) re-decodes and re-encodes the same
+ * oversized screenshots. A cached value identical to the key means "already
+ * within bounds / unresizable — skip the decode".
+ */
+const anthropicManyImageResizeCache = new WeakMap<ImageContent, ImageContent>();
+
 type ResizeLimiter = <R>(fn: () => Promise<R>) => Promise<R>;
 
 /**
@@ -816,7 +806,11 @@ async function resizeAnthropicManyImageContent(
 	const next = await Promise.all(
 		content.map(async block => {
 			if (block.type !== "image") return block;
-			const resized = await limit(() => resizeAnthropicManyImageBlock(block));
+			let resized = anthropicManyImageResizeCache.get(block);
+			if (resized === undefined) {
+				resized = await limit(() => resizeAnthropicManyImageBlock(block));
+				anthropicManyImageResizeCache.set(block, resized);
+			}
 			if (resized !== block) {
 				changed = true;
 				state.resized++;
@@ -1119,7 +1113,7 @@ function parseAnthropicCustomHeaders(rawHeaders: string | undefined): Record<str
 export function resolveAnthropicCustomHeadersForBaseUrl(
 	baseUrl: string | undefined,
 ): Record<string, string> | undefined {
-	if (!isFoundryEnabled() && isAnthropicApiBaseUrl(baseUrl)) return undefined;
+	if (!isFoundryEnabled() && isOfficialAnthropicApiUrl(baseUrl)) return undefined;
 	return parseAnthropicCustomHeaders($env.ANTHROPIC_CUSTOM_HEADERS);
 }
 
@@ -1243,6 +1237,30 @@ type RawMessagePingEvent = { type: "ping" };
 type AnthropicStreamEvent = RawMessageStreamEvent | RawMessagePingEvent;
 const ANTHROPIC_PING_EVENT: RawMessagePingEvent = { type: "ping" };
 
+/**
+ * In-stream `error` SSE frames carry an Anthropic error envelope:
+ * `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`.
+ * Surface the structured type + message instead of the raw JSON blob; the
+ * error type token (e.g. `overloaded_error`, `rate_limit_error`) is kept in
+ * the message so `isProviderRetryableError`'s classification keys off the
+ * structured type rather than incidental JSON substrings.
+ */
+function createAnthropicSseStreamError(data: string): Error {
+	try {
+		const parsed = JSON.parse(data) as { error?: { type?: unknown; message?: unknown } };
+		const errorType = typeof parsed?.error?.type === "string" ? parsed.error.type : undefined;
+		const message = typeof parsed?.error?.message === "string" ? parsed.error.message : undefined;
+		if (message) {
+			return new Error(
+				errorType ? `Anthropic stream error (${errorType}): ${message}` : `Anthropic stream error: ${message}`,
+			);
+		}
+	} catch {
+		// Not a JSON envelope; fall through to the raw payload.
+	}
+	return new Error(data);
+}
+
 async function* iterateAnthropicEvents(
 	response: Response,
 	signal?: AbortSignal,
@@ -1258,7 +1276,7 @@ async function* iterateAnthropicEvents(
 	for await (const sse of readSseEvents(response.body, signal)) {
 		notifyRawSseEvent(onSseEvent, sse);
 		if (sse.event === "error") {
-			throw new Error(sse.data);
+			throw createAnthropicSseStreamError(sse.data);
 		}
 
 		if (sse.event === "ping") {
@@ -1353,26 +1371,7 @@ async function* observeDecodedAnthropicSdkEvents(
 	}
 }
 
-function getAnthropicCompat(
-	model: Model<"anthropic-messages">,
-): Required<NonNullable<Model<"anthropic-messages">["compat"]>> {
-	return {
-		disableStrictTools: model.compat?.disableStrictTools ?? false,
-		disableAdaptiveThinking: model.compat?.disableAdaptiveThinking ?? false,
-		supportsEagerToolInputStreaming: model.compat?.supportsEagerToolInputStreaming ?? true,
-		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
-		supportsMidConversationSystem:
-			model.compat?.supportsMidConversationSystem ??
-			// First-party Claude API only. Bedrock/Vertex/Foundry and other
-			// Anthropic-compatible proxies reject the role; gate auto-detection on
-			// the canonical api.anthropic.com host plus a supported model id.
-			(isAnthropicApiBaseUrl(model.baseUrl) && supportsMidConversationSystemMessages(model.id)),
-		supportsForcedToolChoice: model.compat?.supportsForcedToolChoice ?? !isAnthropicFableOrMythosModel(model.id),
-	};
-}
-
-const PROVIDER_MAX_RETRIES = 3;
-const PROVIDER_BASE_DELAY_MS = 2000;
+const PROVIDER_MAX_RETRIES = 10;
 
 /** Transient stream corruption errors where the response was truncated mid-JSON. */
 function isTransientStreamParseError(error: unknown): boolean {
@@ -1575,7 +1574,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				const sendsAdaptiveEffortPin =
 					options?.thinkingEnabled === false &&
 					model.thinking?.mode === "anthropic-adaptive" &&
-					!getAnthropicCompat(model).disableAdaptiveThinking;
+					!model.compat.disableAdaptiveThinking;
 				if (
 					model.reasoning &&
 					(options?.thinkingEnabled || sendsAdaptiveEffortPin) &&
@@ -1583,10 +1582,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				) {
 					extraBetas.push(effortBeta);
 				}
-				if (
-					getAnthropicCompat(model).supportsMidConversationSystem &&
-					!extraBetas.includes(midConversationSystemBeta)
-				) {
+				if (model.compat.supportsMidConversationSystem && !extraBetas.includes(midConversationSystemBeta)) {
 					// convertAnthropicMessages may upgrade developer turns to the
 					// mid-conversation `system` role on these models; API-key requests
 					// need the beta alongside the role (OAuth agent requests already
@@ -1614,7 +1610,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 			}
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
-				let nextParams = buildParams(model, baseUrl, preparedContext, isOAuthToken, options, disableStrictTools);
+				let nextParams = buildParams(model, preparedContext, isOAuthToken, options, disableStrictTools);
 				if (disableStrictTools) {
 					dropAnthropicStrictTools(nextParams);
 				}
@@ -1684,8 +1680,8 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				const { requestSignal } = activeAbortTracker;
 				// The provider loop owns retries: pin the client's internal retry loop
 				// to zero even when no watchdog timeout is configured (the helper only
-				// pins it alongside a timeout; the client default of 5 would otherwise
-				// multiply with PROVIDER_MAX_RETRIES into up to 24 wire attempts).
+				// pins it alongside a timeout; a client retry budget of 5 would otherwise
+				// multiply with PROVIDER_MAX_RETRIES into up to 66 wire attempts).
 				const requestOptions = { ...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs), maxRetries: 0 };
 				const anthropicRequest: unknown =
 					isOAuthToken && client.beta
@@ -1725,6 +1721,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					let sawMessageStart = false;
 					let sawTerminalEnvelope = false;
 					let sawMessageStop = false;
+					// Set when a duplicate message_start splices a second envelope onto
+					// the stream; closed indexes then refuse to reopen so replayed
+					// content cannot duplicate (see content_block_start guard).
+					let sawSplicedEnvelope = false;
+					const closedBlockIndexes = new Set<number>();
 					const openBlocks = new Map<
 						number,
 						{ contentIndex: number; kind: "text" | "thinking" | "redactedThinking" | "toolCall" | "ignored" }
@@ -1759,8 +1760,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 						if (event.type === "message_start") {
 							if (sawMessageStart) {
 								// Transparent reconnects can splice a fresh envelope onto the same
-								// stream; keep the original message but surface the anomaly.
+								// stream; keep the original message but surface the anomaly. Events
+								// for blocks still open from the first envelope continue to apply,
+								// but replayed blocks are dropped below (see closedBlockIndexes).
 								reportAnthropicEnvelopeAnomaly("duplicate message_start event");
+								sawSplicedEnvelope = true;
 								continue;
 							}
 							sawMessageStart = true;
@@ -1796,6 +1800,16 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 							}
 							if (openBlocks.has(event.index)) {
 								reportAnthropicEnvelopeAnomaly(`duplicate content_block_start index ${event.index}`);
+								continue;
+							}
+							if (sawSplicedEnvelope && closedBlockIndexes.has(event.index)) {
+								// A spliced envelope replaying an index this stream already
+								// completed would append duplicate text/tool calls; consume its
+								// events silently instead.
+								reportAnthropicEnvelopeAnomaly(
+									`replayed content_block_start index ${event.index} after duplicate message_start`,
+								);
+								openBlocks.set(event.index, { contentIndex: -1, kind: "ignored" });
 								continue;
 							}
 							if (!event.content_block?.type) {
@@ -1961,6 +1975,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 								continue;
 							}
 							openBlocks.delete(event.index);
+							closedBlockIndexes.add(event.index);
 							finalizeStreamBlock(block, openBlock.contentIndex);
 						} else if (event.type === "message_delta") {
 							if (sawTerminalEnvelope) {
@@ -2121,7 +2136,13 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 						throw streamFailure;
 					}
 					providerRetryAttempt++;
-					const delayMs = PROVIDER_BASE_DELAY_MS * 2 ** (providerRetryAttempt - 1);
+					const backoffDelayMs = calculateAnthropicRetryDelayMs(providerRetryAttempt - 1);
+					// Honor the server's retry hint (`retry-after-ms`/`retry-after`) on
+					// 429/529-style failures: retrying sooner than the server asked is a
+					// guaranteed failure that just burns the retry budget.
+					const headerDelayMs =
+						streamFailure instanceof AnthropicApiError ? retryDelayFromHeaders(streamFailure.headers) : undefined;
+					const delayMs = headerDelayMs !== undefined ? Math.max(headerDelayMs, backoffDelayMs) : backoffDelayMs;
 					if (options?.providerRetryWait) {
 						await options.providerRetryWait(delayMs, options.signal);
 					} else {
@@ -2256,8 +2277,8 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		isOAuth,
 		claudeCodeSessionId,
 	} = args;
-	const compat = getAnthropicCompat(model);
-	const needsInterleavedBeta = interleavedThinking && !supportsAdaptiveThinkingDisplay(model.id);
+	const compat = model.compat;
+	const needsInterleavedBeta = interleavedThinking && !model.thinking?.supportsDisplay;
 	const needsFineGrainedToolStreamingBeta = hasTools && !compat.supportsEagerToolInputStreaming;
 	const oauthToken = isOAuth ?? isAnthropicOAuthToken(apiKey);
 	const baseUrl = resolveAnthropicBaseUrl(model, apiKey);
@@ -2367,7 +2388,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	const authorizationHeader = getHeaderCaseInsensitive(defaultHeaders, "Authorization");
 	const shouldSuppressClientApiKey =
 		!oauthToken &&
-		!isAnthropicApiBaseUrl(baseUrl) &&
+		!model.compat.officialEndpoint &&
 		typeof authorizationHeader === "string" &&
 		/^Bearer\s+/i.test(authorizationHeader);
 
@@ -2698,13 +2719,12 @@ function extractClaudeCodeFirstUserMessageText(messages: readonly Message[]): st
 
 function buildParams(
 	model: Model<"anthropic-messages">,
-	baseUrl: string,
 	context: Context,
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
 	disableStrictTools = false,
 ): MessageCreateParamsStreaming {
-	const { cacheControl } = getCacheControl(model, baseUrl, options?.cacheRetention, isOAuthToken);
+	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken);
 
 	// Pre-compute system blocks so they occupy the right slot in the serialized body.
 	const shouldInjectClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");
@@ -2723,7 +2743,7 @@ function buildParams(
 			context.tools,
 			isOAuthToken,
 			disableStrictTools || model.provider === "github-copilot",
-			getAnthropicCompat(model).supportsEagerToolInputStreaming,
+			model.compat.supportsEagerToolInputStreaming,
 		);
 	} else if (isOAuthToken) {
 		tools = [];
@@ -2746,7 +2766,7 @@ function buildParams(
 		if (options?.thinkingEnabled) {
 			const mode = model.thinking?.mode;
 			const effort = resolveAnthropicAdaptiveEffort(model, options);
-			const compat = getAnthropicCompat(model);
+			const compat = model.compat;
 			if (mode === "anthropic-adaptive" && !compat.disableAdaptiveThinking) {
 				const adaptive: { type: "adaptive"; display?: AnthropicThinkingDisplay } = { type: "adaptive" };
 				// Starting with Claude Opus 4.7 and Claude Fable/Mythos 5, adaptive thinking
@@ -2755,7 +2775,7 @@ function buildParams(
 				// callers that rely on it. The `display` field is gated strictly on model
 				// support: Opus 4.6 / Sonnet 4.6+ reject it with a 400, so an explicit
 				// `thinkingDisplay` MUST NOT force it onto a model that can't accept it.
-				if (supportsAdaptiveThinkingDisplay(model.id)) {
+				if (model.thinking?.supportsDisplay) {
 					adaptive.display = options.thinkingDisplay ?? "summarized";
 				}
 				thinking = adaptive;
@@ -2769,7 +2789,7 @@ function buildParams(
 				if (mode === "anthropic-budget-effort" && effort) outputConfigEffort = effort;
 			}
 		} else if (options?.thinkingEnabled === false) {
-			const compat = getAnthropicCompat(model);
+			const compat = model.compat;
 			if (model.thinking?.mode === "anthropic-adaptive" && !compat.disableAdaptiveThinking) {
 				// Adaptive-only Claude models (Opus 4.6+, Sonnet 4.6+, Fable/Mythos 5) reject
 				// `thinking.type: "disabled"` — adaptive thinking cannot be switched off.
@@ -2804,7 +2824,7 @@ function buildParams(
 	// metadata → max_tokens → thinking → context_management → output_config → stream.
 	const params: MessageCreateParamsStreaming = {
 		model: model.id,
-		messages: convertAnthropicMessages(context.messages, model, isOAuthToken, baseUrl),
+		messages: convertAnthropicMessages(context.messages, model, isOAuthToken),
 		...(systemBlocks && { system: systemBlocks }),
 		...(tools !== undefined && { tools }),
 		...(metadata && { metadata }),
@@ -2822,7 +2842,7 @@ function buildParams(
 	// Opus 4.7+ and Fable/Mythos 5 reject non-default sampling parameters with 400 error.
 	const thinkingType = params.thinking?.type;
 	const allowSamplingParams =
-		!hasOpus47ApiRestrictions(model.id) && (thinkingType === undefined || thinkingType === "disabled");
+		model.compat.supportsSamplingParams && (thinkingType === undefined || thinkingType === "disabled");
 	if (allowSamplingParams && options?.temperature !== undefined) {
 		params.temperature = options.temperature;
 	}
@@ -2862,7 +2882,7 @@ function buildParams(
 		// request succeeds; the tool stays available and the caller's prompt steers
 		// the model toward it.
 		const choiceType = params.tool_choice?.type;
-		if ((choiceType === "any" || choiceType === "tool") && !getAnthropicCompat(model).supportsForcedToolChoice) {
+		if ((choiceType === "any" || choiceType === "tool") && !model.compat.supportsForcedToolChoice) {
 			params.tool_choice = { type: "auto" };
 		}
 	}
@@ -2876,52 +2896,6 @@ function buildParams(
 	return params;
 }
 
-/**
- * Z.AI's Anthropic-compatible proxy at `api.z.ai/api/anthropic` deserializes
- * tool_result blocks into a Python class that accesses `.id`, even though
- * Anthropic's standard tool_result schema only carries `tool_use_id`. Detect
- * that endpoint so we can emit the non-standard alias for it without
- * polluting requests to api.anthropic.com or other compatible proxies.
- * See: https://github.com/can1357/oh-my-pi/issues/814
- */
-function isZaiAnthropicEndpoint(model: Model<"anthropic-messages">): boolean {
-	if (model.provider === "zai") return true;
-	const baseUrl = model.baseUrl;
-	if (!baseUrl) return false;
-	try {
-		return new URL(baseUrl).hostname.toLowerCase() === "api.z.ai";
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Returns true when unsigned `thinking` blocks from prior assistant turns should
- * be replayed as Anthropic-native thinking instead of demoted to text.
- *
- * Official Anthropic (matched via `isAnthropicApiBaseUrl`, which intentionally
- * treats a missing baseUrl as official since `resolveAnthropicBaseUrl` routes
- * it to `https://api.anthropic.com`) enforces signature-based thinking-chain
- * integrity, so unsigned blocks must remain text there. Anthropic-compatible
- * reasoning endpoints commonly emit unsigned thinking blocks while still
- * expecting them back as `type: "thinking"` on continuation; demoting them
- * loses the model's reasoning chain and can destabilize the next tool-call
- * arguments (#2005). Known non-signing hosts are also preserved for
- * compatibility.
- */
-function shouldReplayUnsignedThinking(model: Model<"anthropic-messages">, baseUrl: string | undefined): boolean {
-	if (model.provider === "zai" || model.provider === "deepseek") return true;
-	if (baseUrl) {
-		try {
-			const hostname = new URL(baseUrl).hostname.toLowerCase();
-			if (hostname === "api.deepseek.com" || hostname.endsWith(".deepseek.com")) return true;
-		} catch {
-			// Fall through to the protocol-level reasoning rule below.
-		}
-	}
-	return model.reasoning && !isAnthropicApiBaseUrl(baseUrl);
-}
-
 function buildToolResultBlock(model: Model<"anthropic-messages">, msg: ToolResultMessage): ContentBlockParam {
 	const block: ContentBlockParam = {
 		type: "tool_result",
@@ -2929,7 +2903,7 @@ function buildToolResultBlock(model: Model<"anthropic-messages">, msg: ToolResul
 		content: convertContentBlocks(msg.content, model.input.includes("image")),
 		is_error: msg.isError,
 	};
-	if (isZaiAnthropicEndpoint(model)) {
+	if (model.compat.requiresToolResultId) {
 		// Z.AI workaround (issue #814): include `id` aliased to `tool_use_id`.
 		(block as unknown as Record<string, unknown>).id = msg.toolCallId;
 	}
@@ -2977,7 +2951,6 @@ export function convertAnthropicMessages(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
-	baseUrl = resolveAnthropicBaseUrl(model),
 ): AnthropicMessageParam[] {
 	// Indices of params emitted from `developer` messages. After the main pass,
 	// the ones whose placement satisfies Anthropic's mid-conversation rules are
@@ -3042,7 +3015,7 @@ export function convertAnthropicMessages(
 					}
 					if (block.thinking.trim().length === 0) continue;
 					if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) {
-						if (shouldReplayUnsignedThinking(model, baseUrl)) {
+						if (model.compat.replayUnsignedThinking) {
 							blocks.push({
 								type: "thinking",
 								thinking: block.thinking.toWellFormed(),
@@ -3120,7 +3093,7 @@ export function convertAnthropicMessages(
 	// never consecutive. Requiring the next param to be `assistant` (or absent)
 	// covers both the "followed by assistant / last" and "no consecutive system"
 	// constraints. Anything that does not qualify stays a `user` message.
-	if (developerParamIndices.length > 0 && getAnthropicCompat(model).supportsMidConversationSystem) {
+	if (developerParamIndices.length > 0 && model.compat.supportsMidConversationSystem) {
 		for (const idx of developerParamIndices) {
 			const followsUser = idx > 0 && params[idx - 1]?.role === "user";
 			const next = params[idx + 1];

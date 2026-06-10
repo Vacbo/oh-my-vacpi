@@ -29,6 +29,7 @@ import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent, HookSelectorOptions } from "./components/hook-selector";
 import type { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
+import type { TranscriptContainer } from "./components/transcript-container";
 import type { LoopLimitRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
@@ -77,7 +78,7 @@ export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<H
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
-	chatContainer: Container;
+	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
 	todoContainer: Container;
@@ -99,6 +100,7 @@ export interface InteractiveModeContext {
 	historyStorage?: HistoryStorage;
 	mcpManager?: MCPManager;
 	lspServers?: LspStartupServerInfo[];
+	titleSystemPrompt?: string;
 
 	// State
 	isInitialized: boolean;
@@ -289,6 +291,7 @@ export interface InteractiveModeContext {
 	handleResumeSession(sessionPath: string): Promise<void>;
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void>;
+	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
 	showSessionObserver(): void;

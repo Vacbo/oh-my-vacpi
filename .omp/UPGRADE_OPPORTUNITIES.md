@@ -41,6 +41,23 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-10 — Merged upstream v15.10.12: Effort.Max ladder re-homed into pi-catalog; refreshModelThinking dropped   `[done]` `[high]`
+
+**Merge**: v15.10.10 → v15.10.12 (236 upstream commits, 901 files). 42 conflicted paths, dominated by upstream's catalog extraction: the model catalog moved out of `pi-ai` into the new `packages/catalog` (`@oh-my-pi/pi-catalog`), and the TUI render core was rewritten around an append-only native-scrollback contract (`Component.render` now returns `readonly string[]`).
+
+**Fork ports into the new architecture**:
+- **Effort.Max ladder** → `catalog/src/effort.ts` (enum member), `catalog/src/model-thinking.ts` (`ANTHROPIC_OPUS_46_EFFORTS` `[minimal..high, max]`, `ANTHROPIC_OPUS_47_PLUS_EFFORTS` `[minimal..xhigh, max]`, Bedrock collapses to the 4.6 shape, `max: "max"` keys on both adaptive effortMaps, legacy-XHigh→Max promotion in `clampThinkingLevelForModel` + `mapEffortToAnthropicAdaptiveEffort`), `identity/markers.ts` (`max` trailing marker), `compat/openai.ts` (effort union). Regenerated `models.json` carries the new ladders (opus-4.6 `[..high, max]`; opus-4.7/4.8/fable-5/mythos-5 six-tier).
+- **Fireworks Fire Pass router model** → seed + cap exemption moved to `catalog/provider-models/openai-compat.ts` + `catalog/scripts/generate-models.ts`; `routers/` prefix translation into `catalog/src/fireworks-model-id.ts`; `FIREWORKS_PASS_API_KEY` added to `CATALOG_PROVIDERS` fireworks `envVars`. `getEnvApiKeyForModel` survives in `pi-ai/src/stream.ts` untouched.
+- **EFFORT_ORDER** in `coding-agent/src/config/models-config-schema.ts` extended with `max` so legacy `maxLevel: max` configs expand correctly.
+
+**Dropped fork divergence — `refreshModelThinking` re-inference at cache-read sites** (`model-manager.ts`, `model-registry.ts`): structurally obsolete. Upstream removed `enrichModelThinking`/`refreshModelThinking`; thinking is resolved exactly once in `buildModel`, every cache read rebuilds models via `buildModel` (registry sites included), the model-cache schema bumped to v4 (wipes all pre-efforts rows once), and the static-catalog fingerprint invalidates cache merges when `models.json` changes. The two fork regression tests for the old mechanism (`ai/test/model-manager-cache-refresh.test.ts`, `coding-agent/test/agent-session-cycle-stale-cache.test.ts`) were deleted; their derivation contracts now live in `catalog/test/model-thinking.test.ts` (Max ladders, clamp/promotion/mapping invariants).
+
+**Residual lever to remember**: post-v4 cache rows bake `thinking.efforts`, and `resolveModelThinking` trusts explicit baked thinking. A FUTURE fork change to ladder inference will not propagate to already-cached dynamic rows until TTL (24h) or fingerprint change — when extending ladders again, bump `CACHE_SCHEMA_VERSION` in `catalog/src/model-cache.ts` alongside the change.
+
+**Also notable**: jj is now the source-control surface for this repo; git hooks (`omp-rebuild.sh`) do not fire under jj, so post-merge rebuilds are manual (AGENTS.md "Version Control (fork policy)" section records this plus the standing commit/push authorization to `origin`). Upstream's AGENTS.md worker contract (workerHostEntry re-entry, no per-worker `--compile` entrypoints) auto-merged cleanly.
+
+---
+
 ## 2026-06-10 — RETRACTED: "cmux paints short bg quads" — striped image was our own mirror render; cmux/Ghostty exonerated   `[done]` `[post-mortem]`
 
 **Original claim (wrong)**: cmux's surface renderer paints SGR row backgrounds at ~83% of cell height at small cell metrics, producing 1-2px stripes of background between rows of tinted blocks. Filed as `[external: cmux]` off pixel forensics of a user-pasted capture (blob `~/.omp/agent/blobs/7ddf4ad0…webp`, 934x690, dips at a strict 11px pitch to `rgb(5,7,10)`).

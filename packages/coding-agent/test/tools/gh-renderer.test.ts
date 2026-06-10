@@ -60,7 +60,7 @@ describe("githubToolRenderer", () => {
 		expect(toolRenderers.github).toBeDefined();
 		expect(rendered).toContain("watching run #23856332053 on v12-security/v12x");
 		expect(rendered).toContain("CI  dev  #23856332053");
-		expect(rendered).toContain(`${uiTheme.symbol("tool.gh")} Workflow Lint`);
+		expect(rendered).toContain(`${uiTheme.status.success} Workflow Lint`);
 		expect(rendered).toContain(`${uiTheme.status.enabled} Frontend Checks`);
 		expect(rendered).toContain(`${uiTheme.status.shadowed} Rust Tests`);
 		expect(rendered).toContain("55s");

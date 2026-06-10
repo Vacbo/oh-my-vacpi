@@ -22,11 +22,20 @@ import {
 	stripClaudeToolPrefix,
 } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { getEnvApiKey } from "@oh-my-pi/pi-ai/stream";
-import type { AssistantMessage, Context, Model, TJsonSchema, TokenTaskBudget, Tool } from "@oh-my-pi/pi-ai/types";
+import type {
+	AssistantMessage,
+	Context,
+	Model,
+	ModelSpec,
+	TJsonSchema,
+	TokenTaskBudget,
+	Tool,
+} from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as z from "zod/v4";
 import { withEnv } from "./helpers";
 
-const ANTHROPIC_MODEL: Model<"anthropic-messages"> = {
+const ANTHROPIC_MODEL_SPEC: ModelSpec<"anthropic-messages"> = {
 	id: "claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5",
 	api: "anthropic-messages",
@@ -39,13 +48,15 @@ const ANTHROPIC_MODEL: Model<"anthropic-messages"> = {
 	maxTokens: 8_192,
 };
 
-const CLOUDFLARE_ANTHROPIC_MODEL: Model<"anthropic-messages"> = {
-	...ANTHROPIC_MODEL,
+const ANTHROPIC_MODEL: Model<"anthropic-messages"> = buildModel(ANTHROPIC_MODEL_SPEC);
+
+const CLOUDFLARE_ANTHROPIC_MODEL: Model<"anthropic-messages"> = buildModel({
+	...ANTHROPIC_MODEL_SPEC,
 	id: "anthropic/claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5 via Cloudflare",
 	provider: "cloudflare-ai-gateway",
 	baseUrl: "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic",
-};
+});
 
 function createAbortedSignal(): AbortSignal {
 	const controller = new AbortController();
@@ -286,7 +297,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("defaults max_tokens to a third of the model ceiling, clamped to Claude Code's 64k cap", async () => {
 		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 },
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 }),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -296,9 +307,9 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.max_tokens).toBe((128_000 / 3) | 0);
 	});
 
-	it("clamps an explicit maxTokens request to Claude Code's 64k cap", async () => {
+	it("clamps requested max_tokens to Claude Code's 64k cap when the model ceiling is higher", async () => {
 		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 },
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 }),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -319,7 +330,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("keeps the full model output ceiling for API-key requests", async () => {
 		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 },
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 }),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -391,12 +402,15 @@ describe("Anthropic request fingerprint alignment", () => {
 				{ status: 400, headers: { "Content-Type": "application/json" } },
 			);
 		}) as typeof fetch;
-		const adaptiveModel: Model<"anthropic-messages"> = {
-			...ANTHROPIC_MODEL,
+		const adaptiveModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
 			id: "claude-opus-4-8-20260528",
 			name: "Claude Opus 4.8",
-			thinking: { mode: "anthropic-adaptive", minLevel: Effort.Minimal, maxLevel: Effort.XHigh },
-		};
+			thinking: {
+				mode: "anthropic-adaptive",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			},
+		});
 
 		await streamAnthropic(
 			adaptiveModel,
@@ -548,7 +562,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("skips Claude Code instruction injection for claude-3-5-haiku models", async () => {
 		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-3-5-haiku", name: "Claude 3.5 Haiku" },
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-3-5-haiku", name: "Claude 3.5 Haiku" }),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1293,7 +1307,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("keeps the interleaved-thinking beta for dated Opus 4.0 ids", () => {
 		const legacy = buildAnthropicClientOptions({
-			model: { ...ANTHROPIC_MODEL, id: "claude-opus-4-20250514", name: "Claude Opus 4" },
+			model: buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-20250514", name: "Claude Opus 4" }),
 			apiKey: "sk-ant-api-test",
 			extraBetas: [],
 			stream: true,
@@ -1304,7 +1318,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(legacy.defaultHeaders["anthropic-beta"]).toContain("interleaved-thinking-2025-05-14");
 
 		const modern = buildAnthropicClientOptions({
-			model: { ...ANTHROPIC_MODEL, id: "claude-opus-4-7", name: "Claude Opus 4.7" },
+			model: buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-7", name: "Claude Opus 4.7" }),
 			apiKey: "sk-ant-api-test",
 			extraBetas: [],
 			stream: true,
@@ -1315,10 +1329,10 @@ describe("Anthropic request fingerprint alignment", () => {
 	});
 
 	it("adds legacy fine-grained tool-streaming beta only for tool requests on incompatible models", () => {
-		const incompatibleModel: Model<"anthropic-messages"> = {
-			...ANTHROPIC_MODEL,
+		const incompatibleModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
 			compat: { supportsEagerToolInputStreaming: false },
-		};
+		});
 
 		const withoutTools = buildAnthropicClientOptions({
 			model: incompatibleModel,
@@ -1447,10 +1461,10 @@ describe("Anthropic request fingerprint alignment", () => {
 	});
 
 	it("forwards ANTHROPIC_CUSTOM_HEADERS to an enterprise gateway base URL without Foundry mode", async () => {
-		const gatewayModel: Model<"anthropic-messages"> = {
-			...ANTHROPIC_MODEL,
+		const gatewayModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
 			baseUrl: "https://gateway.example.com",
-		};
+		});
 		await withEnv(
 			{
 				CLAUDE_CODE_USE_FOUNDRY: undefined,
@@ -1634,7 +1648,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("drops temperature and sampling params for Opus 4.7 without enabled thinking", async () => {
 		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-opus-4-7", name: "Claude Opus 4.7" },
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-7", name: "Claude Opus 4.7" }),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1660,11 +1674,11 @@ describe("Anthropic request fingerprint alignment", () => {
 	it("drops sampling params for Claude Fable/Mythos 5 without enabled thinking", async () => {
 		for (const id of ["claude-fable-5", "claude-mythos-5"] as const) {
 			const payload = (await captureAnthropicPayload(
-				{
-					...ANTHROPIC_MODEL,
+				buildModel({
+					...ANTHROPIC_MODEL_SPEC,
 					id,
 					name: id === "claude-fable-5" ? "Claude Fable 5" : "Claude Mythos 5",
-				},
+				}),
 				{
 					systemPrompt: ["Stay concise."],
 					messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1690,16 +1704,15 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("drops sampling params and keeps summarized adaptive thinking for OAuth Opus 4.7+", async () => {
 		const payload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.Max,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1730,16 +1743,15 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.output_config).toEqual({ effort: "xhigh" });
 
 		const maxPayload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1758,16 +1770,15 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("keeps summarized adaptive thinking by default for API-key Opus 4.7+ requests", async () => {
 		const payload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1790,16 +1801,15 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("sends task budgets through Anthropic output_config without dropping adaptive effort", async () => {
 		const payload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Review this repo", timestamp: Date.now() }],
@@ -1824,16 +1834,15 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("preserves task budget when forced tool choice disables thinking", async () => {
 		const payload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Use the tool", timestamp: Date.now() }],
@@ -1868,18 +1877,17 @@ describe("Anthropic request fingerprint alignment", () => {
 	it("downgrades forced tool choice for Claude Fable/Mythos without deleting adaptive thinking", async () => {
 		for (const id of ["claude-fable-5", "claude-mythos-5"] as const) {
 			const payload = (await captureAnthropicPayload(
-				{
-					...ANTHROPIC_MODEL,
+				buildModel({
+					...ANTHROPIC_MODEL_SPEC,
 					id,
 					name: id === "claude-fable-5" ? "Claude Fable 5" : "Claude Mythos 5",
 					contextWindow: 1_000_000,
 					maxTokens: 128_000,
 					thinking: {
 						mode: "anthropic-adaptive",
-						minLevel: Effort.Minimal,
-						maxLevel: Effort.XHigh,
+						efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 					},
-				},
+				}),
 				{
 					systemPrompt: ["Stay concise."],
 					messages: [{ role: "user", content: "Use the tool", timestamp: Date.now() }],

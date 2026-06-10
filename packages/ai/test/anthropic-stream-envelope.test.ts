@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { scheduler } from "node:timers/promises";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { AnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic-client";
-import type { AssistantMessageEvent, Context, Model, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
+import type { AssistantMessageEvent, Context, Model, ModelSpec, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
-const model: Model<"anthropic-messages"> = {
+const model: Model<"anthropic-messages"> = buildModel({
 	id: "claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5",
 	api: "anthropic-messages",
@@ -15,7 +16,7 @@ const model: Model<"anthropic-messages"> = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 200_000,
 	maxTokens: 8_192,
-};
+});
 
 const context: Context = {
 	messages: [{ role: "user", content: "Say hi", timestamp: Date.now() }],
@@ -275,6 +276,45 @@ describe("anthropic stream envelope handling", () => {
 		expect(countEvents(events, "done")).toBe(1);
 		expect(result.stopReason).toBe("stop");
 		expect(result.responseId).toBe("msg_text_success");
+		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
+	it("drops replayed closed blocks after a duplicate message_start instead of duplicating content", async () => {
+		const events: MockAnthropicEvent[] = [
+			{
+				type: "message_start",
+				message: { id: "msg_first", usage: { input_tokens: 12, output_tokens: 0 } },
+			},
+			{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+			{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } },
+			{ type: "content_block_stop", index: 0 },
+			// A replaying proxy splices the same envelope again before the
+			// terminal message_delta arrives.
+			{ type: "message_start", message: { id: "msg_replay", usage: { input_tokens: 12, output_tokens: 0 } } },
+			{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+			{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } },
+			{ type: "content_block_stop", index: 0 },
+			{
+				type: "message_delta",
+				delta: { stop_reason: "end_turn" },
+				usage: { input_tokens: 12, output_tokens: 4 },
+			},
+			{ type: "message_stop" },
+		];
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => createMockRequest(events) as never);
+
+		const stream = streamAnthropic(model, context, { apiKey: "sk-ant-test" });
+		const collected: AssistantMessageEvent[] = [];
+		for await (const event of stream) {
+			collected.push(event);
+		}
+		const result = await stream.result();
+
+		expect(countEvents(collected, "text_start")).toBe(1);
+		expect(countEvents(collected, "text_end")).toBe(1);
+		expect(countEvents(collected, "error")).toBe(0);
+		expect(result.stopReason).toBe("stop");
+		expect(result.responseId).toBe("msg_first");
 		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
 	});
 
@@ -800,7 +840,10 @@ describe("anthropic stream envelope handling", () => {
 		await eagerStream.result();
 
 		const disabledStream = streamAnthropic(
-			{ ...model, compat: { supportsEagerToolInputStreaming: false } },
+			buildModel({
+				...model,
+				compat: { ...model.compatConfig, supportsEagerToolInputStreaming: false },
+			} as ModelSpec<"anthropic-messages">),
 			toolContext,
 			{ apiKey: "sk-ant-test" },
 		);
@@ -824,8 +867,15 @@ describe("anthropic stream envelope handling", () => {
 
 		for (const testModel of [
 			model,
-			{ ...model, compat: { supportsLongCacheRetention: false } },
-			{ ...model, baseUrl: "https://proxy.example.com/anthropic" },
+			buildModel({
+				...model,
+				compat: { ...model.compatConfig, supportsLongCacheRetention: false },
+			} as ModelSpec<"anthropic-messages">),
+			buildModel({
+				...model,
+				baseUrl: "https://proxy.example.com/anthropic",
+				compat: model.compatConfig,
+			} as ModelSpec<"anthropic-messages">),
 		]) {
 			const stream = streamAnthropic(testModel, context, {
 				apiKey: "sk-ant-test",

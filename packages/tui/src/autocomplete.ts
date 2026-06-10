@@ -160,6 +160,7 @@ type Awaitable<T> = T | Promise<T>;
 
 export interface SlashCommand {
 	name: string;
+	aliases?: string[];
 	description?: string;
 	argumentHint?: string;
 	// Function to get argument completions for this command
@@ -262,9 +263,87 @@ export function sanitizeAutocompleteItems<T extends { value: string; label: stri
 	});
 }
 
+type CommandEntry = SlashCommand | AutocompleteItem;
+
+function getCommandName(cmd: CommandEntry): string | undefined {
+	return "name" in cmd ? cmd.name : cmd.value;
+}
+
+function getCommandAliases(cmd: CommandEntry): string[] {
+	if (!("aliases" in cmd) || !Array.isArray(cmd.aliases)) return [];
+	return cmd.aliases.filter(alias => typeof alias === "string" && alias.length > 0);
+}
+
+function commandMatchesNameOrAlias(cmd: CommandEntry, commandName: string): boolean {
+	const name = getCommandName(cmd);
+	if (name === commandName) return true;
+	return getCommandAliases(cmd).includes(commandName);
+}
+
+function scoreCommandTextMatch(lowerPrefix: string, lowerTarget: string): number {
+	if (lowerPrefix.length === 0) return 1;
+	if (lowerPrefix === lowerTarget) return 1000;
+	// Flat score for every prefix match so same-prefix commands keep registry
+	// order under the stable sort. A length penalty here would rank the shorter
+	// name first (e.g. `/set` → `setup` above `settings`), silently changing the
+	// command that the sync-completion path applies on Enter.
+	if (lowerTarget.startsWith(lowerPrefix)) return 900;
+	return fuzzyMatch(lowerPrefix, lowerTarget) ? fuzzyScore(lowerPrefix, lowerTarget) : 0;
+}
+
+function buildSlashCommandCompletions(
+	commands: CommandEntry[],
+	lowerPrefix: string,
+	usageBoosts?: Map<string, number>,
+): AutocompleteItem[] {
+	return commands
+		.flatMap(cmd => {
+			const name = getCommandName(cmd);
+			if (!name) return [];
+			const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
+			const desc = cmd.description ?? "";
+			const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
+			const candidates: Array<AutocompleteItem & { score: number }> = [];
+
+			const nameScore = scoreCommandTextMatch(lowerPrefix, name.toLowerCase());
+			const lowerDesc = desc.toLowerCase();
+			const descScore =
+				lowerDesc && fuzzyMatch(lowerPrefix, lowerDesc) ? fuzzyScore(lowerPrefix, lowerDesc) * 0.5 : 0;
+			const primaryScore = Math.max(nameScore, descScore);
+			if (primaryScore > 0) {
+				candidates.push({
+					value: name,
+					label: "name" in cmd ? cmd.name : cmd.label,
+					// Usage boost applies only to entries that already match, so an
+					// unrelated high-usage command can never surface from a zero score.
+					score: primaryScore + (usageBoosts?.get(name) ?? 0),
+					...(fullDesc && { description: fullDesc }),
+				});
+			}
+
+			if (lowerPrefix.length > 0) {
+				for (const alias of getCommandAliases(cmd)) {
+					if (alias === name) continue;
+					const aliasScore = scoreCommandTextMatch(lowerPrefix, alias.toLowerCase());
+					if (aliasScore === 0) continue;
+					candidates.push({
+						value: alias,
+						label: alias,
+						score: aliasScore + (usageBoosts?.get(alias) ?? 0),
+						...(fullDesc && { description: fullDesc }),
+					});
+				}
+			}
+
+			return candidates;
+		})
+		.sort((a, b) => b.score - a.score)
+		.map(({ score: _, ...rest }) => rest);
+}
+
 // Combined provider that handles both slash commands and file paths.
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
-	#commands: (SlashCommand | AutocompleteItem)[];
+	#commands: CommandEntry[];
 	#basePath: string;
 	// Intentionally separate from pi-natives cache: this cache is a local,
 	// per-directory readdir fast-path for prefix completions. Global fuzzy
@@ -277,7 +356,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	#getSlashUsageOrder?: () => readonly string[];
 
 	constructor(
-		commands: (SlashCommand | AutocompleteItem)[] = [],
+		commands: CommandEntry[] = [],
 		basePath: string = getProjectDir(),
 		getSlashUsageOrder?: () => readonly string[],
 	) {
@@ -340,37 +419,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				// stale orderings don't survive a recordSlashCommandUsage(...) call.
 				const usageBoosts = computeSlashUsageBoosts(this.#getSlashUsageOrder?.());
 
-				// Filter commands using fuzzy matching (subsequence match)
-				const matches = this.#commands
-					.filter(cmd => {
-						const name = "name" in cmd ? cmd.name : cmd.value;
-						if (!name) return false;
-						// Match name or description
-						if (fuzzyMatch(lowerPrefix, name.toLowerCase())) return true;
-						const desc = cmd.description?.toLowerCase();
-						return desc ? fuzzyMatch(lowerPrefix, desc) : false;
-					})
-					.map(cmd => {
-						const name = "name" in cmd ? cmd.name : cmd.value;
-						const lowerName = name?.toLowerCase() ?? "";
-						const lowerDesc = cmd.description?.toLowerCase() ?? "";
-						// Score name matches higher than description matches
-						const nameScore = fuzzyMatch(lowerPrefix, lowerName) ? fuzzyScore(lowerPrefix, lowerName) : 0;
-						const descScore = fuzzyMatch(lowerPrefix, lowerDesc) ? fuzzyScore(lowerPrefix, lowerDesc) * 0.5 : 0;
-						const matchScore = Math.max(nameScore, descScore);
-						const usageBoost = name ? (usageBoosts.get(name) ?? 0) : 0;
-						const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
-						const desc = cmd.description ?? "";
-						const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
-						return {
-							value: name,
-							label: "name" in cmd ? cmd.name : cmd.label,
-							score: matchScore + usageBoost,
-							...(fullDesc && { description: fullDesc }),
-						};
-					})
-					.sort((a, b) => b.score - a.score)
-					.map(({ score: _, ...rest }) => rest);
+				const matches = buildSlashCommandCompletions(this.#commands, lowerPrefix, usageBoosts);
 
 				if (matches.length === 0) return null;
 
@@ -383,10 +432,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				const commandName = textBeforeCursor.slice(1, spaceIndex); // Command without "/"
 				const argumentText = textBeforeCursor.slice(spaceIndex + 1); // Text after space
 
-				const command = this.#commands.find(cmd => {
-					const name = "name" in cmd ? cmd.name : cmd.value;
-					return name === commandName;
-				});
+				const command = this.#commands.find(cmd => commandMatchesNameOrAlias(cmd, commandName));
 				if (!command || !("getArgumentCompletions" in command) || !command.getArgumentCompletions) {
 					return null; // No argument completion for this command
 				}
@@ -888,10 +934,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const commandName = textBeforeCursor.slice(1, spaceIndex);
 		const argumentText = textBeforeCursor.slice(spaceIndex + 1);
 
-		const command = this.#commands.find(cmd => {
-			const name = "name" in cmd ? cmd.name : cmd.value;
-			return name === commandName;
-		});
+		const command = this.#commands.find(cmd => commandMatchesNameOrAlias(cmd, commandName));
 
 		if (!command || !("getInlineHint" in command) || !command.getInlineHint) {
 			return null;
@@ -911,34 +954,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		// inline-completion path in lockstep with the picker rankings.
 		const usageBoosts = computeSlashUsageBoosts(this.#getSlashUsageOrder?.());
 
-		const matches = this.#commands
-			.filter(cmd => {
-				const name = "name" in cmd ? cmd.name : cmd.value;
-				if (!name) return false;
-				if (fuzzyMatch(lowerPrefix, name.toLowerCase())) return true;
-				const desc = cmd.description?.toLowerCase();
-				return desc ? fuzzyMatch(lowerPrefix, desc) : false;
-			})
-			.map(cmd => {
-				const name = "name" in cmd ? cmd.name : cmd.value;
-				const lowerName = name?.toLowerCase() ?? "";
-				const lowerDesc = cmd.description?.toLowerCase() ?? "";
-				const nameScore = fuzzyMatch(lowerPrefix, lowerName) ? fuzzyScore(lowerPrefix, lowerName) : 0;
-				const descScore = fuzzyMatch(lowerPrefix, lowerDesc) ? fuzzyScore(lowerPrefix, lowerDesc) * 0.5 : 0;
-				const matchScore = Math.max(nameScore, descScore);
-				const usageBoost = name ? (usageBoosts.get(name) ?? 0) : 0;
-				const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
-				const desc = cmd.description ?? "";
-				const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
-				return {
-					value: name,
-					label: "name" in cmd ? cmd.name : cmd.label,
-					score: matchScore + usageBoost,
-					...(fullDesc && { description: fullDesc }),
-				} as AutocompleteItem & { score: number };
-			})
-			.sort((a, b) => b.score - a.score)
-			.map(({ score: _, ...rest }) => rest);
+		const matches = buildSlashCommandCompletions(this.#commands, lowerPrefix, usageBoosts);
 
 		if (matches.length === 0) return null;
 		return { items: matches, prefix: textBeforeCursor };

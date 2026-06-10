@@ -22,6 +22,7 @@ import {
 	loadHindsightConfig,
 	reloadMentalModelsForSession,
 	resolveSeedsForScope,
+	seedAlreadyExists,
 	summarizeMentalModel,
 } from "../../hindsight";
 import { resolveMemoryBackend } from "../../memory-backend";
@@ -316,7 +317,13 @@ export class CommandController {
 			info += `\n${theme.bold("LSP Servers")}\n`;
 			for (const server of this.ctx.lspServers) {
 				const statusColor =
-					server.status === "ready" ? "success" : server.status === "connecting" ? "warning" : "error";
+					server.status === "ready"
+						? "success"
+						: server.status === "available"
+							? "dim"
+							: server.status === "connecting"
+								? "warning"
+								: "error";
 				const statusText =
 					server.status === "error" && server.error ? `${server.status}: ${server.error}` : server.status;
 				info += `${theme.fg("dim", `${server.name}:`)} ${theme.fg(statusColor, statusText)} ${theme.fg("dim", `(${server.fileTypes.join(", ")})`)}\n`;
@@ -750,11 +757,11 @@ export class CommandController {
 				return;
 			}
 			const list = await state.client.listMentalModels(state.bankId, { detail: "metadata" });
-			const existing = new Set((list.items ?? []).map(m => m.id));
+			const existing = list.items ?? [];
 			let created = 0;
 			let skipped = 0;
 			for (const seed of seeds) {
-				if (existing.has(seed.id)) {
+				if (seedAlreadyExists(seed, existing)) {
 					skipped++;
 					continue;
 				}
@@ -972,7 +979,7 @@ export class CommandController {
 						this.ctx.bashComponent.appendOutput(chunk);
 					}
 				},
-				{ excludeFromContext },
+				{ excludeFromContext, useUserShell: true },
 			);
 
 			if (this.ctx.bashComponent) {

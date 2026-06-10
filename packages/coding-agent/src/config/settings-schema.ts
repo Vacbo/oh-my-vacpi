@@ -151,7 +151,7 @@ export type AnyUiMetadata = UiBase & {
 
 interface BooleanDef {
 	type: "boolean";
-	default: boolean;
+	default: boolean | undefined;
 	ui?: UiBoolean;
 }
 
@@ -246,7 +246,11 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		message: "Use the `edit` tool instead of awk -i inplace. It provides diff preview and fuzzy matching.",
 	},
 	{
-		pattern: "^\\s*(echo|printf|cat\\s*<<)\\s+.*[^|]>\\s*\\S",
+		// `>` must sit outside quoted regions (so `echo "a -> b"` passes) and be
+		// followed by a plausible filename — including `$VAR` targets; `>|`
+		// (clobber) counts as a redirect; `>&2`/`2>&1` style fd duplication is
+		// not matched.
+		pattern: "^\\s*(echo|printf|cat\\s*<<)\\s+(?:[^\"'>]|\"[^\"]*\"|'[^']*')*(?<!\\|)>{1,2}\\|?\\s*[$\\w./~\"'-]",
 		tool: "write",
 		message: "Use the `write` tool instead of echo/cat redirection. It handles encoding and provides confirmation.",
 	},
@@ -256,7 +260,6 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	// General settings (no UI)
 	// ────────────────────────────────────────────────────────────────────────
-	lastChangelogVersion: { type: "string", default: undefined },
 	setupVersion: { type: "number", default: 0 },
 
 	// Auth broker — credentials proxied through a remote `omp auth-broker serve`
@@ -876,7 +879,7 @@ export const SETTINGS_SCHEMA = {
 
 	"retry.maxRetries": {
 		type: "number",
-		default: 3,
+		default: 10,
 		ui: {
 			tab: "model",
 			label: "Retry Attempts",
@@ -891,7 +894,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"retry.baseDelayMs": { type: "number", default: 2000 },
+	"retry.baseDelayMs": { type: "number", default: 500 },
 	"retry.maxDelayMs": {
 		type: "number",
 		default: 5 * 60 * 1000,
@@ -1974,6 +1977,17 @@ export const SETTINGS_SCHEMA = {
 		ui: { tab: "editing", label: "LSP", description: "Enable the lsp tool for language server protocol" },
 	},
 
+	"lsp.lazy": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "editing",
+			label: "Lazy LSP Startup",
+			description:
+				"Start language servers on first use (lsp tool or editing a matching file type) instead of at session startup",
+		},
+	},
+
 	"lsp.formatOnWrite": {
 		type: "boolean",
 		default: false,
@@ -2053,6 +2067,20 @@ export const SETTINGS_SCHEMA = {
 		type: "number",
 		default: 4 * 1024 * 1024,
 	},
+	"shellMinimizer.sourceOutlineLevel": {
+		type: "enum",
+		values: ["default", "aggressive"] as const,
+		default: "default",
+		ui: {
+			tab: "editing",
+			label: "Shell Minimizer Source Outline",
+			description: "Source outline mode for cat/read of source files: default or aggressive",
+		},
+	},
+	"shellMinimizer.legacyFilters": {
+		type: "boolean",
+		default: undefined,
+	},
 
 	// Eval (per-backend toggles; add more as new backends ship, e.g. eval.ts)
 	"eval.py": {
@@ -2084,6 +2112,16 @@ export const SETTINGS_SCHEMA = {
 			tab: "editing",
 			label: "Python Kernel Mode",
 			description: "Whether to keep IPython kernel alive across calls",
+		},
+	},
+	"python.interpreter": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "editing",
+			label: "Python Interpreter",
+			description:
+				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
 		},
 	},
 
@@ -3373,21 +3411,23 @@ type Schema = typeof SETTINGS_SCHEMA;
 export type SettingPath = keyof Schema;
 
 /** Infer the value type for a setting path */
-export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean" }
-	? boolean
-	: Schema[P] extends { type: "string" }
-		? string | undefined
-		: Schema[P] extends { type: "number" }
-			? number
-			: Schema[P] extends { type: "enum"; values: infer V }
-				? V extends readonly string[]
-					? V[number]
-					: never
-				: Schema[P] extends { type: "array"; default: infer D }
-					? D
-					: Schema[P] extends { type: "record"; default: infer D }
+export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean"; default: undefined }
+	? boolean | undefined
+	: Schema[P] extends { type: "boolean" }
+		? boolean
+		: Schema[P] extends { type: "string" }
+			? string | undefined
+			: Schema[P] extends { type: "number" }
+				? number
+				: Schema[P] extends { type: "enum"; values: infer V }
+					? V extends readonly string[]
+						? V[number]
+						: never
+					: Schema[P] extends { type: "array"; default: infer D }
 						? D
-						: never;
+						: Schema[P] extends { type: "record"; default: infer D }
+							? D
+							: never;
 
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
@@ -3586,6 +3626,8 @@ export interface ShellMinimizerSettings {
 	only: string[];
 	except: string[];
 	maxCaptureBytes: number;
+	sourceOutlineLevel: "default" | "aggressive";
+	legacyFilters: boolean | undefined;
 }
 
 /** Map group prefix -> typed settings interface */
