@@ -197,6 +197,10 @@ function json(value: unknown, status = 200): Response {
 	});
 }
 
+// Nerd Font families come after the system monos: browsers fall back per glyph, so
+// icon/powerline codepoints resolve against an installed patched font instead of tofu.
+const TERMINAL_FONT_STACK = `ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Symbols Nerd Font Mono", "Symbols Nerd Font", "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font", "FiraCode Nerd Font Mono", "FiraCode Nerd Font", "Hack Nerd Font Mono", "Hack Nerd Font", "MesloLGS NF", monospace`;
+
 const PAGE_STYLE = `:root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b0f14; color: #e6edf3; }
 body { margin: 0; display: grid; grid-template-columns: 20rem 1fr; min-height: 100vh; }
 aside { border-right: 1px solid #263241; padding: 1rem; background: #111822; }
@@ -208,7 +212,7 @@ a { color: inherit; text-decoration: none; }
 .meta { display: grid; grid-template-columns: max-content 1fr; gap: .35rem .75rem; margin-bottom: 1rem; }
 .meta dt { color: #8b949e; }
 .meta dd { margin: 0; overflow-wrap: anywhere; }
-.terminal { font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: #05070a; border: 1px solid #263241; border-radius: .6rem; padding: 1rem; overflow: auto; }
+.terminal { font: 13px/1.35 ${TERMINAL_FONT_STACK}; background: #05070a; border: 1px solid #263241; border-radius: .6rem; padding: 1rem; overflow: auto; }
 .terminal-grid { display: grid; grid-auto-rows: 1.35em; }
 .terminal-row { white-space: pre; min-height: 1.35em; }
 .cell.bold { font-weight: 700; }
@@ -227,7 +231,7 @@ a { color: inherit; text-decoration: none; }
 const PHOTO_STYLE = `:root { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #05070a; color: #e6edf3; }
-.terminal { font: 14px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: #05070a; padding: 1rem; }
+.terminal { font: 14px/1.35 ${TERMINAL_FONT_STACK}; background: #05070a; padding: 1rem; }
 .terminal-grid { display: grid; grid-auto-rows: 1.35em; }
 .terminal-row { white-space: pre; min-height: 1.35em; }
 .cell.bold { font-weight: 700; }
@@ -238,7 +242,8 @@ body { margin: 0; background: #05070a; color: #e6edf3; }
 .cell.underline.strikethrough { text-decoration: underline line-through; }
 .cell.overline { text-decoration: overline; }
 .cell.inverse { filter: invert(1); }
-.cell.invisible { visibility: hidden; }`;
+.cell.invisible { visibility: hidden; }
+.sr-text { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }`;
 
 function renderSessionsPage(
 	sessions: LiveSessionSummary[],
