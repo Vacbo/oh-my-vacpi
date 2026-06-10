@@ -32,12 +32,15 @@ describe("toggleSkillPinEntry", () => {
 });
 
 describe("ExtensionList skill pinning", () => {
-	it("dispatches ctrl+p pin toggles for skill rows only", () => {
+	it("dispatches ctrl+p pin toggles for any extension row; kind policy lives in the callback", () => {
 		const skill = extension({ id: "skill:caveman", kind: "skill" });
 		const tool = extension({ id: "tool:hasher", kind: "tool" });
 		const toggled: string[] = [];
 		const list = new ExtensionList([skill, tool], {
-			onPinToggle: ext => toggled.push(ext.name),
+			// Mirror ExtensionDashboard's policy: only skills pin there.
+			onPinToggle: ext => {
+				if (ext.kind === "skill") toggled.push(ext.name);
+			},
 		});
 
 		// Index 0 is the "Skills" kind header; navigate onto the skill row.
@@ -45,7 +48,8 @@ describe("ExtensionList skill pinning", () => {
 		list.handleInput(CTRL_P);
 		expect(toggled).toEqual(["caveman"]);
 
-		// Move onto the tool row (kind header, then tool): ctrl+p must not fire.
+		// Move onto the tool row (kind header, then tool): the list dispatches,
+		// but the kind-gated callback ignores it (ToolsDashboard opts tools in).
 		list.handleInput("\x1b[B");
 		list.handleInput("\x1b[B");
 		list.handleInput(CTRL_P);

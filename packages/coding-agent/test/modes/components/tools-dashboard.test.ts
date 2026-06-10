@@ -3,6 +3,7 @@ import {
 	buildToolRows,
 	type ToolsDashboardSession,
 	toggleDisabledTool,
+	toggleEssentialTool,
 } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/tools-dashboard";
 import { BUILTIN_TOOLS, type Tool } from "@oh-my-pi/pi-coding-agent/tools";
 import * as z from "zod/v4";
@@ -96,5 +97,20 @@ describe("toggleDisabledTool", () => {
 		expect(disabled).toEqual(["browser", "find"]);
 		expect(toggleDisabledTool(disabled, "browser", true)).toEqual(["find"]);
 		expect(toggleDisabledTool(["find", "find"], "find", false)).toEqual(["find"]);
+	});
+});
+
+describe("toggleEssentialTool", () => {
+	it("materializes the read/bash/edit defaults on first pin", () => {
+		expect(toggleEssentialTool([], "find")).toEqual(["bash", "edit", "find", "read"]);
+	});
+
+	it("unpins a default member starting from an empty override", () => {
+		expect(toggleEssentialTool([], "bash")).toEqual(["edit", "read"]);
+	});
+
+	it("normalizes back to [] when the result equals the defaults", () => {
+		expect(toggleEssentialTool(["bash", "edit", "find", "read"], "find")).toEqual([]);
+		expect(toggleEssentialTool(["edit", "read"], "bash")).toEqual([]);
 	});
 });

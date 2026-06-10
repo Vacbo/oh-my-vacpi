@@ -10,10 +10,12 @@ import { shortenPath } from "../../../tools/render-utils";
 import type { Extension, ExtensionState } from "./types";
 
 export interface InspectorMeta {
-	/** Pin state for skills; undefined hides the Pinned section. */
+	/** Pin state; undefined hides the Pinned section. */
 	pinned?: boolean;
-	/** Pattern from skills.pinnedSkills that pinned this skill (shown when not a literal name). */
+	/** Pattern/source that pinned this entry (shown when not a literal name match). */
 	pinnedVia?: string;
+	/** Dim explainer rendered after the yes/no pin value (the caller supplies state-appropriate wording). */
+	pinnedNote?: string;
 	/** Extra dim line under Status describing session-level availability (used by the Tool Control Center). */
 	statusNote?: string;
 }
@@ -81,19 +83,18 @@ export class InspectorPanel implements Component {
 		}
 		lines.push("");
 
-		// Pin state (skills only)
-		if (ext.kind === "skill" && this.#meta.pinned !== undefined) {
+		// Pin state (callers opt in by setting meta.pinned)
+		if (this.#meta.pinned !== undefined) {
 			lines.push(theme.fg("muted", "Pinned:"));
+			const note = this.#meta.pinnedNote ? theme.fg("dim", ` - ${this.#meta.pinnedNote}`) : "";
 			if (this.#meta.pinned) {
 				const via =
 					this.#meta.pinnedVia && this.#meta.pinnedVia !== ext.name
 						? theme.fg("dim", ` (via ${this.#meta.pinnedVia})`)
 						: "";
-				lines.push(
-					`  ${theme.fg("warning", "yes")}${via} ${theme.fg("dim", "- stays listed in the system prompt")}`,
-				);
+				lines.push(`  ${theme.fg("warning", "yes")}${via}${note}`);
 			} else {
-				lines.push(`  ${theme.fg("dim", "no - found on demand via search_tool_bm25 under search discovery")}`);
+				lines.push(`  ${theme.fg("dim", "no")}${note}`);
 			}
 			lines.push("");
 		}

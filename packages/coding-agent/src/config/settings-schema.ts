@@ -2624,7 +2624,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			label: "Essential Tools Override",
 			description:
-				"Override the always-loaded built-in tools (default: read, bash, edit). Leave empty to use defaults.",
+				"Override the always-loaded built-in tools (default: read, bash, edit). Leave empty to use defaults. Pin/unpin per tool with ctrl+p in /tools.",
 		},
 	},
 

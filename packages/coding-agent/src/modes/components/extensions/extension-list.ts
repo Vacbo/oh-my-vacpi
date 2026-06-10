@@ -27,9 +27,9 @@ export interface ExtensionListCallbacks {
 	onToggle?: (extensionId: string, enabled: boolean) => void;
 	/** Called when master switch is toggled */
 	onMasterToggle?: (providerId: string) => void;
-	/** Pin state lookup for skill rows (renders the `(pinned)` badge). */
+	/** Pin state lookup (renders the `(pinned)` badge); the dashboard's callback decides which kinds pin. */
 	isPinned?: (ext: Extension) => boolean;
-	/** Called when the pin toggle (ctrl+p) fires on a skill row. */
+	/** Called when the pin toggle (ctrl+p) fires on an extension row; gate by kind in the callback. */
 	onPinToggle?: (ext: Extension) => void;
 	/** Provider ID for master switch (null = no master switch) */
 	masterSwitchProvider?: string | null;
@@ -230,8 +230,8 @@ export class ExtensionList implements Component {
 		const namePadded = this.#padText(name, nameWidth);
 		line += namePadded;
 
-		// Pin badge for pinned skills (kept out of the padded name so it never truncates away)
-		if (ext.kind === "skill" && this.callbacks.isPinned?.(ext)) {
+		// Pin badge (kept out of the padded name so it never truncates away)
+		if (this.callbacks.isPinned?.(ext)) {
 			line += `  ${theme.fg("warning", "(pinned)")}`;
 		}
 
@@ -462,11 +462,11 @@ export class ExtensionList implements Component {
 			return;
 		}
 
-		// Ctrl+P: Toggle pin on skill rows (after nav matchers so emacs-style
-		// ctrl+p rebinds of tui.select.up keep winning).
+		// Ctrl+P: Toggle pin on the selected row (after nav matchers so emacs-style
+		// ctrl+p rebinds of tui.select.up keep winning). Kind policy lives in the callback.
 		if (matchesKey(data, "ctrl+p")) {
 			const item = this.#listItems[this.#selectedIndex];
-			if (item?.type === "extension" && item.item.kind === "skill") {
+			if (item?.type === "extension") {
 				this.callbacks.onPinToggle?.(item.item);
 			}
 			return;

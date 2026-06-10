@@ -22,15 +22,21 @@ import { DynamicBorder } from "../../../modes/components/dynamic-border";
 import { theme } from "../../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../../modes/utils/keybinding-matchers";
 import { isMCPToolName } from "../../../tool-discovery/tool-index";
-import { BUILTIN_TOOLS, HIDDEN_TOOLS, type Tool } from "../../../tools";
+import {
+	BUILTIN_TOOLS,
+	computeEssentialBuiltinNames,
+	DEFAULT_ESSENTIAL_TOOL_NAMES,
+	HIDDEN_TOOLS,
+	type Tool,
+} from "../../../tools";
 import { replaceTabs } from "../../../tools/render-utils";
 import { TwoColumnBody } from "./extension-dashboard";
 import { ExtensionList } from "./extension-list";
-import { InspectorPanel } from "./inspector-panel";
+import { type InspectorMeta, InspectorPanel } from "./inspector-panel";
 import { applyFilter, filterByProvider } from "./state-manager";
 import type { Extension, ProviderTab } from "./types";
 
-const TOOLS_FOOTER = " ↑/↓: navigate  Space: toggle  ←/→: source  Esc: close";
+const TOOLS_FOOTER = " ↑/↓: navigate  Space: toggle  ^p: pin  ←/→: source  Esc: close";
 
 /** How a tool relates to the running session. */
 export type ToolAvailability = "active" | "available" | "not loaded";
@@ -63,6 +69,25 @@ export function toggleDisabledTool(disabled: readonly string[], name: string, en
 		next.add(name);
 	}
 	return [...next].sort();
+}
+
+/**
+ * Toggle a built-in in `tools.essentialOverride` (pin = always loaded at session
+ * start). An empty override means the `read`/`bash`/`edit` defaults, so the first
+ * toggle materializes the defaults before applying; a result equal to the default
+ * set normalizes back to `[]` ("leave empty to use defaults").
+ */
+export function toggleEssentialTool(override: readonly string[], name: string): string[] {
+	const effective = new Set(override.length > 0 ? override : DEFAULT_ESSENTIAL_TOOL_NAMES);
+	if (effective.has(name)) {
+		effective.delete(name);
+	} else {
+		effective.add(name);
+	}
+	const next = [...effective].sort();
+	const defaults = [...DEFAULT_ESSENTIAL_TOOL_NAMES].sort();
+	const isDefault = next.length === defaults.length && next.every((entry, i) => entry === defaults[i]);
+	return isDefault ? [] : next;
 }
 
 /** First paragraph of the tool description (or its discovery summary), flattened for the inspector. */
@@ -194,6 +219,8 @@ export class ToolsDashboard extends Container {
 				onToggle: (extensionId, enabled) => {
 					this.#handleToolToggle(extensionId, enabled);
 				},
+				isPinned: ext => this.#isEssential(ext),
+				onPinToggle: ext => this.#handlePinToggle(ext),
 				masterSwitchProvider: null,
 			},
 			this.#maxVisibleItems(),
@@ -221,13 +248,29 @@ export class ToolsDashboard extends Container {
 		return tabs;
 	}
 
-	#inspectorMeta(ext: Extension | null): { statusNote?: string } {
+	/** Built-in tools pinned as always-loaded (tools.essentialOverride; empty = read/bash/edit). */
+	#isEssential(ext: Extension): boolean {
+		return ext.source.provider === "builtin" && computeEssentialBuiltinNames(this.settings).includes(ext.name);
+	}
+
+	#inspectorMeta(ext: Extension | null): InspectorMeta {
 		if (!ext) return {};
 		const origin = ext.source.provider as ToolOrigin;
 		if (origin === "mcp") return { statusNote: "MCP server tool. Manage it from its server entry in /extensions." };
 		if (origin === "custom") {
 			return { statusNote: "Provided by an extension or custom tool file. Manage it in /extensions." };
 		}
+		const pinned = this.#isEssential(ext);
+		const pinMeta: InspectorMeta = {
+			pinned,
+			pinnedNote: pinned
+				? "always loaded at session start (tools.essentialOverride)"
+				: 'loads on demand when tools.discoveryMode hides built-ins ("all")',
+		};
+		return { ...pinMeta, ...this.#availabilityNote(ext) };
+	}
+
+	#availabilityNote(ext: Extension): { statusNote?: string } {
 		const inRegistry = this.session.getToolByName(ext.name) !== undefined;
 		if (ext.state === "disabled") {
 			return {
@@ -246,6 +289,16 @@ export class ToolsDashboard extends Container {
 					statusNote: "Not loaded in this session (config-gated or unavailable); changes apply to new sessions.",
 				};
 		}
+	}
+
+	#handlePinToggle(ext: Extension): void {
+		// Pinning maps to tools.essentialOverride, which only governs built-ins.
+		if (ext.source.provider !== "builtin") return;
+		this.settings.set(
+			"tools.essentialOverride",
+			toggleEssentialTool(this.settings.get("tools.essentialOverride") ?? [], ext.name),
+		);
+		this.#rebuildRows();
 	}
 
 	/** Live terminal height so the dashboard tracks resize while open. */

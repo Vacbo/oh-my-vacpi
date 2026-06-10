@@ -27,7 +27,7 @@ import { DynamicBorder } from "../../../modes/components/dynamic-border";
 import { theme } from "../../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../../modes/utils/keybinding-matchers";
 import { ExtensionList } from "./extension-list";
-import { InspectorPanel } from "./inspector-panel";
+import { type InspectorMeta, InspectorPanel } from "./inspector-panel";
 import {
 	applyDisabledExtensionsToState,
 	applyFilter,
@@ -147,10 +147,17 @@ export class ExtensionDashboard extends Container {
 		return this.#pinnedBy(ext) !== undefined;
 	}
 
-	#pinMeta(ext: Extension | null): { pinned?: boolean; pinnedVia?: string } {
+	#pinMeta(ext: Extension | null): InspectorMeta {
 		if (ext?.kind !== "skill") return {};
 		const via = this.#pinnedBy(ext);
-		return { pinned: via !== undefined, pinnedVia: via };
+		const pinned = via !== undefined;
+		return {
+			pinned,
+			pinnedVia: via,
+			pinnedNote: pinned
+				? "stays listed in the system prompt"
+				: "found on demand via search_tool_bm25 under search discovery",
+		};
 	}
 
 	/**
