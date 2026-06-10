@@ -398,6 +398,24 @@ export function computeEssentialBuiltinNames(settings: Settings): string[] {
 }
 
 /**
+ * Tool names a forced tool_choice may target at session start; these must
+ * survive discovery hiding. A named tool_choice referencing a tool absent from
+ * the request is rejected by providers (HTTP 400), and the eager todo prelude
+ * (`todo.eager`) silently no-ops when its target is inactive.
+ *
+ * Centralized so the name stays in lockstep with the `BUILTIN_TOOLS` registry:
+ * the fork's tool is `todo_write` (upstream renamed theirs to `todo`), and the
+ * regression test asserts every forced name resolves to a registered built-in.
+ */
+export function computeForceActiveToolNames(settings: Settings, hasTool: (name: string) => boolean): Set<string> {
+	const forceActive = new Set<string>();
+	if (settings.get("todo.eager") && settings.get("todo.enabled") && hasTool("todo_write")) {
+		forceActive.add("todo_write");
+	}
+	return forceActive;
+}
+
+/**
  * Filter the initial active tool set when `tools.discoveryMode === "all"`.
  *
  * Non-essential discoverable built-ins are hidden — the model rediscovers them

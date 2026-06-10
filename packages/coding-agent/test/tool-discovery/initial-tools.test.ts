@@ -5,6 +5,7 @@ import {
 	AskTool,
 	BUILTIN_TOOLS,
 	computeEssentialBuiltinNames,
+	computeForceActiveToolNames,
 	createTools,
 	DEFAULT_ESSENTIAL_TOOL_NAMES,
 	filterInitialToolsForDiscoveryAll,
@@ -161,5 +162,26 @@ describe("filterInitialToolsForDiscoveryAll", () => {
 
 	it("never hides tools without a built-in loadMode (MCP/custom/extension)", () => {
 		expect(filterInitialToolsForDiscoveryAll(["mcp__server__tool", "find"], base)).toEqual(["mcp__server__tool"]);
+	});
+});
+
+describe("computeForceActiveToolNames", () => {
+	it("forces a registered built-in for eager todos", () => {
+		const settings = Settings.isolated({ "todo.eager": true, "todo.enabled": true });
+		const forced = computeForceActiveToolNames(settings, name => name in BUILTIN_TOOLS);
+		// Regression: sdk used to force upstream's renamed `todo`, which does not
+		// exist in this fork's BUILTIN_TOOLS, so eager todos were silently hidden
+		// by discovery and the prelude no-oped.
+		expect(forced.size).toBeGreaterThan(0);
+		for (const name of forced) {
+			expect(Object.keys(BUILTIN_TOOLS)).toContain(name);
+		}
+	});
+
+	it("forces nothing when eager todos or todos are disabled", () => {
+		const eagerOff = Settings.isolated({ "todo.eager": false, "todo.enabled": true });
+		expect(computeForceActiveToolNames(eagerOff, () => true).size).toBe(0);
+		const todosOff = Settings.isolated({ "todo.eager": true, "todo.enabled": false });
+		expect(computeForceActiveToolNames(todosOff, () => true).size).toBe(0);
 	});
 });

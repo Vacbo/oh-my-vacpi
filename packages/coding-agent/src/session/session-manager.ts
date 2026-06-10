@@ -159,10 +159,13 @@ export interface TtsrInjectionEntry extends SessionEntryBase {
 	injectedRules: string[];
 }
 
-/** Persisted MCP discovery selection state for a session branch. */
+/** Persisted discovery selection state for a session branch. Despite the legacy
+ * entry name, `selectedToolNames` stores the union of discovery-selected MCP
+ * tools and BM25-activated built-ins (names cannot collide: MCP tools carry the
+ * `mcp__` prefix). */
 export interface MCPToolSelectionEntry extends SessionEntryBase {
 	type: "mcp_tool_selection";
-	/** MCP tool names selected for visibility in discovery mode. */
+	/** Tool names (MCP and built-in) selected for visibility in discovery mode. */
 	selectedToolNames: string[];
 }
 
@@ -245,7 +248,7 @@ export interface SessionContext {
 	models: Record<string, string>;
 	/** Names of TTSR rules that have been injected this session */
 	injectedTtsrRules: string[];
-	/** MCP tool names selected through discovery for this session branch. */
+	/** Tool names (MCP and built-in) selected through discovery for this session branch. */
 	selectedMCPToolNames: string[];
 	/** Whether this branch contains an explicit persisted MCP selection entry. */
 	hasPersistedMCPToolSelection: boolean;
@@ -3061,8 +3064,9 @@ export class SessionManager {
 	// =========================================================================
 
 	/**
-	 * Append an MCP tool selection entry recording the discovery-selected MCP tools.
-	 * @param selectedToolNames MCP tool names selected for this branch
+	 * Append a tool selection entry recording the discovery-selected tools
+	 * (MCP and BM25-activated built-ins).
+	 * @param selectedToolNames Tool names selected for this branch
 	 * @returns Entry id
 	 */
 	appendMCPToolSelection(selectedToolNames: string[]): string {

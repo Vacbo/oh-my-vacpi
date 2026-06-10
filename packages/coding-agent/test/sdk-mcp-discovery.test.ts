@@ -277,6 +277,51 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(await session.activateDiscoveredTools(["find"])).toEqual(["find"]);
 		expect(session.getActiveToolNames()).toContain("find");
 	});
+	it("restores BM25-activated built-ins when resuming a tools.discoveryMode all session", async () => {
+		const firstManager = SessionManager.create(tempDir, tempDir);
+		const sessionOptions = {
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		};
+		const { session: firstSession } = await createAgentSession({
+			...sessionOptions,
+			sessionManager: firstManager,
+			settings: Settings.isolated({ "tools.discoveryMode": "all" }),
+		});
+		// Discovery "all" hides discoverable built-ins at assembly.
+		expect(firstSession.getActiveToolNames()).not.toContain("todo_write");
+		expect(await firstSession.activateDiscoveredTools(["todo_write"])).toEqual(["todo_write"]);
+		expect(firstSession.getActiveToolNames()).toContain("todo_write");
+		const sessionFile = firstSession.sessionFile;
+		expect(sessionFile).toBeDefined();
+		await firstSession.sessionManager.rewriteEntries();
+		await firstSession.dispose();
+
+		const resumedManager = await SessionManager.open(sessionFile!, tempDir);
+		const { session: resumedSession } = await createAgentSession({
+			...sessionOptions,
+			sessionManager: resumedManager,
+			settings: Settings.isolated({ "tools.discoveryMode": "all" }),
+		});
+		try {
+			// Regression: built-in activations used to live only in process memory,
+			// so a resumed session re-hid todo_write and the model's next call
+			// failed with "Tool todo_write not found".
+			expect(resumedSession.getActiveToolNames()).toContain("todo_write");
+			expect(resumedSession.getSelectedDiscoveredToolNames()).toContain("todo_write");
+		} finally {
+			await resumedSession.dispose();
+		}
+	});
 	it("restores explicit MCP, thinking, and service-tier entries when resuming without rewriting the session file", async () => {
 		const firstManager = SessionManager.create(tempDir, tempDir);
 		const { session: firstSession } = await createAgentSession({

@@ -143,6 +143,7 @@ import {
 	type DiscoverableTool,
 	filterBySource,
 	formatDiscoverableToolServerSummary,
+	isMCPToolName,
 	selectDiscoverableToolNamesByServer,
 	summarizeDiscoverableTools,
 } from "./tool-discovery/tool-index";
@@ -150,6 +151,7 @@ import {
 	BashTool,
 	BUILTIN_TOOLS,
 	computeEssentialBuiltinNames,
+	computeForceActiveToolNames,
 	createTools,
 	type DeferredDiagnosticsEntry,
 	discoverStartupLspServers,
@@ -1365,6 +1367,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					sessionFile: sessionManager.getSessionFile() ?? null,
 					mode: options.liveMode ?? (options.hasUI ? "interactive" : "text"),
 					model: getActiveModelString(),
+					cmuxSurfaceId: process.env.CMUX_SURFACE_ID,
 				});
 			} catch (error) {
 				logger.warn("Failed to register live session", { error: String(error) });
@@ -2066,20 +2069,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// When tools.discoveryMode === "all", hide non-essential built-in discoverable tools
 		// from the initial set unless they were explicitly requested or restored from persistence.
 		// The model finds them via search_tool_bm25 and activates them on demand.
+		// Built-in (non-MCP) activations persisted in the session's selection entry.
+		// Restored only when discovery hides built-ins; registry-gated and limited to
+		// the discoverable load mode so stale entries cannot resurrect arbitrary tools.
+		const restoredDiscoveredBuiltinToolNames =
+			effectiveDiscoveryMode === "all"
+				? existingSession.selectedMCPToolNames.filter(
+						name => !isMCPToolName(name) && toolRegistry.get(name)?.loadMode === "discoverable",
+					)
+				: [];
 		if (effectiveDiscoveryMode === "all") {
 			// Tools a forced tool_choice will target must stay active, or the named
 			// choice references a tool absent from the request (provider 400). Eager
-			// todos force a named `todo` choice on the first turn.
-			const forceActive = new Set<string>();
-			if (settings.get("todo.eager") && settings.get("todo.enabled") && toolRegistry.has("todo")) {
-				forceActive.add("todo");
-			}
+			// todos force a named `todo_write` choice on the first turn.
+			const forceActive = computeForceActiveToolNames(settings, name => toolRegistry.has(name));
 			initialToolNames = filterInitialToolsForDiscoveryAll(initialToolNames, {
 				loadModeOf: name => toolRegistry.get(name)?.loadMode,
 				essentialNames: new Set(computeEssentialBuiltinNames(settings)),
 				explicitlyRequested: new Set(options.toolNames?.map(name => name.toLowerCase()) ?? []),
-				// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
-				// activation persistence is a follow-up). MCP names won't collide with built-in names.
+				// Persisted activations (MCP and built-in) share the mcp_tool_selection
+				// entry; names cannot collide because MCP tools carry the mcp__ prefix.
 				restored: new Set(existingSession.selectedMCPToolNames),
 				forceActive,
 			});
@@ -2319,6 +2328,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				: undefined,
 			mcpDiscoveryEnabled,
 			initialSelectedMCPToolNames,
+			initialSelectedDiscoveredToolNames: restoredDiscoveredBuiltinToolNames,
 			defaultSelectedMCPToolNames,
 			persistInitialMCPToolSelection: !hasExistingSession,
 			defaultSelectedMCPServerNames: [...discoveryDefaultServers],

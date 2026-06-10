@@ -41,6 +41,26 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-09 — Discovery-hidden built-ins vanish across resume; eager-todo forceActive checks a dead tool name   `[done]` `[high]`
+
+**Where**: `packages/coding-agent/src/sdk.ts` (forceActive block, `restored` set wiring), `packages/coding-agent/src/session/agent-session.ts` (`#selectedDiscoveredToolNames`, `#persistSelectedMCPToolNamesIfChanged`, `#restoreMCPSelectionsForSessionContext`), `packages/coding-agent/src/session/session-manager.ts` (`mcp_tool_selection` entry).
+
+**Problem**: Observed live during the v15.10.9 merge session: `todo_write` failed with "Tool todo_write not found" mid-conversation even though the session's todo list already had 8 items, and the model had to re-discover it via `search_tool_bm25`. Three concrete defects:
+
+1. **No persistence for built-in activations.** BM25-activated built-ins live only in the in-memory `#selectedDiscoveredToolNames` set. The `mcp_tool_selection` session entry persists MCP names only; sdk.ts even carries upstream's comment "built-in activation persistence is a follow-up". Any process restart or resume re-hides every discoverable built-in the model had activated, while the conversation history still says the tool exists.
+2. **Dead forceActive guard (fork name drift).** sdk.ts checks `toolRegistry.has("todo")` before force-keeping the eager-todo tool active. Upstream renamed their tool `todo_write` to `todo` (`dc4aeb7b8`); the fork kept `todo_write`. The guard can never fire here, so with `todo.eager` on and `tools.discoveryMode: "all"`, the tool is hidden at assembly and the eager prelude silently no-ops (its own guard at agent-session `#createEagerTodoPrelude` correctly checks the active set and skips).
+3. **In-process session switch drops built-ins too.** `#restoreMCPSelectionsForSessionContext` rebuilds actives as current-non-MCP + restored-MCP, so the target session's built-in activations are never restored and the previous session's selections leak forward.
+
+**Fixed in fork (2026-06-09)**: The `mcp_tool_selection` entry now persists the union (MCP + active discovered built-ins; names cannot collide, MCP tools carry the `mcp__` prefix, exactly the back-compat path upstream's comment anticipated). `#selectedDiscoveredToolNames` is seeded from the restored entry at construction, `#restoreSelectionsForSessionContext` (renamed) reseeds built-in selections on in-process switch, branch, and history rewind, and the forceActive computation moved to `computeForceActiveToolNames()` (tools/index.ts) using the fork's `todo_write` with a regression test that every forced name resolves to a registered built-in. Verified by a resume round-trip test in `sdk-mcp-discovery.test.ts` (activate built-in, dispose, reopen, assert active + selected). Upstream PR candidate: the same persistence gap exists upstream (their comment admits it); the helper + test also protects them from the next rename.
+
+## 2026-06-09 — Harness behaviors hardcode tool names; plugins cannot shape the system prompt structurally   `[open]` `[med]`
+
+**Where**: `packages/coding-agent/src/session/agent-session.ts` (eager prelude, todo reminders, plan-mode enforcement all hardcode tool name literals), `packages/coding-agent/src/sdk.ts` (`rebuildSystemPrompt`), `packages/coding-agent/src/extensibility/extensions/runner.ts` (`emitBeforeAgentStart`).
+
+**Problem**: Every harness behavior that targets a tool spells its name as a string literal at each site (`todo_write` at `#createEagerTodoPrelude`, `ask`/`resolve` at plan-mode enforcement, `todo` in upstream's sdk.ts forceActive). Renames silently kill behaviors (see the `[high]` entry above). Separately, extensions can only mutate the system prompt as a raw `string[]` via `before_agent_start`; there is no way to replace or remove a specific section, and prompt content does not adapt when a plugin supersedes a built-in capability (e.g. team-mode `task_*` tools coexist with the hidden `todo_write` while the prompt still describes the built-in todo flow).
+
+**Fix sketch (layered)**: (a) Capability table: tool definitions declare `provides: "todo" | "plan" | ...`; eager prelude, reminders, forceActive, and plan-mode enforcement resolve "the active tool providing X" through the registry instead of literals; plugins declaring a capability supersede the built-in. Capability means a minimal behavioral contract (args shape a forced tool_choice can rely on), not just a label. (b) Structured system prompt: assemble named ordered sections derived from the capability table; additive extension hook `{ add, replace, remove }` by section id with deterministic ordering and a logged diff; keep the `string[]` hook for back-compat. Propose (b) upstream before building to avoid extension-API divergence.
+
 ## 2026-06-09 — Fork Anthropic max_tokens policy is interleaved inside upstream's buildParams   `[open]` `[high]`
 
 **Where**: `packages/ai/src/providers/anthropic.ts` (`buildParams` max_tokens default, `ensureMaxTokensForThinking`), `packages/ai/test/anthropic-alignment.test.ts`.

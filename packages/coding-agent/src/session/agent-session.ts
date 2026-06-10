@@ -359,6 +359,8 @@ export interface AgentSessionConfig {
 	mcpDiscoveryEnabled?: boolean;
 	/** MCP tool names to activate for the current session when discovery mode is enabled. */
 	initialSelectedMCPToolNames?: string[];
+	/** Non-MCP discovered tool names (BM25-activated built-ins) restored from the session branch. */
+	initialSelectedDiscoveredToolNames?: string[];
 	/** Whether constructor-provided MCP defaults should be persisted immediately. */
 	persistInitialMCPToolSelection?: boolean;
 	/** MCP server names whose tools should seed discovery-mode sessions whenever those servers are connected. */
@@ -1191,19 +1193,20 @@ export class AgentSession {
 		this.#mcpDiscoveryEnabled = config.mcpDiscoveryEnabled ?? false;
 		this.#setDiscoverableMCPTools(this.#collectDiscoverableMCPToolsFromRegistry());
 		this.#selectedMCPToolNames = new Set(config.initialSelectedMCPToolNames ?? []);
+		this.#selectedDiscoveredToolNames = new Set(config.initialSelectedDiscoveredToolNames ?? []);
 		this.#defaultSelectedMCPServerNames = new Set(config.defaultSelectedMCPServerNames ?? []);
 		this.#defaultSelectedMCPToolNames = new Set(config.defaultSelectedMCPToolNames ?? []);
 		this.#pruneSelectedMCPToolNames();
-		const persistedSelectedMCPToolNames = this.buildDisplaySessionContext().selectedMCPToolNames;
-		const currentSelectedMCPToolNames = this.getSelectedMCPToolNames();
+		const persistedSelectedToolNames = this.buildDisplaySessionContext().selectedMCPToolNames;
+		const currentSelectedToolNames = this.getSelectedDiscoveredToolNames();
 		const persistInitialMCPToolSelection =
 			config.persistInitialMCPToolSelection ?? this.sessionManager.getBranch().length === 0;
 		if (
 			this.#mcpDiscoveryEnabled &&
 			persistInitialMCPToolSelection &&
-			!this.#selectedMCPToolNamesMatch(persistedSelectedMCPToolNames, currentSelectedMCPToolNames)
+			!this.#selectedMCPToolNamesMatch(persistedSelectedToolNames, currentSelectedToolNames)
 		) {
-			this.sessionManager.appendMCPToolSelection(currentSelectedMCPToolNames);
+			this.sessionManager.appendMCPToolSelection(currentSelectedToolNames);
 		}
 		this.#rememberSessionDefaultSelectedMCPToolNames(
 			this.sessionManager.getSessionFile(),
@@ -3331,13 +3334,15 @@ export class AgentSession {
 		return this.#sessionDefaultSelectedMCPToolNames.get(path.resolve(sessionFile)) ?? [];
 	}
 
-	#persistSelectedMCPToolNamesIfChanged(previousSelectedMCPToolNames: string[]): void {
-		if (!this.#mcpDiscoveryEnabled) return;
-		const nextSelectedMCPToolNames = this.getSelectedMCPToolNames();
-		if (this.#selectedMCPToolNamesMatch(previousSelectedMCPToolNames, nextSelectedMCPToolNames)) {
+	#persistSelectedToolNamesIfChanged(previousSelectedToolNames: string[]): void {
+		// Persist when either discovery surface (MCP hiding or discovery "all" built-in
+		// hiding) is active; the entry stores the union of both selection kinds.
+		if (!this.#mcpDiscoveryEnabled && this.#resolveEffectiveDiscoveryMode() !== "all") return;
+		const nextSelectedToolNames = this.getSelectedDiscoveredToolNames();
+		if (this.#selectedMCPToolNamesMatch(previousSelectedToolNames, nextSelectedToolNames)) {
 			return;
 		}
-		this.sessionManager.appendMCPToolSelection(nextSelectedMCPToolNames);
+		this.sessionManager.appendMCPToolSelection(nextSelectedToolNames);
 	}
 
 	#getActiveNonMCPToolNames(): string[] {
@@ -3631,10 +3636,10 @@ export class AgentSession {
 
 	async #applyActiveToolsByName(
 		toolNames: string[],
-		options?: { persistMCPSelection?: boolean; previousSelectedMCPToolNames?: string[] },
+		options?: { persistMCPSelection?: boolean; previousSelectedToolNames?: string[] },
 	): Promise<void> {
 		toolNames = [...new Set(toolNames.map(name => name.toLowerCase()))];
-		const previousSelectedMCPToolNames = options?.previousSelectedMCPToolNames ?? this.getSelectedMCPToolNames();
+		const previousSelectedToolNames = options?.previousSelectedToolNames ?? this.getSelectedDiscoveredToolNames();
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
 		for (const name of toolNames) {
@@ -3687,7 +3692,7 @@ export class AgentSession {
 			}
 		}
 		if (options?.persistMCPSelection !== false) {
-			this.#persistSelectedMCPToolNamesIfChanged(previousSelectedMCPToolNames);
+			this.#persistSelectedToolNamesIfChanged(previousSelectedToolNames);
 		}
 	}
 
@@ -3740,12 +3745,31 @@ export class AgentSession {
 		await this.#applyActiveToolsByName(toolNames);
 	}
 
-	async #restoreMCPSelectionsForSessionContext(
+	async #restoreSelectionsForSessionContext(
 		sessionContext: SessionContext,
 		options?: { fallbackSelectedMCPToolNames?: Iterable<string> },
 	): Promise<void> {
-		if (!this.#mcpDiscoveryEnabled) return;
+		const allMode = this.#resolveEffectiveDiscoveryMode() === "all";
+		if (!this.#mcpDiscoveryEnabled && !allMode) return;
 		const nextActiveNonMCPToolNames = this.#getActiveNonMCPToolNames();
+		// Built-in (non-MCP) activations persisted in the selection entry. Only
+		// meaningful in "all" mode; registry-gated so stale entries cannot
+		// activate ghost tools.
+		const restoredDiscoveredToolNames = allMode
+			? sessionContext.selectedMCPToolNames.filter(name => !isMCPToolName(name) && this.#toolRegistry.has(name))
+			: [];
+		if (allMode) {
+			this.#selectedDiscoveredToolNames = new Set(restoredDiscoveredToolNames);
+		}
+		if (!this.#mcpDiscoveryEnabled) {
+			// MCP discovery off: MCP tools are plain active tools; leave them untouched.
+			const activeMCPToolNames = this.getActiveToolNames().filter(name => isMCPToolName(name));
+			await this.#applyActiveToolsByName(
+				[...nextActiveNonMCPToolNames, ...restoredDiscoveredToolNames, ...activeMCPToolNames],
+				{ persistMCPSelection: false },
+			);
+			return;
+		}
 		const fallbackSelectedMCPToolNames =
 			options?.fallbackSelectedMCPToolNames ?? this.#getConfiguredDefaultSelectedMCPToolNames();
 		const restoredMCPToolNames = sessionContext.hasPersistedMCPToolSelection
@@ -3755,9 +3779,10 @@ export class AgentSession {
 			this.sessionFile,
 			this.#getConfiguredDefaultSelectedMCPToolNames(),
 		);
-		await this.#applyActiveToolsByName([...nextActiveNonMCPToolNames, ...restoredMCPToolNames], {
-			persistMCPSelection: false,
-		});
+		await this.#applyActiveToolsByName(
+			[...nextActiveNonMCPToolNames, ...restoredDiscoveredToolNames, ...restoredMCPToolNames],
+			{ persistMCPSelection: false },
+		);
 	}
 	/** Rebuild the base system prompt using the current active tool set. */
 	async refreshBaseSystemPrompt(): Promise<void> {
@@ -3876,7 +3901,7 @@ export class AgentSession {
 	 *   for a session where MCP discovery is disabled.
 	 */
 	async refreshMCPTools(mcpTools: CustomTool[], options?: { activateAll?: boolean }): Promise<void> {
-		const previousSelectedMCPToolNames = this.getSelectedMCPToolNames();
+		const previousSelectedToolNames = this.getSelectedDiscoveredToolNames();
 		const existingNames = Array.from(this.#toolRegistry.keys());
 		for (const name of existingNames) {
 			if (isMCPToolName(name)) {
@@ -3924,12 +3949,12 @@ export class AgentSession {
 			// only become active if they're already active).
 			const newMcpNames = mcpTools.map(t => t.name);
 			const nextActive = [...new Set([...this.#getActiveNonMCPToolNames(), ...newMcpNames])];
-			await this.#applyActiveToolsByName(nextActive, { previousSelectedMCPToolNames });
+			await this.#applyActiveToolsByName(nextActive, { previousSelectedToolNames });
 			return;
 		}
 
 		const nextActive = [...this.#getActiveNonMCPToolNames(), ...this.getSelectedMCPToolNames()];
-		await this.#applyActiveToolsByName(nextActive, { previousSelectedMCPToolNames });
+		await this.#applyActiveToolsByName(nextActive, { previousSelectedToolNames });
 	}
 
 	/**
@@ -5356,8 +5381,9 @@ export class AgentSession {
 		this.sessionManager.appendServiceTierChange(this.serviceTier ?? null);
 		if (nextDiscoverySessionToolNames) {
 			await this.#applyActiveToolsByName(nextDiscoverySessionToolNames, { persistMCPSelection: false });
-			if (this.getSelectedMCPToolNames().length > 0) {
-				this.sessionManager.appendMCPToolSelection(this.getSelectedMCPToolNames());
+			const selectedToolNames = this.getSelectedDiscoveredToolNames();
+			if (selectedToolNames.length > 0) {
+				this.sessionManager.appendMCPToolSelection(selectedToolNames);
 			}
 		}
 		this.#rememberSessionDefaultSelectedMCPToolNames(
@@ -9158,6 +9184,7 @@ export class AgentSession {
 		const previousAutoResolvedLevel = this.#autoResolvedLevel;
 		const previousServiceTier = this.agent.serviceTier;
 		const previousSelectedMCPToolNames = new Set(this.#selectedMCPToolNames);
+		const previousSelectedDiscoveredToolNames = new Set(this.#selectedDiscoveredToolNames);
 		const previousTools = [...this.agent.state.tools];
 		const previousBaseSystemPrompt = this.#baseSystemPrompt;
 		const previousSystemPrompt = this.agent.state.systemPrompt;
@@ -9185,7 +9212,7 @@ export class AgentSession {
 				!switchingToDifferentSession &&
 				this.#didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
 			const fallbackSelectedMCPToolNames = this.#getSessionDefaultSelectedMCPToolNames(sessionPath);
-			await this.#restoreMCPSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
+			await this.#restoreSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
 
 			// Emit session_switch event to hooks
 			if (this.#extensionRunner) {
@@ -9290,7 +9317,7 @@ export class AgentSession {
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
 			let restoreMcpError: unknown;
 			try {
-				await this.#restoreMCPSelectionsForSessionContext(previousSessionContext, {
+				await this.#restoreSelectionsForSessionContext(previousSessionContext, {
 					fallbackSelectedMCPToolNames: previousFallbackSelectedMCPToolNames,
 				});
 			} catch (mcpError) {
@@ -9301,6 +9328,7 @@ export class AgentSession {
 					error: String(mcpError),
 				});
 				this.#selectedMCPToolNames = new Set(previousSelectedMCPToolNames);
+				this.#selectedDiscoveredToolNames = new Set(previousSelectedDiscoveredToolNames);
 				this.agent.setTools(previousTools);
 				this.#baseSystemPrompt = previousBaseSystemPrompt;
 				this.agent.setSystemPrompt(previousSystemPrompt);
@@ -9390,7 +9418,7 @@ export class AgentSession {
 		// Reload messages from entries (works for both file and in-memory mode)
 		const sessionContext = this.buildDisplaySessionContext();
 
-		await this.#restoreMCPSelectionsForSessionContext(sessionContext);
+		await this.#restoreSelectionsForSessionContext(sessionContext);
 
 		// Emit session_branch event to hooks (after branch completes)
 		if (this.#extensionRunner) {
@@ -9566,7 +9594,7 @@ export class AgentSession {
 		// Update agent state — build display context to populate agent messages.
 		const stateContext = this.sessionManager.buildSessionContext();
 		const displayContext = deobfuscateSessionContext(stateContext, this.#obfuscator);
-		await this.#restoreMCPSelectionsForSessionContext(displayContext);
+		await this.#restoreSelectionsForSessionContext(displayContext);
 		this.agent.replaceMessages(displayContext.messages);
 		this.#syncTodoPhasesFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
