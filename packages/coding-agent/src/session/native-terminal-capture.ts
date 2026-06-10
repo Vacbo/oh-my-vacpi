@@ -10,6 +10,10 @@ import { $which } from "@oh-my-pi/pi-utils";
  * full-screen capture — when a specific window cannot be resolved it returns a
  * typed failure instead.
  *
+ * Window resolution prefers the process ancestry of the target session (the
+ * app that actually owns the session's pty) over app-name heuristics, so two
+ * terminals with two sessions each resolve to their own windows.
+ *
  * Every external dependency (platform, env, binary lookup, command execution,
  * file size) is injectable so the orchestration, strategy selection, and
  * command construction are deterministically testable without a live GUI.
@@ -81,6 +85,8 @@ export interface WindowCandidate {
 	appName: string;
 	title: string;
 	pid?: number;
+	width?: number;
+	height?: number;
 }
 
 export type WindowSelection =
@@ -91,6 +97,7 @@ export type WindowSelection =
 const STDERR_PREVIEW = 200;
 
 const TERMINAL_APP_HINTS = [
+	"cmux",
 	"ghostty",
 	"warp",
 	"terminal",
@@ -107,20 +114,30 @@ const TERMINAL_APP_HINTS = [
 ];
 
 // JXA enumerates on-screen, normal-layer windows via CoreGraphics and prints a
-// JSON array of { windowId, appName, title, pid }. CGWindowNumber is the id
-// screencapture -l expects. Window titles require Screen Recording permission;
-// owner names do not, so selection works on app name alone when titles are empty.
+// JSON array of { windowId, appName, title, pid, width, height }. CGWindowNumber
+// is the id screencapture -l expects. Window titles require Screen Recording
+// permission; owner names do not, so selection works on app name alone when
+// titles are empty. CGWindowListCopyWindowInfo returns a CFArrayRef; on macOS 26+
+// the JXA bridge no longer toll-free bridges it to a JS array, so deepUnwrap
+// yields an opaque proxy — ObjC.castRefToObject re-tags the ref as NSArray first.
 const DARWIN_WINDOW_SCRIPT = `ObjC.import('CoreGraphics');
 const info = $.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID);
-const windows = ObjC.deepUnwrap(info) || [];
+let windows = ObjC.deepUnwrap(info);
+if (!Array.isArray(windows)) {
+  try { windows = ObjC.deepUnwrap(ObjC.castRefToObject(info)); } catch (e) { windows = null; }
+}
+if (!Array.isArray(windows)) windows = [];
 const out = [];
 for (const w of windows) {
   if (w.kCGWindowLayer !== 0) continue;
+  const bounds = w.kCGWindowBounds || {};
   out.push({
     windowId: String(w.kCGWindowNumber),
     appName: w.kCGWindowOwnerName || '',
     title: w.kCGWindowName || '',
     pid: w.kCGWindowOwnerPID,
+    width: bounds.Width,
+    height: bounds.Height,
   });
 }
 JSON.stringify(out);`;
@@ -170,8 +187,11 @@ async function captureDarwin(request: NativeCaptureRequest, deps: NativeCaptureD
 	if (!(await deps.which("screencapture"))) {
 		return fail("no-tool", "macOS screencapture binary was not found on PATH.");
 	}
-	const candidates = await enumerateDarwinWindows(deps);
-	const selection = selectWindow(candidates, request.preferredApp);
+	const [candidates, ancestry] = await Promise.all([
+		enumerateDarwinWindows(deps),
+		request.pid ? resolveAncestryPids(request.pid, deps) : Promise.resolve(undefined),
+	]);
+	const selection = selectWindow(candidates, request.preferredApp, ancestry);
 	if (selection.kind === "none") {
 		return fail("no-window", darwinNoWindowMessage(request.preferredApp));
 	}
@@ -237,20 +257,72 @@ export function parseDarwinWindows(stdout: string): WindowCandidate[] {
 	const candidates: WindowCandidate[] = [];
 	for (const entry of parsed) {
 		if (!entry || typeof entry !== "object") continue;
-		const record = entry as { windowId?: unknown; appName?: unknown; title?: unknown; pid?: unknown };
+		const record = entry as {
+			windowId?: unknown;
+			appName?: unknown;
+			title?: unknown;
+			pid?: unknown;
+			width?: unknown;
+			height?: unknown;
+		};
 		if (record.windowId === undefined || record.windowId === null) continue;
 		candidates.push({
 			windowId: String(record.windowId),
 			appName: typeof record.appName === "string" ? record.appName : "",
 			title: typeof record.title === "string" ? record.title : "",
 			pid: typeof record.pid === "number" ? record.pid : undefined,
+			width: typeof record.width === "number" ? record.width : undefined,
+			height: typeof record.height === "number" ? record.height : undefined,
 		});
 	}
 	return candidates;
 }
 
-/** Narrow candidates to the requested terminal app (or known terminals) and classify ambiguity. */
-export function selectWindow(candidates: WindowCandidate[], preferredApp?: string): WindowSelection {
+/**
+ * Walk `ppid` links from a session pid toward the root, returning the chain
+ * (starting pid first). Lets window selection find the terminal app that
+ * actually hosts a session — e.g. bun → zsh → login → cmux.app — instead of
+ * guessing by app name. Uses `ps`, so it works for same-user processes on
+ * macOS and Linux alike.
+ */
+export async function resolveAncestryPids(pid: number, deps: NativeCaptureDeps, maxDepth = 16): Promise<number[]> {
+	const chain: number[] = [];
+	let current = pid;
+	for (let depth = 0; depth < maxDepth && current > 1; depth++) {
+		chain.push(current);
+		const exec = await deps.exec(["ps", "-o", "ppid=", "-p", String(current)]);
+		if (exec.exitCode !== 0) break;
+		const next = Number.parseInt(exec.stdout.trim(), 10);
+		if (!Number.isFinite(next) || next <= 0 || next === current) break;
+		current = next;
+	}
+	return chain;
+}
+
+/**
+ * Resolve the window to capture, most-specific signal first:
+ * 1. `ancestryPids` — the window owned by the closest process ancestor of the
+ *    session (largest window wins when one app owns several, e.g. cmux's main
+ *    window vs its Settings panel; CG z-order breaks ties).
+ * 2. `preferredApp` — explicit user override matched against the app name.
+ * 3. Known terminal app names, ambiguous when several match.
+ */
+export function selectWindow(
+	candidates: WindowCandidate[],
+	preferredApp?: string,
+	ancestryPids?: readonly number[],
+): WindowSelection {
+	if (ancestryPids) {
+		for (const pid of ancestryPids) {
+			const owned = candidates.filter(candidate => candidate.pid === pid);
+			if (owned.length === 0) continue;
+			let best = owned[0]!;
+			for (const candidate of owned.slice(1)) {
+				if (windowArea(candidate) > windowArea(best)) best = candidate;
+			}
+			return { kind: "single", candidate: best };
+		}
+	}
 	const needle = preferredApp?.trim().toLowerCase();
 	const matches = candidates.filter(candidate => {
 		const appName = candidate.appName.toLowerCase();
@@ -260,6 +332,10 @@ export function selectWindow(candidates: WindowCandidate[], preferredApp?: strin
 	if (matches.length === 0) return { kind: "none" };
 	if (matches.length === 1) return { kind: "single", candidate: matches[0]! };
 	return { kind: "ambiguous", candidates: matches };
+}
+
+function windowArea(candidate: WindowCandidate): number {
+	return (candidate.width ?? 0) * (candidate.height ?? 0);
 }
 
 function darwinNoWindowMessage(preferredApp?: string): string {

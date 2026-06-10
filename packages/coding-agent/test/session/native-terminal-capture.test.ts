@@ -120,6 +120,41 @@ describe("native terminal capture", () => {
 		expect(outcome.ok ? null : outcome.reason).toBe("no-window");
 	});
 
+	it("resolves the session's own terminal window via pid ancestry", async () => {
+		const psParents: Record<string, string> = { "500": "400", "400": "300", "300": "1" };
+		const deps = makeDeps({
+			platform: "darwin",
+			binaries: new Set(["screencapture", "osascript"]),
+			exec: async command => {
+				if (command[0] === "ps") {
+					const pid = command[command.length - 1]!;
+					const ppid = psParents[pid];
+					return ppid ? { exitCode: 0, stdout: `${ppid}\n`, stderr: "" } : { exitCode: 1, stdout: "", stderr: "" };
+				}
+				if (command[0] === "osascript") {
+					return {
+						exitCode: 0,
+						stdout: JSON.stringify([
+							{ windowId: 11, appName: "cmux", title: "Settings", pid: 300, width: 700, height: 500 },
+							{ windowId: 12, appName: "cmux", title: "Terminal", pid: 300, width: 1800, height: 1100 },
+							{ windowId: 13, appName: "Ghostty", title: "other", pid: 900, width: 1600, height: 1000 },
+						]),
+						stderr: "",
+					};
+				}
+				return { exitCode: 0, stdout: "", stderr: "" };
+			},
+		});
+		const outcome = await captureNativeTerminal({ enabled: true, destPath: DEST, pid: 500 }, deps);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) throw new Error(outcome.message);
+		// pid ancestry (500 → 400 → 300) beats app-name matching: cmux's main
+		// window wins over its Settings panel and the unrelated Ghostty window,
+		// where hint matching alone would report ambiguous-window.
+		expect(outcome.result.windowId).toBe("12");
+		expect(outcome.result.command).toEqual(["screencapture", "-x", "-l", "12", DEST]);
+	});
+
 	it("reports no-tool when screencapture is missing", async () => {
 		const outcome = await captureNativeTerminal(
 			{ enabled: true, destPath: DEST },
@@ -235,6 +270,23 @@ describe("native capture parsing helpers", () => {
 		expect(selectWindow(windows)).toEqual({ kind: "single", candidate: windows[0]! });
 		expect(selectWindow(windows, "finder")).toEqual({ kind: "single", candidate: windows[1]! });
 		expect(selectWindow([{ windowId: "3", appName: "Safari", title: "" }])).toEqual({ kind: "none" });
+	});
+
+	it("prefers the closest ancestor's windows and the largest window within an app", () => {
+		const windows = [
+			{ windowId: "1", appName: "cmux", title: "Settings", pid: 300, width: 700, height: 500 },
+			{ windowId: "2", appName: "cmux", title: "Terminal", pid: 300, width: 1800, height: 1100 },
+			{ windowId: "3", appName: "Code", title: "embedded term", pid: 400, width: 1200, height: 900 },
+		];
+		// 400 is a closer ancestor than 300, so its window wins even though 300 owns more windows.
+		expect(selectWindow(windows, undefined, [500, 400, 300])).toEqual({ kind: "single", candidate: windows[2]! });
+		// Only 300 in the ancestry: the largest of its windows wins.
+		expect(selectWindow(windows, undefined, [300])).toEqual({ kind: "single", candidate: windows[1]! });
+	});
+
+	it("falls back to app-name hints when the ancestry owns no windows", () => {
+		const windows = [{ windowId: "8", appName: "cmux", title: "Terminal", pid: 300 }];
+		expect(selectWindow(windows, undefined, [777, 888])).toEqual({ kind: "single", candidate: windows[0]! });
 	});
 
 	it("parses darwin window JSON, ignoring malformed entries", () => {
