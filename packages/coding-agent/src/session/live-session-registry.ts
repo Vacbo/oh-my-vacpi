@@ -24,6 +24,8 @@ export interface LiveSessionMetadata {
 	model?: string;
 	eventStreamPath: string;
 	terminalSnapshotPath: string;
+	/** cmux surface hosting this session's terminal, recorded at registration. */
+	cmuxSurfaceId?: string;
 }
 
 export interface LiveSessionSummary extends LiveSessionMetadata {
@@ -48,6 +50,7 @@ export interface RegisterLiveSessionOptions {
 	sessionFile?: string | null;
 	mode: LiveSessionMetadata["mode"];
 	model?: string;
+	cmuxSurfaceId?: string;
 	now?: () => Date;
 }
 
@@ -96,6 +99,7 @@ export async function registerLiveSession(options: RegisterLiveSessionOptions): 
 		status: "running",
 		mode: options.mode,
 		model: boundString(options.model),
+		cmuxSurfaceId: boundString(options.cmuxSurfaceId),
 		eventStreamPath,
 		terminalSnapshotPath,
 	};

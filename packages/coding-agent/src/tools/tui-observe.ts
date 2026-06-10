@@ -16,6 +16,7 @@ import type { Settings } from "../config/settings";
 import tuiObserveDescription from "../prompts/tools/tui-observe.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { getBashTuiSnapshot, listBashTuiSnapshots } from "../session/bash-tui-snapshots";
+import { cmuxSurfaceIdFor, diffRenderedText, readCmuxScreen } from "../session/cmux-capture";
 import { readLiveEvents } from "../session/live-event-stream";
 import {
 	inspectLiveSession,
@@ -37,10 +38,22 @@ import { clampTimeout } from "./tool-timeouts";
 const MAX_SNAPSHOT_TEXT = 20_000;
 const DEFAULT_EVENT_LIMIT = 50;
 const MAX_EVENT_LIMIT = 500;
+const MAX_DIFF_ROWS = 40;
+const MAX_DIFF_ROW_CHARS = 400;
 
 const tuiObserveSchema = z.object({
 	action: z
-		.enum(["list", "snapshot", "events", "mirror", "screenshot", "native_screenshot", "bash_snapshots"])
+		.enum([
+			"list",
+			"snapshot",
+			"events",
+			"mirror",
+			"screenshot",
+			"native_screenshot",
+			"emulator_screen",
+			"render_diff",
+			"bash_snapshots",
+		])
 		.default("snapshot")
 		.describe("Observation action. Defaults to a read-only snapshot of the current session."),
 	run: z
@@ -53,7 +66,9 @@ const tuiObserveSchema = z.object({
 		.positive()
 		.max(MAX_EVENT_LIMIT)
 		.optional()
-		.describe("Max recent events for the events action."),
+		.describe(
+			"Max recent events for the events action; for emulator_screen, only the last N lines (includes scrollback).",
+		),
 	running: z.boolean().optional().describe("For list: only include running sessions."),
 });
 
@@ -175,7 +190,7 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 	readonly name = "tui_observe";
 	readonly label = "TUI Observe";
 	readonly loadMode = "discoverable" as const;
-	readonly summary = "Inspect live OMP terminal sessions (DOM-like state, events, screenshots)";
+	readonly summary = "Inspect live OMP terminal sessions (DOM-like state, events, screenshots, emulator diffs)";
 	readonly parameters = tuiObserveSchema;
 	readonly approval: ToolApproval = (args: unknown) => {
 		const action = (args as Partial<TuiObserveParams> | undefined)?.action;
@@ -210,6 +225,10 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 				return await this.#screenshot(agentDir, params, signal);
 			case "native_screenshot":
 				return await this.#nativeScreenshot(agentDir, params);
+			case "emulator_screen":
+				return await this.#emulatorScreen(agentDir, params);
+			case "render_diff":
+				return await this.#renderDiff(agentDir, params);
 			case "bash_snapshots":
 				return this.#bashSnapshots(params);
 		}
@@ -223,6 +242,7 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 			status: session.status,
 			isRunning: session.isRunning,
 			pid: session.pid,
+			cmuxSurfaceId: session.cmuxSurfaceId,
 			mode: session.mode,
 			model: session.model,
 			cwd: session.cwd || undefined,
@@ -243,6 +263,7 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 			status: session.status,
 			isRunning: session.isRunning,
 			pid: session.pid,
+			cmuxSurfaceId: session.cmuxSurfaceId,
 			cwd: session.cwd || undefined,
 			model: session.model,
 			heartbeatAt: session.heartbeatAt,
@@ -356,6 +377,75 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 			screenshotSource: "native-terminal",
 		})
 			.text(summary)
+			.done();
+	}
+
+	/** Read the text the terminal emulator actually rendered for the run's cmux surface. */
+	async #emulatorScreen(agentDir: string, params: TuiObserveParams): Promise<AgentToolResult<TuiObserveDetails>> {
+		const session = await this.#resolveSession(agentDir, params.run);
+		const surfaceId = cmuxSurfaceIdFor(session);
+		if (!surfaceId) {
+			throw new ToolError(
+				`Session ${session.runId} has no cmux surface id; emulator capture needs the session to run inside cmux.`,
+			);
+		}
+		const outcome = await readCmuxScreen({ surfaceId, lines: params.limit });
+		if (!outcome.ok) {
+			throw new ToolError(`Emulator screen read failed (${outcome.reason}): ${outcome.message}`);
+		}
+		const payload = {
+			runId: session.runId,
+			surfaceId,
+			source: outcome.result.source,
+			text: boundedText(outcome.result.text),
+		};
+		return toolResult<TuiObserveDetails>({ action: params.action, runId: session.runId })
+			.text(JSON.stringify(payload, null, 2))
+			.done();
+	}
+
+	/** Diff the internal snapshot (renderer's belief) against the emulator's rendered text. */
+	async #renderDiff(agentDir: string, params: TuiObserveParams): Promise<AgentToolResult<TuiObserveDetails>> {
+		const session = await this.#resolveSession(agentDir, params.run);
+		const surfaceId = cmuxSurfaceIdFor(session);
+		if (!surfaceId) {
+			throw new ToolError(
+				`Session ${session.runId} has no cmux surface id; render_diff needs the session to run inside cmux.`,
+			);
+		}
+		const terminal = session.terminalSnapshotPath ? await readTerminalSnapshot(session.terminalSnapshotPath) : null;
+		if (!terminal) {
+			throw new ToolError(`Session ${session.runId} has no internal terminal snapshot to diff against.`);
+		}
+		const outcome = await readCmuxScreen({ surfaceId });
+		if (!outcome.ok) {
+			throw new ToolError(`Emulator screen read failed (${outcome.reason}): ${outcome.message}`);
+		}
+		const diff = diffRenderedText(terminal.text, outcome.result.text);
+		const capRow = (row: string) => (row.length > MAX_DIFF_ROW_CHARS ? `${row.slice(0, MAX_DIFF_ROW_CHARS)}…` : row);
+		const payload = {
+			runId: session.runId,
+			surfaceId,
+			identical: diff.identical,
+			scrollOffset: diff.scrollOffset,
+			rowsCompared: diff.rowsCompared,
+			matchedRows: diff.matchedRows,
+			internal: {
+				capturedAt: terminal.capturedAt,
+				ageMs: Math.max(0, Date.now() - Date.parse(terminal.capturedAt)),
+				cols: terminal.cols,
+				rows: diff.internalRows,
+			},
+			emulator: { rows: diff.emulatorRows },
+			mismatchedRows: diff.mismatches.length,
+			mismatches: diff.mismatches.slice(0, MAX_DIFF_ROWS).map(entry => ({
+				row: entry.row,
+				internal: capRow(entry.internal),
+				emulator: capRow(entry.emulator),
+			})),
+		};
+		return toolResult<TuiObserveDetails>({ action: params.action, runId: session.runId })
+			.text(JSON.stringify(payload, null, 2))
 			.done();
 	}
 
