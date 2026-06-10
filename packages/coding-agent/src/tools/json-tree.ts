@@ -2,6 +2,7 @@
  * JSON tree rendering utilities shared across tool renderers.
  */
 import { INTENT_FIELD } from "@oh-my-pi/pi-agent-core";
+import { pluralize } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../modes/theme/theme";
 import { truncateToWidth } from "./render-utils";
 
@@ -37,10 +38,10 @@ export function formatScalar(value: unknown, maxLen: number): string {
 		const truncated = truncateToWidth(escaped, maxLen);
 		return `"${truncated}"`;
 	}
-	if (Array.isArray(value)) return `[${value.length} items]`;
+	if (Array.isArray(value)) return `[${value.length} ${pluralize("item", value.length)}]`;
 	if (typeof value === "object") {
 		const keys = Object.keys(value);
-		return `{${keys.length} keys}`;
+		return `{${keys.length} ${pluralize("key", keys.length)}}`;
 	}
 	return String(value);
 }

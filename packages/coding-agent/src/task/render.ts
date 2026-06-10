@@ -7,7 +7,7 @@
 import path from "node:path";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Container, Markdown, Text } from "@oh-my-pi/pi-tui";
-import { formatNumber } from "@oh-my-pi/pi-utils";
+import { formatNumber, pluralize } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
@@ -457,10 +457,10 @@ function formatScalarInline(value: unknown, maxLen: number, _theme: Theme): stri
 		if (value.includes("\n")) return `"${preview}…" (${value.split("\n").length} lines)`;
 		return `"${preview}"`;
 	}
-	if (Array.isArray(value)) return `[${value.length} items]`;
+	if (Array.isArray(value)) return `[${value.length} ${pluralize("item", value.length)}]`;
 	if (typeof value === "object") {
 		const keys = Object.keys(value);
-		return `{${keys.length} keys}`;
+		return `{${keys.length} ${pluralize("key", keys.length)}}`;
 	}
 	return String(value);
 }
@@ -477,7 +477,7 @@ function formatOutputInline(data: unknown, theme: Theme, maxWidth = 80): string 
 	if (Array.isArray(data)) {
 		if (data.length === 0) return "Output: []";
 		const preview = formatScalarInline(data[0], 40, theme);
-		return `Output: [${data.length} items] ${preview}${data.length > 1 ? "…" : ""}`;
+		return `Output: [${data.length} ${pluralize("item", data.length)}] ${preview}${data.length > 1 ? "…" : ""}`;
 	}
 
 	// For objects, show key=value pairs inline
