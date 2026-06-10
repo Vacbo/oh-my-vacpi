@@ -7389,7 +7389,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic.claude-opus-4-7": {
@@ -7414,7 +7421,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic.claude-opus-4-8": {
@@ -7439,7 +7453,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"au.anthropic.claude-haiku-4-5-20251001-v1:0": {
@@ -7489,7 +7510,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"au.anthropic.claude-opus-4-8": {
@@ -7514,7 +7542,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"au.anthropic.claude-sonnet-4-5-20250929-v1:0": {
@@ -7817,6 +7852,38 @@
 			"contextWindow": 200000,
 			"maxTokens": 4096
 		},
+		"eu.anthropic.claude-fable-5": {
+			"id": "eu.anthropic.claude-fable-5",
+			"name": "Claude Fable 5 (EU)",
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 11,
+				"output": 55,
+				"cacheRead": 1.1,
+				"cacheWrite": 13.75
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "anthropic-adaptive",
+				"minLevel": "minimal",
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
+			}
+		},
 		"eu.anthropic.claude-haiku-4-5-20251001-v1:0": {
 			"id": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
 			"name": "Claude Haiku 4.5 (EU)",
@@ -7939,7 +8006,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"eu.anthropic.claude-opus-4-7": {
@@ -7964,7 +8038,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"eu.anthropic.claude-opus-4-8": {
@@ -7989,7 +8070,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"eu.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -8092,6 +8180,38 @@
 				"maxLevel": "high"
 			}
 		},
+		"global.anthropic.claude-fable-5": {
+			"id": "global.anthropic.claude-fable-5",
+			"name": "Claude Fable 5 (Global)",
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 10,
+				"output": 50,
+				"cacheRead": 1,
+				"cacheWrite": 12.5
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "anthropic-adaptive",
+				"minLevel": "minimal",
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
+			}
+		},
 		"global.anthropic.claude-haiku-4-5-20251001-v1:0": {
 			"id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 			"name": "Claude Haiku 4.5",
@@ -8164,7 +8284,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"global.anthropic.claude-opus-4-7": {
@@ -8189,7 +8316,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"global.anthropic.claude-opus-4-8": {
@@ -8214,7 +8348,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"global.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -8354,7 +8495,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"jp.anthropic.claude-opus-4-8": {
@@ -8379,7 +8527,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"jp.anthropic.claude-sonnet-4-5-20250929-v1:0": {
@@ -9328,6 +9483,38 @@
 			"contextWindow": 200000,
 			"maxTokens": 8192
 		},
+		"us.anthropic.claude-fable-5": {
+			"id": "us.anthropic.claude-fable-5",
+			"name": "Claude Fable 5 (US)",
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 10,
+				"output": 50,
+				"cacheRead": 1,
+				"cacheWrite": 12.5
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "anthropic-adaptive",
+				"minLevel": "minimal",
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
+			}
+		},
 		"us.anthropic.claude-haiku-4-5-20251001-v1:0": {
 			"id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 			"name": "Claude Haiku 4.5 (US)",
@@ -9450,7 +9637,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"us.anthropic.claude-opus-4-7": {
@@ -9475,7 +9669,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"us.anthropic.claude-opus-4-8": {
@@ -9500,7 +9701,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"us.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -9943,7 +10151,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-haiku-4-5": {
@@ -10018,7 +10226,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-opus-4-0": {
@@ -10193,7 +10401,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"claude-opus-4-7": {
@@ -10218,7 +10433,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-opus-4-8": {
@@ -10243,7 +10458,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-sonnet-4-0": {
@@ -10614,6 +10829,31 @@
 			"contextWindow": 200000,
 			"maxTokens": 8192
 		},
+		"anthropic/claude-fable-5": {
+			"id": "anthropic/claude-fable-5",
+			"name": "Claude Fable 5",
+			"api": "anthropic-messages",
+			"provider": "cloudflare-ai-gateway",
+			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 10,
+				"output": 50,
+				"cacheRead": 1,
+				"cacheWrite": 12.5
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "anthropic-adaptive",
+				"minLevel": "minimal",
+				"maxLevel": "max"
+			}
+		},
 		"anthropic/claude-haiku-4-5": {
 			"id": "anthropic/claude-haiku-4-5",
 			"name": "Claude Haiku 4.5 (latest)",
@@ -10736,7 +10976,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic/claude-opus-4-7": {
@@ -10761,7 +11008,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-opus-4-8": {
@@ -10786,7 +11033,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-sonnet-4": {
@@ -12752,7 +12999,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"claude-opus-4.7": {
@@ -12780,7 +13034,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-opus-4.8": {
@@ -12808,7 +13062,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-sonnet-4": {
@@ -14786,7 +15040,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 250000,
 			"maxTokens": 64000,
 			"thinking": {
 				"mode": "budget",
@@ -14861,7 +15115,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 250000,
 			"maxTokens": 64000,
 			"thinking": {
 				"mode": "budget",
@@ -14912,7 +15166,32 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 1048576,
-			"maxTokens": 65536,
+			"maxTokens": 65535,
+			"thinking": {
+				"mode": "budget",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-2.5-flash-lite": {
+			"id": "gemini-2.5-flash-lite",
+			"name": "Gemini 2.5 Flash-Lite",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65535,
 			"thinking": {
 				"mode": "budget",
 				"minLevel": "minimal",
@@ -14994,6 +15273,31 @@
 				"maxLevel": "high"
 			}
 		},
+		"gemini-3-flash-agent": {
+			"id": "gemini-3-flash-agent",
+			"name": "Gemini 3.5 Flash (High) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
 		"gemini-3-pro-high": {
 			"id": "gemini-3-pro-high",
 			"name": "Gemini 3 Pro (High) (Antigravity)",
@@ -15050,6 +15354,50 @@
 					"low",
 					"high"
 				]
+			}
+		},
+		"gemini-3.1-flash-image": {
+			"id": "gemini-3.1-flash-image",
+			"name": "Gemini 3.1 Flash Image (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 200000,
+			"maxTokens": 64000
+		},
+		"gemini-3.1-flash-lite": {
+			"id": "gemini-3.1-flash-lite",
+			"name": "Gemini 3.1 Flash Lite",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65535,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "minimal",
+				"maxLevel": "high"
 			}
 		},
 		"gemini-3.1-pro-high": {
@@ -15110,6 +15458,81 @@
 				]
 			}
 		},
+		"gemini-3.5-flash-extra-low": {
+			"id": "gemini-3.5-flash-extra-low",
+			"name": "Gemini 3.5 Flash (Low) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-3.5-flash-low": {
+			"id": "gemini-3.5-flash-low",
+			"name": "Gemini 3.5 Flash (Medium) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-pro-agent": {
+			"id": "gemini-pro-agent",
+			"name": "Gemini 3.1 Pro (High) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65535,
+			"thinking": {
+				"mode": "budget",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
 		"gpt-oss-120b-medium": {
 			"id": "gpt-oss-120b-medium",
 			"name": "GPT-OSS 120B (Medium) (Antigravity)",
@@ -15126,13 +15549,51 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 114000,
+			"contextWindow": 131072,
 			"maxTokens": 32768,
 			"thinking": {
 				"mode": "budget",
 				"minLevel": "minimal",
 				"maxLevel": "high"
 			}
+		},
+		"tab_flash_lite_preview": {
+			"id": "tab_flash_lite_preview",
+			"name": "tab_flash_lite_preview",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 16384,
+			"maxTokens": 4096
+		},
+		"tab_jump_flash_lite_preview": {
+			"id": "tab_jump_flash_lite_preview",
+			"name": "tab_jump_flash_lite_preview",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 16384,
+			"maxTokens": 4096
 		}
 	},
 	"google-gemini-cli": {
@@ -15388,7 +15849,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"claude-opus-4-7@default": {
@@ -15413,7 +15881,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-opus-4-8@default": {
@@ -15438,7 +15906,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-sonnet-4-5@20250929": {
@@ -16481,6 +16949,25 @@
 		}
 	},
 	"kilo": {
+		"~anthropic/claude-fable-latest": {
+			"id": "~anthropic/claude-fable-latest",
+			"name": "Anthropic: Claude Fable Latest ($$$$)",
+			"api": "openai-completions",
+			"provider": "kilo",
+			"baseUrl": "https://api.kilo.ai/api/gateway",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"~anthropic/claude-haiku-latest": {
 			"id": "~anthropic/claude-haiku-latest",
 			"name": "Anthropic Claude Haiku Latest",
@@ -17138,13 +17625,14 @@
 		},
 		"anthropic/claude-fable-5": {
 			"id": "anthropic/claude-fable-5",
-			"name": "Anthropic: Claude Fable 5 ($$$$)",
+			"name": "Claude Fable 5",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
-			"reasoning": false,
+			"reasoning": true,
 			"input": [
-				"text"
+				"text",
+				"image"
 			],
 			"cost": {
 				"input": 0,
@@ -17152,8 +17640,13 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
-			"maxTokens": 8888
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
 		},
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
@@ -27686,7 +28179,7 @@
 		},
 		"anthropic/claude-fable-5": {
 			"id": "anthropic/claude-fable-5",
-			"name": "Anthropic: Claude Fable 5",
+			"name": "Claude Fable 5",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -46938,6 +47431,31 @@
 			"contextWindow": 200000,
 			"maxTokens": 8192
 		},
+		"claude-fable-5": {
+			"id": "claude-fable-5",
+			"name": "Claude Fable 5",
+			"api": "anthropic-messages",
+			"provider": "opencode-zen",
+			"baseUrl": "https://opencode.ai/zen",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 10,
+				"output": 50,
+				"cacheRead": 1,
+				"cacheWrite": 12.5
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "anthropic-adaptive",
+				"minLevel": "minimal",
+				"maxLevel": "max"
+			}
+		},
 		"claude-haiku-4-5": {
 			"id": "claude-haiku-4-5",
 			"name": "Claude Haiku 4.5",
@@ -47035,7 +47553,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"claude-opus-4-7": {
@@ -47060,7 +47585,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-opus-4-8": {
@@ -47085,7 +47610,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"claude-sonnet-4": {
@@ -48413,6 +48938,31 @@
 		}
 	},
 	"openrouter": {
+		"~anthropic/claude-fable-latest": {
+			"id": "~anthropic/claude-fable-latest",
+			"name": "Anthropic: Claude Fable Latest",
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"baseUrl": "https://openrouter.ai/api/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 10,
+				"output": 50,
+				"cacheRead": 1,
+				"cacheWrite": 12.5
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
 		"~anthropic/claude-haiku-latest": {
 			"id": "~anthropic/claude-haiku-latest",
 			"name": "Anthropic Claude Haiku Latest",
@@ -48903,7 +49453,7 @@
 		},
 		"anthropic/claude-fable-5": {
 			"id": "anthropic/claude-fable-5",
-			"name": "Anthropic: Claude Fable 5",
+			"name": "Claude Fable 5",
 			"api": "openai-completions",
 			"provider": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
@@ -55941,11 +56491,11 @@
 			"cost": {
 				"input": 0.3,
 				"output": 0.8999999999999999,
-				"cacheRead": 0.049999999999999996,
+				"cacheRead": 0.055,
 				"cacheWrite": 0
 			},
 			"contextWindow": 131072,
-			"maxTokens": 24000,
+			"maxTokens": 32768,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -56040,7 +56590,7 @@
 				"cacheRead": 0.24,
 				"cacheWrite": 0
 			},
-			"contextWindow": 202752,
+			"contextWindow": 262144,
 			"maxTokens": 131072,
 			"thinking": {
 				"mode": "effort",
@@ -59975,7 +60525,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-haiku-4.5": {
@@ -60095,7 +60645,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic/claude-opus-4.7": {
@@ -60120,7 +60677,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-opus-4.8": {
@@ -60145,7 +60702,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-sonnet-4": {
@@ -64883,6 +65440,37 @@
 				"minLevel": "minimal",
 				"maxLevel": "high"
 			}
+		},
+		"mimo-v2.5-pro-ultraspeed": {
+			"id": "mimo-v2.5-pro-ultraspeed",
+			"name": "MiMo-V2.5-Pro-UltraSpeed",
+			"api": "openai-completions",
+			"provider": "xiaomi",
+			"baseUrl": "https://api.xiaomimimo.com/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 1.305,
+				"output": 2.61,
+				"cacheRead": 0.0108,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 131072,
+			"compat": {
+				"supportsStore": false,
+				"thinkingFormat": "zai",
+				"reasoningContentField": "reasoning_content",
+				"requiresReasoningContentForToolCalls": true,
+				"allowsSyntheticReasoningContentForToolCalls": false
+			},
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
 		}
 	},
 	"zai": {
@@ -65268,6 +65856,31 @@
 				"maxLevel": "xhigh"
 			}
 		},
+		"anthropic/claude-fable-5": {
+			"id": "anthropic/claude-fable-5",
+			"name": "Claude Fable 5",
+			"api": "anthropic-messages",
+			"provider": "zenmux",
+			"baseUrl": "https://zenmux.ai/api/anthropic",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 10,
+				"output": 50,
+				"cacheRead": 1,
+				"cacheWrite": 12.5
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "anthropic-adaptive",
+				"minLevel": "minimal",
+				"maxLevel": "max"
+			}
+		},
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
 			"name": "Claude Haiku 4.5",
@@ -65385,7 +65998,14 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max",
+				"levels": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"max"
+				]
 			}
 		},
 		"anthropic/claude-opus-4.7": {
@@ -65410,7 +66030,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-opus-4.8": {
@@ -65435,7 +66055,7 @@
 			"thinking": {
 				"mode": "anthropic-adaptive",
 				"minLevel": "minimal",
-				"maxLevel": "xhigh"
+				"maxLevel": "max"
 			}
 		},
 		"anthropic/claude-sonnet-4": {
