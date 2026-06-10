@@ -1287,10 +1287,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			lines.push(
 				`${indent}${theme.fg("accent", `${hook} ${formatPhaseDisplayName(activePhase.name, activeIdx + 1)}`)}`,
 			);
-			visible.forEach((todo, index) => {
-				const prefix = `${indent}${index === 0 ? hook : " "} `;
-				lines.push(this.#formatTodoLine(todo, prefix, isMatched(todo)));
-			});
+			for (const todo of visible) {
+				lines.push(this.#formatTodoLine(todo, `${indent}  `, isMatched(todo)));
+			}
 			if (hiddenOpenCount > 0) {
 				lines.push(theme.fg("muted", `${indent}  ${hook} +${hiddenOpenCount} more`));
 			}
@@ -1300,10 +1299,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		phases.forEach((phase, phaseIndex) => {
 			lines.push(`${indent}${theme.fg("accent", `${hook} ${formatPhaseDisplayName(phase.name, phaseIndex + 1)}`)}`);
-			phase.tasks.forEach((todo, index) => {
-				const prefix = `${indent}${index === 0 ? hook : " "} `;
-				lines.push(this.#formatTodoLine(todo, prefix, isMatched(todo)));
-			});
+			for (const todo of phase.tasks) {
+				lines.push(this.#formatTodoLine(todo, `${indent}  `, isMatched(todo)));
+			}
 		});
 
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
