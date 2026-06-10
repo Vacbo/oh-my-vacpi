@@ -1,6 +1,10 @@
 import {
+	calculateImageFit,
+	getCellDimensions,
 	getImageDimensions,
 	type ImageDimensions,
+	ImageProtocol,
+	type ImageRenderOptions,
 	imageFallback,
 	renderImage,
 	TERMINAL,
@@ -74,6 +78,8 @@ export class ImageBudget {
 	#purgeIds: number[] = [];
 	/** Image ids whose data is believed to be loaded in the terminal's store. */
 	#transmitted = new Set<number>();
+	/** Placement box (px) the stored bitmap was pre-scaled for, keyed by image id. */
+	#transmittedBoxes = new Map<number, string>();
 	/** Transmit sequences (full base64) to write once, before this frame's placements. */
 	#pendingTransmits: string[] = [];
 
@@ -149,6 +155,7 @@ export class ImageBudget {
 				this.#purgeIds.push(id);
 				// d=I frees the data too, so the image must re-transmit if it returns.
 				this.#transmitted.delete(id);
+				this.#transmittedBoxes.delete(id);
 			}
 			this.#onTerminal = this.#planned;
 			this.#applyingReset = false;
@@ -171,6 +178,7 @@ export class ImageBudget {
 		if (this.#transmitted.size === 0) return EMPTY_IDS;
 		const ids = [...this.#transmitted];
 		this.#transmitted.clear();
+		this.#transmittedBoxes.clear();
 		this.#purgeIds = [];
 		this.#pendingTransmits = [];
 		return ids;
@@ -184,11 +192,36 @@ export class ImageBudget {
 	/**
 	 * Queue a one-time transmit for `imageId`. No-op if already transmitted, so a
 	 * repeated call (e.g. a width-change re-render) never re-sends the data.
+	 * `boxKey` records the placement box the bitmap was pre-scaled for, so a
+	 * later render can detect a stale bitmap after the box changes.
 	 */
-	enqueueTransmit(imageId: number, sequence: string): void {
+	enqueueTransmit(imageId: number, sequence: string, boxKey?: string): void {
 		if (this.#transmitted.has(imageId)) return;
 		this.#transmitted.add(imageId);
+		if (boxKey !== undefined) this.#transmittedBoxes.set(imageId, boxKey);
+		else this.#transmittedBoxes.delete(imageId);
 		this.#pendingTransmits.push(sequence);
+	}
+
+	/** Placement box recorded for `imageId`'s stored bitmap (set when pre-scaled). */
+	transmittedBoxKey(imageId: number): string | undefined {
+		return this.#transmittedBoxes.get(imageId);
+	}
+
+	/**
+	 * Forget `imageId`'s stored bitmap so the next render re-transmits — used to
+	 * replace a bitmap that was pre-scaled for a placement box that no longer
+	 * matches (terminal resize). Kitty replaces image data in place when the same
+	 * id is re-transmitted.
+	 */
+	invalidateTransmit(imageId: number): void {
+		this.#transmitted.delete(imageId);
+		this.#transmittedBoxes.delete(imageId);
+	}
+
+	/** Schedule a frame — lets an Image wake the TUI when async bitmap preparation completes. */
+	requestRender(): void {
+		this.#requestRender();
 	}
 
 	/** Whether a frame has image data queued but not yet written to the terminal. */
@@ -261,6 +294,96 @@ export class Image implements Component {
 		this.#imageId = options.budget ? options.budget.acquireId(options.imageKey) : undefined;
 	}
 
+	/** Bitmap pre-scaled to a placement box's exact pixel size, keyed by that box. */
+	#prescaled?: { boxKey: string; base64: string };
+	/** Box key of the prescale currently being computed, if any. */
+	#prescaleInFlight?: string;
+	/** Decode/re-encode failed — fall back to the original bitmap permanently. */
+	#prescaleFailed = false;
+
+	/**
+	 * Pick the bitmap to hand the terminal for the current placement box.
+	 *
+	 * Terminals scale the transmitted bitmap into the placement's cell box at
+	 * draw time with plain GPU sampling; minifying a text-heavy bitmap that way
+	 * aliases into scanline banding. When the box is smaller than the bitmap,
+	 * pre-scale it to the box's exact pixel size (lanczos3, PNG) so the terminal
+	 * draws 1:1. Upscaling is left to the terminal — it loses nothing.
+	 *
+	 * Returns `undefined` when the placement should stay blank until the scaled
+	 * bitmap is ready (budgeted path only — the budget's requestRender wakes the
+	 * TUI when the prescale completes, typically within a frame or two).
+	 */
+	#transmitData(options: ImageRenderOptions): { base64: string; boxKey?: string } | undefined {
+		const protocol = TERMINAL.imageProtocol;
+		// Sixel encodes from source pixels at box size natively; feeding it a
+		// pre-scaled bitmap would resample twice.
+		const prescalable = protocol === ImageProtocol.Kitty || protocol === ImageProtocol.Iterm2;
+		if (!prescalable || this.#prescaleFailed) return { base64: this.#base64Data };
+
+		const cellDims = getCellDimensions();
+		const fit = calculateImageFit(this.#dimensions, options, cellDims);
+		const boxWidthPx = fit.columns * cellDims.widthPx;
+		const boxHeightPx = fit.rows * cellDims.heightPx;
+		if (this.#dimensions.widthPx <= boxWidthPx && this.#dimensions.heightPx <= boxHeightPx) {
+			return { base64: this.#base64Data };
+		}
+		const boxKey = `${boxWidthPx}x${boxHeightPx}`;
+
+		const budgeted = this.#imageId != null && this.#budget !== undefined;
+		if (this.#prescaled?.boxKey === boxKey) {
+			// Ready. If the terminal store holds a bitmap scaled for a different
+			// box, forget it so the normal flow re-transmits this one in its place.
+			if (
+				budgeted &&
+				!this.#budget!.shouldTransmit(this.#imageId!) &&
+				this.#budget!.transmittedBoxKey(this.#imageId!) !== boxKey
+			) {
+				this.#budget!.invalidateTransmit(this.#imageId!);
+			}
+			return { base64: this.#prescaled.base64, boxKey };
+		}
+
+		if (budgeted) {
+			// Recreated component, bitmap already in the terminal store at the
+			// right size: nothing to scale, nothing to transmit.
+			const upToDate =
+				!this.#budget!.shouldTransmit(this.#imageId!) && this.#budget!.transmittedBoxKey(this.#imageId!) === boxKey;
+			if (upToDate) return { base64: this.#base64Data };
+		}
+
+		this.#startPrescale(boxKey, boxWidthPx, boxHeightPx);
+		if (budgeted && this.#budget!.shouldTransmit(this.#imageId!)) {
+			// Nothing usable in the terminal store yet: hold the placement blank
+			// rather than transmitting the full-size bitmap only to replace it.
+			return undefined;
+		}
+		// An older bitmap is on screen (or the protocol re-sends per render):
+		// keep showing it; the prescale completion triggers the upgrade.
+		return { base64: this.#base64Data };
+	}
+
+	#startPrescale(boxKey: string, widthPx: number, heightPx: number): void {
+		if (this.#prescaleInFlight === boxKey) return;
+		this.#prescaleInFlight = boxKey;
+		void (async () => {
+			try {
+				const source = Buffer.from(this.#base64Data, "base64");
+				// fit "fill" mirrors the terminal's own box mapping; the box aspect
+				// already matches the image (calculateImageFit preserves it), so any
+				// distortion is sub-cell — identical to what the terminal would do.
+				const bytes = await new Bun.Image(source).resize(widthPx, heightPx).png().bytes();
+				this.#prescaled = { boxKey, base64: bytes.toBase64() };
+			} catch {
+				this.#prescaleFailed = true;
+			} finally {
+				if (this.#prescaleInFlight === boxKey) this.#prescaleInFlight = undefined;
+				this.invalidate();
+				this.#budget?.requestRender();
+			}
+		})();
+	}
+
 	invalidate(): void {
 		this.#cachedLines = undefined;
 		this.#cachedWidth = undefined;
@@ -284,18 +407,28 @@ export class Image implements Component {
 		let lines: string[];
 
 		if (hasProtocol && !suppressed) {
-			// Transmit the data once (keyed by id); thereafter renderImage returns
-			// just the placement, so repaints never re-send the base64.
-			const needsTransmit = this.#imageId != null && (this.#budget?.shouldTransmit(this.#imageId) ?? false);
-			const result = renderImage(this.#base64Data, this.#dimensions, {
+			const renderOptions: ImageRenderOptions = {
 				maxWidthCells: maxWidth,
 				maxHeightCells: this.#options.maxHeightCells,
 				imageId: this.#imageId,
-				includeTransmit: needsTransmit,
-			});
+			};
+			const transmitData = this.#transmitData(renderOptions);
+			// Transmit the data once (keyed by id); thereafter renderImage returns
+			// just the placement, so repaints never re-send the base64.
+			const needsTransmit =
+				transmitData !== undefined &&
+				this.#imageId != null &&
+				(this.#budget?.shouldTransmit(this.#imageId) ?? false);
+			const result =
+				transmitData === undefined
+					? null
+					: renderImage(transmitData.base64, this.#dimensions, {
+							...renderOptions,
+							includeTransmit: needsTransmit,
+						});
 
 			if (result?.transmit && this.#imageId != null && this.#budget !== undefined) {
-				this.#budget.enqueueTransmit(this.#imageId, result.transmit);
+				this.#budget.enqueueTransmit(this.#imageId, result.transmit, transmitData?.boxKey);
 			}
 
 			if (result?.lines) {
@@ -312,6 +445,13 @@ export class Image implements Component {
 				}
 				const moveUp = result.rows > 1 ? `\x1b[${result.rows - 1}A` : "";
 				lines.push(moveUp + (result.sequence ?? ""));
+			} else if (transmitData === undefined) {
+				// Prescale in flight, nothing in the terminal store yet: reserve the
+				// placement's rows blank. The prescale completion invalidates and
+				// requests a render, which transmits the scaled bitmap.
+				const fit = calculateImageFit(this.#dimensions, renderOptions, getCellDimensions());
+				lines = [];
+				for (let i = 0; i < fit.rows; i++) lines.push(RESERVED_IMAGE_ROW);
 			} else {
 				lines = this.#fallbackLines();
 			}

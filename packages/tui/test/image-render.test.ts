@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Image } from "@oh-my-pi/pi-tui/components/image";
+import { Image, ImageBudget } from "@oh-my-pi/pi-tui/components/image";
+import { getKittyGraphics, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
 import {
 	type CellDimensions,
 	getCellDimensions,
@@ -149,5 +150,123 @@ describe("Windows Terminal Preview SIXEL detection", () => {
 				"linux",
 			),
 		).toBe(false);
+	});
+});
+
+// 64x64 PNG — larger than every placement box used below, so the component
+// must pre-scale it before transmitting.
+const BASE64_64x64_PNG =
+	"iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAe0lEQVR4nOXOMQEAAAiAMKR/Z43hwRJsgCVM4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iRO4iTO78C3A1C0AX+xaNrnAAAAAElFTkSuQmCC";
+const RESERVED_ROW = "\x1b[0m";
+
+/** Decode the bitmap payload out of a single-chunk Kitty `a=t` transmit APC. */
+async function transmitBitmapSize(sequence: string): Promise<{ width: number; height: number }> {
+	const payload = sequence.slice(sequence.indexOf(";") + 1, sequence.indexOf("\x1b\\"));
+	const meta = await new Bun.Image(Buffer.from(payload, "base64")).metadata();
+	return { width: meta.width, height: meta.height };
+}
+
+/** Budget requestRender hook that tests can await — fires when a prescale completes. */
+function renderWaker(): { onRender: () => void; next: () => Promise<void> } {
+	let pending = Promise.withResolvers<void>();
+	return {
+		onRender: () => pending.resolve(),
+		next: async () => {
+			await pending.promise;
+			pending = Promise.withResolvers<void>();
+		},
+	};
+}
+
+describe("image prescale to placement box", () => {
+	const originalProtocol = TERMINAL.imageProtocol;
+	let originalCellDims: CellDimensions;
+	let originalPlaceholders: boolean;
+
+	beforeEach(() => {
+		originalCellDims = { ...getCellDimensions() };
+		originalPlaceholders = getKittyGraphics().unicodePlaceholders;
+		setCellDimensions({ widthPx: 10, heightPx: 10 });
+		setKittyGraphics({ unicodePlaceholders: false });
+		terminal.imageProtocol = ImageProtocol.Kitty;
+	});
+
+	afterEach(() => {
+		setCellDimensions(originalCellDims);
+		setKittyGraphics({ unicodePlaceholders: originalPlaceholders });
+		terminal.imageProtocol = originalProtocol;
+	});
+
+	it("transmits a bitmap pre-scaled to the placement box instead of the original", async () => {
+		const waker = renderWaker();
+		const budget = new ImageBudget(8, waker.onRender);
+		const image = new Image(
+			BASE64_64x64_PNG,
+			"image/png",
+			{ fallbackColor: text => text },
+			{ budget, imageKey: "prescale-a", maxWidthCells: 4 },
+		);
+
+		// First render: prescale in flight, placement reserved blank, nothing sent.
+		const first = image.render(80);
+		expect(first).toHaveLength(4);
+		expect(first.every(line => line === RESERVED_ROW)).toBe(true);
+		expect(budget.hasPendingTransmits()).toBe(false);
+
+		await waker.next();
+
+		// Second render: the transmitted bitmap is exactly the 4x4-cell box (40x40px).
+		const second = image.render(80);
+		expect(budget.hasPendingTransmits()).toBe(true);
+		const transmits = budget.takeTransmits();
+		expect(transmits).toHaveLength(1);
+		expect(await transmitBitmapSize(transmits[0])).toEqual({ width: 40, height: 40 });
+		expect(second).toHaveLength(4);
+		expect(second[3]).toContain("c=4");
+		expect(second[3]).toContain("r=4");
+	});
+
+	it("re-transmits a bitmap scaled for the new box when the placement shrinks", async () => {
+		const waker = renderWaker();
+		const budget = new ImageBudget(8, waker.onRender);
+		const image = new Image(
+			BASE64_64x64_PNG,
+			"image/png",
+			{ fallbackColor: text => text },
+			{ budget, imageKey: "prescale-b", maxWidthCells: 6 },
+		);
+
+		image.render(80);
+		await waker.next();
+		image.render(80);
+		expect(await transmitBitmapSize(budget.takeTransmits()[0])).toEqual({ width: 60, height: 60 });
+
+		// Narrower terminal: box shrinks to 4x4 cells. The old bitmap stays on
+		// screen while the replacement is scaled — no blank frame.
+		const interim = image.render(6);
+		expect(interim[3]).toContain("c=4");
+		expect(budget.hasPendingTransmits()).toBe(false);
+
+		await waker.next();
+
+		image.render(6);
+		const transmits = budget.takeTransmits();
+		expect(transmits).toHaveLength(1);
+		expect(await transmitBitmapSize(transmits[0])).toEqual({ width: 40, height: 40 });
+	});
+
+	it("transmits small bitmaps unchanged with no async hop", () => {
+		const budget = new ImageBudget(8, () => {});
+		const image = new Image(
+			BASE64_ONE_PIXEL_PNG,
+			"image/png",
+			{ fallbackColor: text => text },
+			{ budget, imageKey: "prescale-c", maxWidthCells: 10 },
+		);
+
+		image.render(80);
+		const transmits = budget.takeTransmits();
+		expect(transmits).toHaveLength(1);
+		expect(transmits[0]).toContain(BASE64_ONE_PIXEL_PNG);
 	});
 });

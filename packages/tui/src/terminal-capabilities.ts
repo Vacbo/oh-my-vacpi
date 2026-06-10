@@ -557,7 +557,12 @@ export function calculateImageRows(
 	return Math.max(1, rows);
 }
 
-function calculateImageFit(
+/**
+ * Cell box a bitmap will occupy under {@link renderImage}'s fit rules
+ * (aspect-preserving, bounded by the max cell options). Exported so {@link Image}
+ * can pre-scale bitmaps to the box's exact pixel size before transmitting.
+ */
+export function calculateImageFit(
 	imageDimensions: ImageDimensions,
 	options: ImageRenderOptions,
 	cellDims: CellDimensions,

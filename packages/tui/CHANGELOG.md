@@ -6,6 +6,7 @@
 
 #### Added
 
+- Added placement-box pre-scaling for inline images: when the terminal would minify the transmitted bitmap into its Kitty/iTerm2 cell box at draw time (GPU sampling that aliases text-heavy bitmaps into interlaced-looking scanline banding), the `Image` component now pre-scales the bitmap to the box's exact pixel size (lanczos3 via `Bun.Image`, PNG) so the terminal draws it 1:1. The scale runs async: budgeted placements hold their rows blank for the first frame and the budget's new `requestRender()` wakes the TUI when the bitmap is ready; on terminal resize the old bitmap stays visible while a replacement scaled for the new box is re-transmitted in place (`ImageBudget.invalidateTransmit`/`transmittedBoxKey`). Upscaling stays terminal-side, Sixel is untouched (its encoder already resamples natively), and a decode failure falls back to transmitting the original permanently. Side benefit: large screenshots now transmit at box size instead of full size, cutting transmit bytes.
 - Added `TUI.injectInput(data)`, a public method that feeds input through the same dispatch path as real terminal input (input listeners, focus, overlays), so it never bypasses focus/overlay logic. Used only by the gated, loopback-only session input-control bridge in the coding agent.
 - Added `computeSlashUsageBoosts` so the slash-command autocomplete boosts recently-used commands (frecency) without letting usage outrank a real prefix match.
 
