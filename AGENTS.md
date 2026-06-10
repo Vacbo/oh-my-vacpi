@@ -201,6 +201,11 @@ For the bash tool specifically:
 - NEVER commit unless asked.
 - Never use `tsc`/`npx tsc` — always `bun check`.
 
+## Version Control (fork policy)
+
+- This repo is managed with **jj (Jujutsu, colocated)**. Use `jj` commands for VCS operations: git HEAD stays detached by design, "uncommitted changes" in git status are the snapshotted `@` working-copy commit, and git hooks (including `omp-rebuild.sh`) do not fire under jj, so rebuild manually after merges.
+- Committing and pushing to the fork remote (`origin` = Vacbo/oh-my-vacpi) is **pre-authorized**: carve WIP into atomic commits (one logical change each, conventional-commit message, changelog lines travel with their change) and push `main`. Never push to `upstream` or `pi`.
+
 ## Testing Guidance
 
 Test the contract the system exposes — not the easiest internal detail to assert.
