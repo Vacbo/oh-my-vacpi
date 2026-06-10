@@ -26,6 +26,7 @@ import {
 } from "../session/live-session-registry";
 import { captureNativeTerminal, type NativeCaptureOutcome } from "../session/native-terminal-capture";
 import { readTerminalSnapshot } from "../session/terminal-snapshot";
+import { resizeImage } from "../utils/image-resize";
 import { acquireBrowser } from "./browser/registry";
 import type { ScreenshotResult } from "./browser/tab-protocol";
 import { acquireTab, releaseTab, runInTab } from "./browser/tab-supervisor";
@@ -183,6 +184,26 @@ export async function captureMirrorScreenshot(options: {
 		};
 	} finally {
 		await releaseTab(tabName, { kill: false });
+	}
+}
+
+/**
+ * Load a captured screenshot back as an inline image block, downscaled to the
+ * same budget the browser screenshot pipeline uses. Attaching it to the tool
+ * result makes the TUI render it in the session, so the user sees exactly what
+ * the model received. Returns undefined instead of failing a capture that
+ * already succeeded when the file cannot be read or decoded.
+ */
+export async function inlineScreenshotImage(filePath: string): Promise<ImageContent | undefined> {
+	try {
+		const buffer = await fs.readFile(filePath);
+		const resized = await resizeImage(
+			{ type: "image", data: buffer.toBase64(), mimeType: "image/png" },
+			{ maxWidth: 1024, maxHeight: 1024, maxBytes: 150 * 1024, jpegQuality: 70 },
+		);
+		return { type: "image", data: resized.data, mimeType: resized.mimeType };
+	} catch {
+		return undefined;
 	}
 }
 
@@ -361,22 +382,27 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 		if (!outcome.ok) {
 			throw new ToolError(`Native terminal capture failed (${outcome.reason}): ${outcome.message}`);
 		}
+		const inlineImage = await inlineScreenshotImage(outcome.result.path);
 		const summary = JSON.stringify(
 			{
 				runId: session.runId,
 				screenshot: outcome.result,
-				hint: "Use inspect_image on the screenshot path for visual analysis without inlining the full-resolution image.",
+				hint: inlineImage
+					? "The attached image is a downscaled preview (also rendered in the session for the user); use inspect_image on the full-resolution screenshot path for fine detail."
+					: "Use inspect_image on the screenshot path for visual analysis without inlining the full-resolution image.",
 			},
 			null,
 			2,
 		);
+		const content: Array<TextContent | ImageContent> = [{ type: "text", text: summary }];
+		if (inlineImage) content.push(inlineImage);
 		return toolResult<TuiObserveDetails>({
 			action: params.action,
 			runId: session.runId,
 			screenshotPath: outcome.result.path,
 			screenshotSource: "native-terminal",
 		})
-			.text(summary)
+			.content(content)
 			.done();
 	}
 

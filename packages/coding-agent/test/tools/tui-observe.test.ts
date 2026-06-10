@@ -7,6 +7,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { LiveSessionMetadata } from "@oh-my-pi/pi-coding-agent/session/live-session-registry";
 import { TerminalSnapshotRecorder } from "@oh-my-pi/pi-coding-agent/session/terminal-snapshot";
 import {
+	inlineScreenshotImage,
 	resolveTuiScreenshotDest,
 	stopSharedMirror,
 	TuiObserveTool,
@@ -134,6 +135,25 @@ describe("tui_observe tool", () => {
 		} finally {
 			spy.mockRestore();
 		}
+	});
+
+	it("inlines a captured screenshot as a renderable image block, and never fails the capture over it", async () => {
+		const dir = await makeTempDir();
+		const dest = path.join(dir, "shot.png");
+		const onePixelPng = Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+			"base64",
+		);
+		await Bun.write(dest, onePixelPng);
+		const block = await inlineScreenshotImage(dest);
+		expect(block?.type).toBe("image");
+		expect(block?.mimeType).toMatch(/^image\//);
+		// The block must decode as a real image; that is what the TUI and model receive.
+		const meta = await new Bun.Image(Buffer.from(block!.data, "base64")).metadata();
+		expect(meta.width).toBe(1);
+		expect(meta.height).toBe(1);
+
+		expect(await inlineScreenshotImage(path.join(dir, "missing.png"))).toBeUndefined();
 	});
 });
 
