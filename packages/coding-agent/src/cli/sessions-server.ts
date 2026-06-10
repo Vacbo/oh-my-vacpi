@@ -201,6 +201,42 @@ function json(value: unknown, status = 200): Response {
 // icon/powerline codepoints resolve against an installed patched font instead of tofu.
 const TERMINAL_FONT_STACK = `ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Symbols Nerd Font Mono", "Symbols Nerd Font", "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font", "FiraCode Nerd Font Mono", "FiraCode Nerd Font", "Hack Nerd Font Mono", "Hack Nerd Font", "MesloLGS NF", monospace`;
 
+// Cell backgrounds must be painted by full-height boxes on an integer-pixel row
+// grid. Inline spans only paint the font's content area (ascent+descent), which
+// is shorter than the line box, so tinted blocks leak the page background as
+// 1-2px horizontal bands between rows; a fractional em row pitch (1.35em) adds
+// subpixel seams on top. Inline-block cells pinned to an integer row height tile
+// seamlessly, and vertical-align: top keeps fallback-font metrics (Nerd Font
+// icons, emoji) from shifting baselines and growing line boxes past the grid row.
+// Font size is tied to row pitch: box-drawing glyphs (U+2500-257F) come from the
+// font, not procedural drawing like a real terminal, and they only span the font's
+// natural line height (~1.286em for Menlo). At 14px in a 19px row a vertical `│`
+// covers 18 of 19px, breaking table borders with a 1px seam at every row boundary.
+// 15px spans ~19.3px >= the row, and .terminal-row's overflow: hidden crops the
+// ~0.15px excess, so vertical strokes fuse across rows (measured: longest unbroken
+// border stroke went from 36 to 497 device px at DPR 2).
+function terminalStyle(options: { fontPx: number; rowPx: number; frame: boolean; animate: boolean }): string {
+	const row = `${options.rowPx}px`;
+	const frame = options.frame ? " border: 1px solid #263241; border-radius: .6rem; overflow: auto;" : "";
+	const blink = options.animate
+		? "\n.cell.blink { animation: cell-blink 1s steps(2, start) infinite; }\n@keyframes cell-blink { 50% { opacity: 0; } }"
+		: "";
+	return `.terminal { font: ${options.fontPx}px/${row} ${TERMINAL_FONT_STACK}; background: #05070a; padding: 1rem;${frame} }
+.terminal-grid { display: grid; grid-auto-rows: ${row}; }
+.terminal-row { white-space: pre; height: ${row}; overflow: hidden; }
+.cell { display: inline-block; height: ${row}; vertical-align: top; }
+.cell.bold { font-weight: 700; }
+.cell.dim { opacity: .6; }
+.cell.italic { font-style: italic; }
+.cell.underline { text-decoration: underline; }
+.cell.strikethrough { text-decoration: line-through; }
+.cell.underline.strikethrough { text-decoration: underline line-through; }
+.cell.overline { text-decoration: overline; }
+.cell.inverse { filter: invert(1); }
+.cell.invisible { visibility: hidden; }${blink}
+.sr-text { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }`;
+}
+
 const PAGE_STYLE = `:root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b0f14; color: #e6edf3; }
 body { margin: 0; display: grid; grid-template-columns: 20rem 1fr; min-height: 100vh; }
 aside { border-right: 1px solid #263241; padding: 1rem; background: #111822; }
@@ -212,38 +248,12 @@ a { color: inherit; text-decoration: none; }
 .meta { display: grid; grid-template-columns: max-content 1fr; gap: .35rem .75rem; margin-bottom: 1rem; }
 .meta dt { color: #8b949e; }
 .meta dd { margin: 0; overflow-wrap: anywhere; }
-.terminal { font: 13px/1.35 ${TERMINAL_FONT_STACK}; background: #05070a; border: 1px solid #263241; border-radius: .6rem; padding: 1rem; overflow: auto; }
-.terminal-grid { display: grid; grid-auto-rows: 1.35em; }
-.terminal-row { white-space: pre; min-height: 1.35em; }
-.cell.bold { font-weight: 700; }
-.cell.dim { opacity: .6; }
-.cell.italic { font-style: italic; }
-.cell.underline { text-decoration: underline; }
-.cell.strikethrough { text-decoration: line-through; }
-.cell.underline.strikethrough { text-decoration: underline line-through; }
-.cell.overline { text-decoration: overline; }
-.cell.blink { animation: cell-blink 1s steps(2, start) infinite; }
-.cell.inverse { filter: invert(1); }
-.cell.invisible { visibility: hidden; }
-@keyframes cell-blink { 50% { opacity: 0; } }
-.sr-text { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }`;
+${terminalStyle({ fontPx: 15, rowPx: 19, frame: true, animate: true })}`;
 
 const PHOTO_STYLE = `:root { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #05070a; color: #e6edf3; }
-.terminal { font: 14px/1.35 ${TERMINAL_FONT_STACK}; background: #05070a; padding: 1rem; }
-.terminal-grid { display: grid; grid-auto-rows: 1.35em; }
-.terminal-row { white-space: pre; min-height: 1.35em; }
-.cell.bold { font-weight: 700; }
-.cell.dim { opacity: .6; }
-.cell.italic { font-style: italic; }
-.cell.underline { text-decoration: underline; }
-.cell.strikethrough { text-decoration: line-through; }
-.cell.underline.strikethrough { text-decoration: underline line-through; }
-.cell.overline { text-decoration: overline; }
-.cell.inverse { filter: invert(1); }
-.cell.invisible { visibility: hidden; }
-.sr-text { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }`;
+${terminalStyle({ fontPx: 15, rowPx: 19, frame: false, animate: false })}`;
 
 function renderSessionsPage(
 	sessions: LiveSessionSummary[],
