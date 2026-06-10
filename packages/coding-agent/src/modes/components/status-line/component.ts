@@ -7,6 +7,7 @@ import { $ } from "bun";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import * as git from "../../../utils/git";
+import * as jj from "../../../utils/jj";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { theme } from "../../theme/theme";
@@ -130,6 +131,7 @@ export class StatusLineComponent implements Component {
 	#cachedBranch: string | null | undefined = undefined;
 	#cachedBranchRepoId: string | null | undefined = undefined;
 	#gitWatcher: fs.FSWatcher | null = null;
+	#jjUnsubscribe: (() => void) | null = null;
 	#onBranchChange: (() => void) | null = null;
 	#autoCompactEnabled: boolean = true;
 	#hookStatuses: Map<string, string> = new Map();
@@ -238,6 +240,14 @@ export class StatusLineComponent implements Component {
 			this.#gitWatcher = null;
 		}
 
+		this.#jjUnsubscribe?.();
+		this.#jjUnsubscribe = jj.headLabel.subscribe(getProjectDir(), () => {
+			this.#invalidateGitCaches();
+			if (this.#onBranchChange) {
+				this.#onBranchChange();
+			}
+		});
+
 		const gitHeadPath = git.repo.resolveSync(getProjectDir())?.headPath ?? null;
 		if (!gitHeadPath) return;
 
@@ -258,6 +268,8 @@ export class StatusLineComponent implements Component {
 			this.#gitWatcher.close();
 			this.#gitWatcher = null;
 		}
+		this.#jjUnsubscribe?.();
+		this.#jjUnsubscribe = null;
 	}
 
 	invalidate(): void {
@@ -270,6 +282,13 @@ export class StatusLineComponent implements Component {
 		this.#cachedPrContext = undefined;
 	}
 	#getCurrentBranch(): string | null {
+		// jj workspaces (colocated or pure): git HEAD is permanently detached
+		// by design there, so the git probe below would always report
+		// "detached". The jj tracker is its own cache and re-renders arrive
+		// via the subscribe() callback wired in #setupGitWatcher.
+		const jjLabel = jj.headLabel.getSync(getProjectDir());
+		if (jjLabel !== undefined) return jjLabel;
+
 		const head = git.head.resolveSync(getProjectDir());
 		const gitHeadPath = head?.headPath ?? null;
 		if (this.#cachedBranch !== undefined && this.#cachedBranchRepoId === gitHeadPath) {
@@ -335,7 +354,14 @@ export class StatusLineComponent implements Component {
 		const stalePr = this.#cachedPr;
 
 		// Don't look up if no branch, detached HEAD, default branch, or already in flight
-		if (!branch || branch === "detached" || this.#isDefaultBranch(branch) || this.#prLookupInFlight) {
+		// jj working copies expose no git branch for `gh pr view` to resolve.
+		if (
+			!branch ||
+			branch === "detached" ||
+			jj.repo.rootSync(getProjectDir()) !== null ||
+			this.#isDefaultBranch(branch) ||
+			this.#prLookupInFlight
+		) {
 			return stalePr ?? null;
 		}
 
