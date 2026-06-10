@@ -1239,6 +1239,11 @@ export interface PtyStartOptions {
   cwd?: string
   /** Environment variables for this command. */
   env?: Record<string, string>
+  /**
+   * When true, start from an empty environment instead of inheriting the
+   * parent's; `env` then defines the child environment exactly.
+   */
+  envClear?: boolean
   /** Timeout in milliseconds before cancelling. */
   timeoutMs?: number
   /** Abort signal for cancelling the operation. */

@@ -30,6 +30,9 @@ pub struct PtyStartOptions<'env> {
 	pub cwd:        Option<String>,
 	/// Environment variables for this command.
 	pub env:        Option<HashMap<String, String>>,
+	/// When true, start from an empty environment instead of inheriting the
+	/// parent's; `env` then defines the child environment exactly.
+	pub env_clear:  Option<bool>,
 	/// Timeout in milliseconds before cancelling.
 	pub timeout_ms: Option<u32>,
 	/// Abort signal for cancelling the operation.
@@ -56,12 +59,13 @@ pub struct PtyRunResult {
 
 #[derive(Clone)]
 struct PtyRunConfig {
-	command: String,
-	cwd:     Option<String>,
-	env:     Option<HashMap<String, String>>,
-	cols:    u16,
-	rows:    u16,
-	shell:   Option<String>,
+	command:   String,
+	cwd:       Option<String>,
+	env:       Option<HashMap<String, String>>,
+	env_clear: bool,
+	cols:      u16,
+	rows:      u16,
+	shell:     Option<String>,
 }
 
 enum ReaderEvent {
@@ -115,12 +119,13 @@ impl PtySession {
 		on_chunk: Option<ThreadsafeFunction<String>>,
 	) -> Result<PromiseRaw<'env, PtyRunResult>> {
 		let run_config = PtyRunConfig {
-			command: options.command,
-			cwd:     options.cwd,
-			env:     options.env,
-			cols:    options.cols.unwrap_or(120).clamp(20, 400),
-			rows:    options.rows.unwrap_or(40).clamp(5, 200),
-			shell:   options.shell,
+			command:   options.command,
+			cwd:       options.cwd,
+			env:       options.env,
+			env_clear: options.env_clear.unwrap_or(false),
+			cols:      options.cols.unwrap_or(120).clamp(20, 400),
+			rows:      options.rows.unwrap_or(40).clamp(5, 200),
+			shell:     options.shell,
 		};
 		let ct = task::CancelToken::new(options.timeout_ms, options.signal);
 		let core = Arc::clone(&self.core);
@@ -270,6 +275,9 @@ fn run_pty_sync(
 	cmd.arg(&config.command);
 	if let Some(cwd) = config.cwd.as_ref() {
 		cmd.cwd(cwd);
+	}
+	if config.env_clear {
+		cmd.env_clear();
 	}
 	if let Some(env) = config.env.as_ref() {
 		for (key, value) in env {

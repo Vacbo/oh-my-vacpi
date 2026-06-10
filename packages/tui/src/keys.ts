@@ -524,6 +524,204 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 	return matchesKeyNative(data, keyId, kittyProtocolActive);
 }
 
+// =============================================================================
+// Key Encoding (inverse of matchesKey)
+// =============================================================================
+
+/** Legacy byte sequences for unmodified named keys (mirrors the native matcher tables). */
+const ENCODE_SINGLE: Record<string, string> = {
+	escape: "\x1b",
+	enter: "\r",
+	tab: "\t",
+	space: " ",
+	backspace: "\x7f",
+	insert: "\x1b[2~",
+	delete: "\x1b[3~",
+	clear: "\x1b[E",
+	home: "\x1b[H",
+	end: "\x1b[F",
+	pageup: "\x1b[5~",
+	pagedown: "\x1b[6~",
+	up: "\x1b[A",
+	down: "\x1b[B",
+	right: "\x1b[C",
+	left: "\x1b[D",
+	f1: "\x1bOP",
+	f2: "\x1bOQ",
+	f3: "\x1bOR",
+	f4: "\x1bOS",
+	f5: "\x1b[15~",
+	f6: "\x1b[17~",
+	f7: "\x1b[18~",
+	f8: "\x1b[19~",
+	f9: "\x1b[20~",
+	f10: "\x1b[21~",
+	f11: "\x1b[23~",
+	f12: "\x1b[24~",
+};
+
+/** CSI `1;<mod><final>` final bytes for keys that accept xterm-style modifiers. */
+const ENCODE_CSI_FINAL: Record<string, string> = {
+	up: "A",
+	down: "B",
+	right: "C",
+	left: "D",
+	home: "H",
+	end: "F",
+};
+
+/** CSI `<num>;<mod>~` numbers for functional keys that accept modifiers. */
+const ENCODE_CSI_TILDE: Record<string, number> = {
+	insert: 2,
+	delete: 3,
+	pageup: 5,
+	pagedown: 6,
+};
+
+/** Legacy ctrl+symbol control bytes (mirrors the native `ctrl_symbol_to_byte`). */
+const ENCODE_CTRL_SYMBOL: Record<string, number> = {
+	"@": 0x00,
+	"[": 0x1b,
+	"\\": 0x1c,
+	"]": 0x1d,
+	"^": 0x1e,
+	_: 0x1f,
+	"-": 0x1f,
+};
+
+/**
+ * Control bytes legacy terminals send for named keys (Backspace, Tab, LF, CR,
+ * Escape, DEL). The matcher resolves these bytes to the named key, so combos
+ * that would collide (e.g. ctrl+m -> CR) must use the modifyOtherKeys encoding.
+ */
+const NAMED_KEY_LEGACY_BYTES = new Set([0x08, 0x09, 0x0a, 0x0d, 0x1b, 0x7f]);
+
+function encodeKeyError(keyId: string): Error {
+	return new Error(
+		`no legacy encoding for "${keyId}" (supported: printable characters, named keys like "enter"/"escape"/"up", and ctrl+/shift+/alt+ combinations)`,
+	);
+}
+
+/**
+ * Encode a key identifier into the byte sequence a legacy (non-kitty) terminal
+ * would send for that key press — the inverse of {@link matchesKey}.
+ *
+ * Accepts the same grammar as `matchesKey`: named keys ("escape", "enter",
+ * "up", "pageUp", "f5", …), printable characters, and `ctrl+`/`shift+`/`alt+`/
+ * `super+` combinations. Combos with no byte-level representation the matcher
+ * accepts in legacy mode (e.g. "ctrl+escape", modified f-keys) throw.
+ *
+ * The invariant `matchesKey(encodeKey(id), id) === true` holds for every id
+ * this function returns a value for (with the kitty protocol inactive).
+ *
+ * @param keyId - Key identifier (e.g. "ctrl+c", "escape", Key.ctrl("c"))
+ */
+export function encodeKey(keyId: KeyId): string {
+	const id = (keyId as string).trim();
+	// Mirror the native parse_key_id: a trailing "++" (or bare "+") means the key is '+'.
+	let prefix = id;
+	let key: string | undefined;
+	if (id === "+") {
+		key = "+";
+		prefix = "";
+	} else if (id.endsWith("++")) {
+		key = "+";
+		prefix = id.slice(0, -2);
+	}
+	let shift = false;
+	let alt = false;
+	let ctrl = false;
+	let superMod = false;
+	for (const part of prefix.split("+")) {
+		const p = part.trim();
+		if (!p) continue;
+		const lower = p.toLowerCase();
+		if (lower === "ctrl") ctrl = true;
+		else if (lower === "shift") shift = true;
+		else if (lower === "alt") alt = true;
+		else if (lower === "super") superMod = true;
+		else key = p;
+	}
+	if (!key) throw encodeKeyError(id);
+
+	let name = key.toLowerCase();
+	if (name === "plus") name = "+";
+	else if (name === "esc") name = "escape";
+	else if (name === "return") name = "enter";
+
+	const bits = (shift ? 1 : 0) | (alt ? 2 : 0) | (ctrl ? 4 : 0) | (superMod ? 8 : 0);
+	const modParam = 1 + bits;
+	const shiftOnly = bits === 1;
+	const altOnly = bits === 2;
+	const ctrlOnly = bits === 4;
+	/** xterm modifyOtherKeys: CSI 27 ; modifiers ; keycode ~ (parsed by the matcher in all modes). */
+	const mok = (codepoint: number) => `\x1b[27;${modParam};${codepoint}~`;
+
+	if (name.length > 1) {
+		if (bits === 0) {
+			const seq = ENCODE_SINGLE[name];
+			if (seq !== undefined) return seq;
+			throw encodeKeyError(id);
+		}
+		switch (name) {
+			case "escape":
+				// The matcher rejects modified escape outright.
+				throw encodeKeyError(id);
+			case "enter":
+				return altOnly ? "\x1b\r" : mok(13);
+			case "tab":
+				if (shiftOnly) return "\x1b[Z";
+				if (altOnly) return "\x1b\t";
+				return mok(9);
+			case "space":
+				if (ctrlOnly) return "\x00";
+				if (altOnly) return "\x1b ";
+				return mok(32);
+			case "backspace":
+				return altOnly ? "\x1b\x7f" : mok(127);
+			case "clear":
+				if (shiftOnly) return "\x1b[e";
+				if (ctrlOnly) return "\x1bOe";
+				throw encodeKeyError(id);
+			default: {
+				const final = ENCODE_CSI_FINAL[name];
+				if (final !== undefined) return `\x1b[1;${modParam}${final}`;
+				const num = ENCODE_CSI_TILDE[name];
+				if (num !== undefined) return `\x1b[${num};${modParam}~`;
+				// Modified f-keys and unknown names have no legacy encoding.
+				throw encodeKeyError(id);
+			}
+		}
+	}
+
+	// Single-character keys: ASCII graphic chars only, mirroring the matcher.
+	const code = name.charCodeAt(0);
+	if (code < 0x21 || code > 0x7e) throw encodeKeyError(id);
+	if (bits === 0) return name;
+	const isLetter = name >= "a" && name <= "z";
+	if (isLetter) {
+		if (shiftOnly) return name.toUpperCase();
+		if (altOnly) return `\x1b${name}`;
+		if (bits === 3) return `\x1b${name.toUpperCase()}`; // alt+shift
+		if (ctrlOnly || bits === 6) {
+			// ctrl or ctrl+alt: raw control char, unless that byte is claimed by a named key.
+			const ctrlCode = code - 96;
+			if (!NAMED_KEY_LEGACY_BYTES.has(ctrlCode)) {
+				const raw = String.fromCharCode(ctrlCode);
+				return ctrlOnly ? raw : `\x1b${raw}`;
+			}
+		}
+		return mok(code);
+	}
+	if (ctrlOnly) {
+		const mapped = ENCODE_CTRL_SYMBOL[name];
+		if (mapped !== undefined && !NAMED_KEY_LEGACY_BYTES.has(mapped)) {
+			return String.fromCharCode(mapped);
+		}
+	}
+	return mok(code);
+}
+
 /**
  * Parse terminal input and return a normalized key identifier.
  *

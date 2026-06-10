@@ -58,6 +58,7 @@ import { SearchTool } from "./search";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
 import { loadSshTool } from "./ssh";
 import { type TodoPhase, TodoWriteTool } from "./todo";
+import { TuiDriveTool } from "./tui-drive";
 import { TuiObserveTool } from "./tui-observe";
 import { WriteTool } from "./write";
 import { YieldTool } from "./yield";
@@ -469,6 +470,7 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
 	tui_observe: s => new TuiObserveTool(s),
+	tui_drive: s => new TuiDriveTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	task: s => TaskTool.create(s),

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### oh-my-vacpi (fork)
+
+#### Added
+
+- Added `envClear` to `PtyStartOptions`: when true, the PTY child starts from an empty environment and `env` defines it exactly, instead of the default merge over the parent's environment. Lets callers actually *remove* inherited variables (the coding agent's `tui_drive` uses it to scrub terminal-identity vars like `CMUX_SURFACE_ID` from driven children).
+
 ## [15.10.5] - 2026-06-08
 
 ### Added

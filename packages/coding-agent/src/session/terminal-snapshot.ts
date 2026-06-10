@@ -62,6 +62,12 @@ export interface TerminalSnapshotRecorderOptions {
 	cols?: number;
 	rows?: number;
 	now?: () => Date;
+	/**
+	 * Receives data the emulated terminal wants to send back to the host
+	 * (e.g. DA1/DSR query replies). Providing it enables xterm stdin so those
+	 * replies are generated; callers forward them into the PTY.
+	 */
+	onData?: (data: string) => void;
 }
 
 export interface TerminalSnapshotFromTextOptions {
@@ -87,10 +93,11 @@ export class TerminalSnapshotRecorder {
 		this.#terminal = new XtermTerminal({
 			cols: clampColumns(options.cols ?? DEFAULT_COLUMNS),
 			rows: clampRows(options.rows ?? DEFAULT_ROWS),
-			disableStdin: true,
+			disableStdin: !options.onData,
 			allowProposedApi: true,
 			scrollback: 10_000,
 		});
+		if (options.onData) this.#terminal.onData(options.onData);
 	}
 
 	resize(cols: number, rows: number): void {
