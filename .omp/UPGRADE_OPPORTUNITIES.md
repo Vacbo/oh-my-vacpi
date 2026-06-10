@@ -41,6 +41,32 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-10 — `tui_drive` batched named keys mis-parse in full-screen component input   `[open]` `[med]`
+
+**Where**: `packages/coding-agent/src/tools/tui-drive.ts` (input action writes text, then every named key back-to-back), `packages/coding-agent/src/modes/components/extensions/extension-dashboard.ts` / `tools-dashboard.ts` `handleInput` (whole-chunk `matchesKey` checks), `packages/tui/src/keys.ts` (`encodeKey`).
+
+**Incident**: 2026-06-10, driving the new Tool Control Center: `input keys: ["escape","right","right"]` arrived as one PTY chunk (`\x1b\x1b[C\x1b[C`). `matchesKey(chunk, "escape")` failed on the multi-key chunk, the dashboard fell through to the list, and `extractPrintableText` appended a literal `[C` to the search query ("find[C", "No extensions found"). Sending one key per `input` call behaves correctly.
+
+**Mechanism**: component-level `handleInput(data)` receives raw chunks and only matches single-key sequences; batched writes (fast typists, paste, automation) degrade into printable garbage. This is generic to every full-screen overlay using the whole-chunk pattern, not specific to one dashboard.
+
+**Fix sketch**: either (a) `tui_drive` flushes each named key as its own PTY write with a small inter-key gap, or (b) pi-tui gains a chunk segmenter (scan with the existing key parser, split into discrete key events) that overlay `handleInput` paths share. (b) also fixes real-world paste/fast input, so it is the better long-term home; (a) is a one-liner stopgap in the drive session manager.
+
+## 2026-06-10 — Extension/Tool dashboards cannot search terms containing `j`/`k`   `[open]` `[low]`
+
+**Where**: `packages/coding-agent/src/modes/components/extensions/extension-list.ts` `handleInput` (printable chars route to search, but `"j"`/`"k"` return early as list navigation).
+
+**Mechanism**: vim-style nav keys are checked before search input, unconditionally. Queries like "job", "task_update", or any skill/tool name containing j/k are untypable in /extensions and /tools; the characters silently scroll the list instead.
+
+**Fix sketch**: treat `j`/`k` as navigation only while the search query is empty (first keystroke), and as search input once a query exists; arrow keys keep working for navigation either way. One conditional in `ExtensionList.handleInput`, plus a regression test typing "job" into the search.
+
+## 2026-06-10 — Mirror screenshots are rendered by the HOST omp's sessions-server, so source fixes lag until restart   `[open]` `[low]`
+
+**Where**: `packages/coding-agent/src/tools/tui-observe.ts` (`getSharedMirror` starts the loopback sessions-server in the tool host process), `packages/coding-agent/src/cli/sessions-server.ts` (photo page).
+
+**Incident**: 2026-06-10, after fixing the photo page's `.sr-text` strip and font fallbacks at source, `tui_drive screenshot` of a *source-run* child still showed the old artifacts: the capture is served by the host session's (older) binary, not the driven child's code. Easy to misread as "fix didn't work" during UI verification; had to spin up a sessions-server from source on a side port to verify.
+
+**Fix sketch**: stamp the photo page (and the screenshot result JSON) with the serving build's version so staleness is visible at a glance; optionally add a `tui.mirror.preferSource` dev escape hatch or restart the shared mirror when the binary's mtime changes. Low priority: only bites when iterating on the mirror itself.
+
 ## 2026-06-10 — Slash picker ranks `/export` above `/exit` on short prefixes; usage boost entrenches the misfire   `[open]` `[low]`
 
 **Where**: `packages/tui/src/autocomplete.ts:127-148` (`fuzzyScore`: exact 100, starts-with 80), `:228-239` (`computeSlashUsageBoosts`: MRU rank 0 → +15), `:344-373` (sort by `matchScore + usageBoost`, stable), `packages/coding-agent/src/slash-commands/builtin-registry.ts:262` (`export`) vs `:1098` (`exit`) vs `:1677` (`quit`), `packages/coding-agent/src/modes/controllers/input-controller.ts:602-604,871-874` (usage recording, includes `/skill:` names), `packages/coding-agent/src/session/agent-storage.ts` (`slash_command_usage` table).
