@@ -41,6 +41,23 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-10 — Slash picker ranks `/export` above `/exit` on short prefixes; usage boost entrenches the misfire   `[open]` `[low]`
+
+**Where**: `packages/tui/src/autocomplete.ts:127-148` (`fuzzyScore`: exact 100, starts-with 80), `:228-239` (`computeSlashUsageBoosts`: MRU rank 0 → +15), `:344-373` (sort by `matchScore + usageBoost`, stable), `packages/coding-agent/src/slash-commands/builtin-registry.ts:262` (`export`) vs `:1098` (`exit`) vs `:1677` (`quit`), `packages/coding-agent/src/modes/controllers/input-controller.ts:602-604,871-874` (usage recording, includes `/skill:` names), `packages/coding-agent/src/session/agent-storage.ts` (`slash_command_usage` table).
+
+**Incident**: 2026-06-10, two accidental `/export`s (multi-MB session HTML dumped into the repo root, since gitignored as `omp-session-*.html`) while trying to exit the TUI.
+
+**Mechanism**: For prefix `ex`, both `exit` and `export` are starts-with matches at fuzzyScore 80. The sort is stable, so ties fall back to registry registration order, and `export` (line 262) precedes `exit` (line 1098); the top item is what Enter accepts. This trap predates frecency. The usage boost then entrenches it: one accidental export records usage, the next `/ex` scores export 95 vs exit 80, and every repeat re-records, so the misfire is self-reinforcing. Typing `/exit` in full is safe (exact match 100, and "exit" is not a subsequence of "export"). `/q` is currently a unique prefix for `quit`.
+
+**Ranking ownership** (clarified same day): the env-level `@ff-labs/pi-fff` plugin only ranks files: FFF-backed `@` autocomplete plus `fffind`/`ffgrep` tools, with a frecency DB of file access. Slash commands and `/skill:` entries are ranked exclusively by the fork-native `slash_command_usage` path above. The two systems share no storage or scoring; "pi-fff handles reranking" holds for `@` mentions only.
+
+**Fix sketch — learn from FFF's algorithm** (`fff-core/src/score.rs`, the engine behind pi-fff; read 2026-06-10): FFF never lets history beat relevance because its boosts are multiplicative fractions of the match score (`frecency_boost = base_score * frecency / 100`, git boost `base * 15/100`, exact-filename bonus `base * 40%`), and it keeps a query-to-choice combo memory (`last_same_query_match` + `open_count`): picking a result for a given typed query boosts that exact pair next time. Port both ideas to the commands picker:
+
+1. Replace the flat `+15` MRU boost with a multiplicative one (`base * usageRank%`), so equal-relevance ties stop being decided by global popularity alone.
+2. Record `(typed prefix → picked command)` pairs in `slash_command_usage` (add a `query` column) and boost pair hits first; one corrective `/exit` pick after typing `ex` then flips the ranking permanently, making the picker self-healing instead of self-entrenching.
+3. Adopt FFF's decomposed `Score` shape (`{ base, usageBoost, pairBoost, exactnessBonus, total, matchType }`) in a pure `scoreSlashCommand()` in pi-tui, unit-tested with the `ex` → exit/export case as the regression fixture. That decomposition is what "enables easy upgrades": ranking policy changes become one-component diffs with visible blame, and `/fff-health`-style debugging (show per-component scores in the picker under a debug flag) comes free.
+4. Cheapest interim guard independent of the above: tie-break equal scores by shorter name, so `exit` precedes `export` at `ex` even before any history exists.
+
 ## 2026-06-10 — `sem` entity diffs cover `git diff` only; jj-colocated repos bypass them   `[open]` `[low]`
 
 **Where**: [`sem`](https://github.com/Ataraxy-Labs/sem) (Ataraxy Labs), installed environment-wide via `sem setup`, which replaces `git diff` output with entity-level diffs for everything that shells out to git. Not part of vacpi or the harness: it lives in Pedro's code environment, so do not grep this repo for its "N entities, M unchanged filtered out" summary. Fork-side surface that could host an equivalent: `crates/pi-shell/src/minimizer/filters/` (cargo.rs et al.).
