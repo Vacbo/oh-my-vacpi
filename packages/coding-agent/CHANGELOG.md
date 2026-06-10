@@ -53,6 +53,7 @@
 - Fixed GitHub issue metadata not rendering in the issue view.
 - Simplified the ProjFS isolation fallback for Windows task isolation.
 - Fixed stale legacy-mirror cleanup in the extensibility layer.
+- Made `plugin-extensions-discovery.test.ts` hermetic: isolation now spies the pi-utils plugins-path accessors (the seam `plugin-install-local.test.ts` already uses) instead of mutating `XDG_DATA_HOME`, which was order-dependent under the full suite because `DirResolver` honors XDG only while the agent dir is the default and `setAgentDir()` leaks across test files. Fixes the 9 deterministic full-suite failures; the unguarded upstream variant of this flaw wiped a real `~/.omp/plugins` install during merge verification (restored from `bun.lock`).
 
 #### Removed
 

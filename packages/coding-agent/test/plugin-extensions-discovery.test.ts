@@ -1,40 +1,45 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { discoverAndLoadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
-import { getAgentDir, getPluginsDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import * as piUtils from "@oh-my-pi/pi-utils";
 
 const currentPiCodingAgentPath = Bun.resolveSync("@oh-my-pi/pi-coding-agent", import.meta.dir);
 const currentPiExtensionsPath = Bun.resolveSync("@oh-my-pi/pi-coding-agent/extensibility/extensions", import.meta.dir);
 
 describe("plugin extension discovery", () => {
-	let projectDir: TempDir;
-	let tempXdgDataHome = "";
+	let projectDir: piUtils.TempDir;
+	let pluginsTempDir: piUtils.TempDir;
 	let pluginsDir = "";
-	let originalXdgDataHome: string | undefined;
-	const originalAgentDir = getAgentDir();
 
 	beforeEach(() => {
-		projectDir = TempDir.createSync("@pi-plugin-ext-");
-		originalXdgDataHome = process.env.XDG_DATA_HOME;
-		tempXdgDataHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-plugin-data-"));
-		fs.mkdirSync(path.join(tempXdgDataHome, "omp"), { recursive: true });
-		process.env.XDG_DATA_HOME = tempXdgDataHome;
-		// Rebuild path caches after changing XDG env so plugin discovery resolves into the temp root.
-		setAgentDir(originalAgentDir);
+		projectDir = piUtils.TempDir.createSync("@pi-plugin-ext-");
+		// Isolate through the same seam the code under test resolves paths with
+		// (extensibility/plugins/loader.ts and discovery/helpers.ts): spy the
+		// pi-utils accessors instead of mutating XDG_DATA_HOME. Env-based
+		// isolation is order-dependent under the full suite: DirResolver honors
+		// XDG only while the agent dir is the default, and any earlier test file
+		// that called setAgentDir() leaves a non-default dir behind, silently
+		// resolving getPluginsDir() to the real ~/.omp/plugins, which the
+		// destructive fixtures below would then rmSync. The four accessors are
+		// spied individually because dirs.ts composes them via intra-module
+		// calls the namespace spy cannot intercept. Same pattern as
+		// plugin-install-local.test.ts; incident notes in
+		// .omp/UPGRADE_OPPORTUNITIES.md (2026-06-09, DirResolver entry).
+		pluginsTempDir = piUtils.TempDir.createSync("@pi-plugin-data-");
+		pluginsDir = pluginsTempDir.path();
+		spyOn(piUtils, "getPluginsDir").mockReturnValue(pluginsDir);
+		spyOn(piUtils, "getPluginsNodeModules").mockReturnValue(path.join(pluginsDir, "node_modules"));
+		spyOn(piUtils, "getPluginsPackageJson").mockReturnValue(path.join(pluginsDir, "package.json"));
+		spyOn(piUtils, "getPluginsLockfile").mockReturnValue(path.join(pluginsDir, "omp-plugins.lock.json"));
 
-		pluginsDir = getPluginsDir();
-		const tempPrefix = `${tempXdgDataHome}${path.sep}`;
-		if (!pluginsDir.startsWith(tempPrefix)) {
-			// Guard: the XDG redirect silently falls back to the real ~/.omp/plugins
-			// if `${XDG_DATA_HOME}/omp` does not exist on disk (see DirResolver in
-			// packages/utils/src/dirs.ts). Refuse to proceed before any destructive
-			// fs.rmSync / fs.writeFileSync touches a real plugins directory.
+		// Tripwire: if the spy mechanism ever stops intercepting the resolver
+		// (bun behavior change, accessor rename surviving via a re-export),
+		// refuse to proceed before any destructive fixture write.
+		if (piUtils.getPluginsDir() !== pluginsDir) {
 			throw new Error(
-				`Test isolation failure: getPluginsDir() returned ${pluginsDir}, ` +
-					`outside tempXdgDataHome ${tempXdgDataHome}. ` +
-					`Refusing to write fixture data to a real plugins directory.`,
+				`Test isolation failure: getPluginsDir() returned ${piUtils.getPluginsDir()} ` +
+					`instead of ${pluginsDir}. Refusing to write fixture data to a real plugins directory.`,
 			);
 		}
 
@@ -71,14 +76,11 @@ describe("plugin extension discovery", () => {
 	});
 
 	afterEach(() => {
+		// mock.restore() must run even though the spies are re-installed per
+		// test: leaked piUtils stubs would poison sibling test files.
+		mock.restore();
 		projectDir.removeSync();
-		fs.rmSync(tempXdgDataHome, { recursive: true, force: true });
-		if (originalXdgDataHome === undefined) {
-			delete process.env.XDG_DATA_HOME;
-		} else {
-			process.env.XDG_DATA_HOME = originalXdgDataHome;
-		}
-		setAgentDir(originalAgentDir);
+		pluginsTempDir.removeSync();
 	});
 
 	it("loads installed plugin extensions declared in package.json", async () => {
@@ -154,7 +156,6 @@ describe("plugin extension discovery", () => {
 	});
 
 	it("loads installed legacy Pi plugin extensions that use package imports", async () => {
-		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "package-import-plugin");
 		const extensionPath = path.join(pluginDir, "src", "index.ts");
 		fs.rmSync(path.join(pluginsDir, "node_modules"), { recursive: true, force: true });
@@ -212,7 +213,6 @@ describe("plugin extension discovery", () => {
 	});
 
 	it("honors package import conditional object order", async () => {
-		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "conditional-import-plugin");
 		const extensionPath = path.join(pluginDir, "src", "index.ts");
 		fs.rmSync(path.join(pluginsDir, "node_modules"), { recursive: true, force: true });
@@ -274,7 +274,6 @@ describe("plugin extension discovery", () => {
 	});
 
 	it("leaves package import aliases that point at non-source files for Bun's native loaders", async () => {
-		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "json-import-plugin");
 		const extensionPath = path.join(pluginDir, "src", "index.ts");
 		fs.rmSync(path.join(pluginsDir, "node_modules"), { recursive: true, force: true });
@@ -323,7 +322,6 @@ describe("plugin extension discovery", () => {
 	});
 
 	it("preserves exact null package import exclusions ahead of wildcard fallbacks", async () => {
-		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "null-exact-import-plugin");
 		const extensionPath = path.join(pluginDir, "src", "index.ts");
 		fs.rmSync(path.join(pluginsDir, "node_modules"), { recursive: true, force: true });
@@ -373,7 +371,6 @@ describe("plugin extension discovery", () => {
 	});
 
 	it("preserves active null conditional package import exclusions", async () => {
-		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "null-conditional-import-plugin");
 		const extensionPath = path.join(pluginDir, "src", "index.ts");
 		fs.rmSync(path.join(pluginsDir, "node_modules"), { recursive: true, force: true });
@@ -425,7 +422,6 @@ describe("plugin extension discovery", () => {
 	});
 
 	it("rewrites side-effect imports of package-import aliases and legacy Pi scopes", async () => {
-		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "side-effect-plugin");
 		const extensionPath = path.join(pluginDir, "src", "index.ts");
 		fs.rmSync(path.join(pluginsDir, "node_modules"), { recursive: true, force: true });
