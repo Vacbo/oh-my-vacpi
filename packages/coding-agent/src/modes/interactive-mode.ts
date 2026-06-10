@@ -116,6 +116,7 @@ import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import { WelcomeComponent, type LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
+import { decideGoalContinuation } from "./continuation/goal-continuation";
 import { BtwController } from "./controllers/btw-controller";
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
@@ -857,10 +858,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#pendingSubmittedInput) return;
 		if (this.editor.getText().trim().length > 0) return;
 		if ((this.pendingImages?.length ?? 0) > 0) return;
-		const state = this.session.getGoalModeState();
-		if (!state?.enabled || state.goal.status !== "active") return;
-		const prompt = this.session.goalRuntime.buildContinuationPrompt();
-		if (!prompt) return;
+		if (decideGoalContinuation(this.session).kind !== "continue") return;
 		this.#goalContinuationTimer = setTimeout(() => {
 			this.#goalContinuationTimer = undefined;
 			if (!this.onInputCallback) return;
@@ -868,12 +866,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (this.#pendingSubmittedInput) return;
 			if (this.editor.getText().trim().length > 0) return;
 			if ((this.pendingImages?.length ?? 0) > 0) return;
-			const latestState = this.session.getGoalModeState();
-			if (!latestState?.enabled || latestState.goal.status !== "active") return;
+			const decision = decideGoalContinuation(this.session);
+			if (decision.kind !== "continue") return;
 			this.#goalContinuationTurnInFlight = true;
 			this.onInputCallback(
 				this.startPendingSubmission({
-					text: prompt,
+					text: decision.prompt,
 					customType: "goal-continuation",
 					display: false,
 				}),

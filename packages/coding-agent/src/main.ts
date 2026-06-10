@@ -51,6 +51,7 @@ import { ExtensionRunner } from "./extensibility/extensions/runner";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
 import type { MCPManager } from "./mcp";
+import { parsePrintGoalArgs } from "./modes/continuation/print-goal";
 import { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
@@ -80,7 +81,7 @@ import {
 import { EventBus } from "./utils/event-bus";
 
 type RunAcpMode = (createSession: AcpSessionFactory) => Promise<never>;
-type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<void>;
+type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<number>;
 type RunRpcMode = (
 	session: AgentSession,
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
@@ -995,6 +996,16 @@ export async function runRootCommand(
 	const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
 	const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
 
+	const printGoal = parsePrintGoalArgs(parsedArgs);
+	if (printGoal.kind === "error") {
+		process.stderr.write(`${printGoal.message}\n`);
+		process.exit(1);
+	}
+	if (printGoal.kind === "ok" && (isInteractive || isProtocolMode)) {
+		process.stderr.write("--goal requires print mode (-p)\n");
+		process.exit(1);
+	}
+
 	// Initialize discovery system with settings for provider persistence
 	logger.time("initializeWithSettings", initializeWithSettings, settingsInstance);
 
@@ -1307,18 +1318,19 @@ export async function runRootCommand(
 			// Branch-only single-shot runner: keep print-mode code out of normal interactive startup.
 			stopStartupWatchdog();
 			const runPrintMode: RunPrintMode = (await import("./modes/print-mode")).runPrintMode;
-			await runPrintMode(session, {
+			const exitCode = await runPrintMode(session, {
 				mode,
 				messages: initialArgs.messages,
 				initialMessage,
 				initialImages,
+				goal: printGoal.kind === "ok" ? printGoal.options : undefined,
 			});
 			if ($env.PI_TIMING) {
 				logger.printTimings();
 			}
 			await session.dispose();
 			stopThemeWatcher();
-			await postmortem.quit(0);
+			await postmortem.quit(exitCode);
 		}
 	}
 }

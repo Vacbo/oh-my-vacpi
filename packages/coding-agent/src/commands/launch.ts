@@ -149,6 +149,18 @@ export default class Index extends Command {
 			options: ["always-ask", "write", "yolo"],
 			description: "Override tools.approvalMode for this session (always-ask|write|yolo)",
 		}),
+		// `--goal*`: declared here so oclif's auto-generated `--help` lists them; runtime parsing
+		// happens in `cli/args.ts parseArgs`, validation in `modes/continuation/print-goal.ts`.
+		goal: Flags.string({
+			description:
+				"Print mode: seed a session goal and auto-continue turns until the model completes it (exit 0), budget exhausts (2), or the turn cap hits (3)",
+		}),
+		"goal-budget": Flags.string({
+			description: "Token budget for --goal (positive integer)",
+		}),
+		"goal-turns": Flags.string({
+			description: "Max auto-continuation turns for --goal (default 25)",
+		}),
 	};
 
 	static examples = [

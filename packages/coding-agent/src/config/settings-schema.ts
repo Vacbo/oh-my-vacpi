@@ -2763,7 +2763,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tasks",
 			label: "Goal Continuation Modes",
-			description: "Run modes where active goals may auto-continue between turns",
+			description:
+				"Run modes where active goals may auto-continue between turns. Interactive gates the TUI pump; print-mode continuation is enabled by the --goal CLI flag",
 		},
 	},
 

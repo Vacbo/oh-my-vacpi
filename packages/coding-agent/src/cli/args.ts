@@ -18,6 +18,9 @@ export interface Args {
 	smol?: string;
 	slow?: string;
 	plan?: string;
+	goal?: string;
+	goalBudget?: string;
+	goalTurns?: string;
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
@@ -143,6 +146,12 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.slow = args[++i];
 		} else if (arg === "--plan" && i + 1 < args.length) {
 			result.plan = args[++i];
+		} else if (arg === "--goal" && i + 1 < args.length) {
+			result.goal = args[++i];
+		} else if (arg === "--goal-budget" && i + 1 < args.length) {
+			result.goalBudget = args[++i];
+		} else if (arg === "--goal-turns" && i + 1 < args.length) {
+			result.goalTurns = args[++i];
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {

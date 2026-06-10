@@ -10,6 +10,12 @@ import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import { isSilentAbort } from "../session/messages";
 import { flushTelemetryExport } from "../telemetry-export";
+import {
+	type PrintGoalOptions,
+	printGoalExitCode,
+	runPrintGoalContinuation,
+	seedPrintGoal,
+} from "./continuation/print-goal";
 import { initializeExtensions } from "./runtime-init";
 
 /**
@@ -24,14 +30,21 @@ export interface PrintModeOptions {
 	initialMessage?: string;
 	/** Images to attach to the initial message */
 	initialImages?: ImageContent[];
+	/** Headless goal: seed before the first turn and auto-continue until a terminal state */
+	goal?: PrintGoalOptions;
 }
 
 /**
  * Run in print (single-shot) mode.
  * Sends prompts to the agent and outputs the result.
  */
-export async function runPrintMode(session: AgentSession, options: PrintModeOptions): Promise<void> {
-	const { mode, messages = [], initialMessage, initialImages } = options;
+export async function runPrintMode(session: AgentSession, options: PrintModeOptions): Promise<number> {
+	const { mode, messages = [], initialMessage, initialImages, goal } = options;
+
+	if (goal && !session.settings.get("goal.enabled")) {
+		process.stderr.write("--goal requires the goal.enabled setting\n");
+		return 1;
+	}
 
 	// Emit session header for JSON mode
 	if (mode === "json") {
@@ -60,6 +73,11 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		}
 	});
 
+	// Seed the goal before the first prompt so goal-mode context is injected from turn one.
+	if (goal) {
+		await seedPrintGoal(session, goal);
+	}
+
 	// Send initial message with attachments
 	if (initialMessage !== undefined) {
 		await logger.time("print:prompt:initial", () => session.prompt(initialMessage, { images: initialImages }));
@@ -68,6 +86,14 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	// Send remaining messages
 	for (const message of messages) {
 		await logger.time("print:prompt:next", () => session.prompt(message));
+	}
+
+	// Pump goal continuation turns until the goal reaches a terminal state,
+	// the turn cap hits, or the session errors.
+	let exitCode = 0;
+	if (goal) {
+		const result = await runPrintGoalContinuation(session, goal);
+		exitCode = printGoalExitCode(result.outcome);
 	}
 
 	// In text mode, output final response
@@ -123,4 +149,5 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	});
 
 	await session.dispose();
+	return exitCode;
 }
