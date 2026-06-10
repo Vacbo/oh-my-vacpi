@@ -36,7 +36,6 @@ import type { InteractiveModeContext } from "../../modes/types";
 import { buildContextManifest } from "../../modes/utils/context-manifest";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
-import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { AuthStorage } from "../../session/auth-storage";
 import type { NewSessionOptions } from "../../session/session-manager";
@@ -449,11 +448,6 @@ export class CommandController {
 	handleHotkeysCommand(): void {
 		const hotkeys = buildHotkeysMarkdown({ keybindings: this.ctx.keybindings });
 		showMarkdownPanel(this.ctx, "Keyboard Shortcuts", hotkeys);
-	}
-
-	handleToolsCommand(): void {
-		const tools = buildToolsMarkdown({ tools: this.ctx.session.agent.state.tools });
-		showMarkdownPanel(this.ctx, "Available Tools", tools);
 	}
 
 	handleContextCommand(detailed = false): void {

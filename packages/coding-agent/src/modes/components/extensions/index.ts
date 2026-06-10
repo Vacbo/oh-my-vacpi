@@ -6,4 +6,5 @@ export * from "./extension-dashboard";
 export * from "./extension-list";
 export * from "./inspector-panel";
 export * from "./state-manager";
+export * from "./tools-dashboard";
 export * from "./types";

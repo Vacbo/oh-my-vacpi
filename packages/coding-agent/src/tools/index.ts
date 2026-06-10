@@ -573,7 +573,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const discoveryActive = effectiveDiscoveryMode !== "off" || isSkillDiscoverySearchMode(session.settings);
 
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
+	const disabledBuiltinTools = new Set(session.settings.get("tools.disabledTools") ?? []);
 	const isToolAllowed = (name: string) => {
+		if (name in BUILTIN_TOOLS && disabledBuiltinTools.has(name)) return false;
 		if (name === "goal") return goalEnabled && goalModeActive;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");

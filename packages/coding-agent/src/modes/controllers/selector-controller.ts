@@ -42,7 +42,7 @@ import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { AgentDashboard } from "../components/agent-dashboard";
 import { AssistantMessageComponent } from "../components/assistant-message";
 import { CopySelectorComponent } from "../components/copy-selector";
-import { ExtensionDashboard } from "../components/extensions";
+import { ExtensionDashboard, ToolsDashboard } from "../components/extensions";
 import { HistorySearchComponent } from "../components/history-search";
 import { ModelSelectorComponent } from "../components/model-selector";
 import { OAuthSelectorComponent } from "../components/oauth-selector";
@@ -186,6 +186,27 @@ export class SelectorController {
 	 */
 	async showExtensionsDashboard(): Promise<void> {
 		const dashboard = await ExtensionDashboard.create(getProjectDir(), this.ctx.settings, this.ctx.ui.terminal.rows);
+		const overlay = this.ctx.ui.showOverlay(dashboard, {
+			width: "100%",
+			maxHeight: "100%",
+			anchor: "top-left",
+			margin: 0,
+		});
+		dashboard.onClose = () => {
+			overlay.hide();
+			this.ctx.ui.requestRender();
+		};
+		dashboard.onRequestRender = () => {
+			this.ctx.ui.requestRender();
+		};
+	}
+
+	/**
+	 * Show the Tool Control Center: every built-in tool plus the session's
+	 * MCP/custom tools, with per-tool disable persisted to `tools.disabledTools`.
+	 */
+	showToolsDashboard(): void {
+		const dashboard = ToolsDashboard.create(this.ctx.session, this.ctx.settings, this.ctx.ui.terminal.rows);
 		const overlay = this.ctx.ui.showOverlay(dashboard, {
 			width: "100%",
 			maxHeight: "100%",

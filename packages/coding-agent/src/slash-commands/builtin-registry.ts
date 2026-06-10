@@ -582,7 +582,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "tools",
-		description: "Show tools currently visible to the agent",
+		description: "Inspect and toggle the tools available to the agent",
 		acpDescription: "Show available tools",
 		handle: async (_command, runtime) => {
 			const active = runtime.session.getActiveToolNames();

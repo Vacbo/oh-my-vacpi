@@ -14,6 +14,8 @@ export interface InspectorMeta {
 	pinned?: boolean;
 	/** Pattern from skills.pinnedSkills that pinned this skill (shown when not a literal name). */
 	pinnedVia?: string;
+	/** Extra dim line under Status describing session-level availability (used by the Tool Control Center). */
+	statusNote?: string;
 }
 
 export class InspectorPanel implements Component {
@@ -74,6 +76,9 @@ export class InspectorPanel implements Component {
 		// Status badge
 		lines.push(theme.fg("muted", "Status:"));
 		lines.push(`  ${this.#getStatusBadge(ext.state, ext.disabledReason, ext.shadowedBy)}`);
+		if (this.#meta.statusNote) {
+			lines.push(`  ${theme.fg("dim", this.#meta.statusNote)}`);
+		}
 		lines.push("");
 
 		// Pin state (skills only)

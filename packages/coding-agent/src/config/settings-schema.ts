@@ -2628,6 +2628,11 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tools.disabledTools": {
+		type: "array",
+		default: EMPTY_STRING_ARRAY,
+	},
+
 	// MCP
 	"mcp.enableProjectConfig": {
 		type: "boolean",

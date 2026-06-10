@@ -3479,10 +3479,12 @@ export class AgentSession {
 	 *  and avoids mislabeling extension/custom default-inactive tools as built-ins. */
 	#collectDiscoverableBuiltinTools(): DiscoverableTool[] {
 		const activeNames = new Set(this.getActiveToolNames());
+		const disabledNames = new Set(this.settings.get("tools.disabledTools") ?? []);
 		const result: DiscoverableTool[] = [];
 		for (const tool of this.#toolRegistry.values()) {
 			if (tool.loadMode !== "discoverable") continue;
 			if (activeNames.has(tool.name)) continue;
+			if (disabledNames.has(tool.name)) continue;
 			const collected = collectDiscoverableTools([tool], { source: "builtin" });
 			result.push(...collected);
 		}
@@ -3527,8 +3529,10 @@ export class AgentSession {
 		// Activate non-MCP tools (built-ins that are in the registry but not currently active)
 		if (nonMcpNames.length > 0) {
 			const currentActiveNames = new Set(this.getActiveToolNames());
+			const disabledNames = new Set(this.settings.get("tools.disabledTools") ?? []);
 			const newlyAdded: string[] = [];
 			for (const name of nonMcpNames) {
+				if (disabledNames.has(name)) continue;
 				if (this.#toolRegistry.has(name) && !currentActiveNames.has(name)) {
 					newlyAdded.push(name);
 					this.#selectedDiscoveredToolNames.add(name);

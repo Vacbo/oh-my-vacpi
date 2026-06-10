@@ -2995,7 +2995,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	handleToolsCommand(): void {
-		this.#commandController.handleToolsCommand();
+		this.#selectorController.showToolsDashboard();
 	}
 
 	handleContextCommand(detailed = false): void {

@@ -419,7 +419,7 @@ export class ExtensionDashboard extends Container {
 /**
  * Two-column body component for side-by-side rendering.
  */
-class TwoColumnBody implements Component {
+export class TwoColumnBody implements Component {
 	constructor(
 		private readonly leftPane: ExtensionList,
 		private readonly rightPane: InspectorPanel,
