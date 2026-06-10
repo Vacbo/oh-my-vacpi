@@ -98,6 +98,7 @@ import { formatPhaseDisplayName, selectStickyTodoWindow, todoMatchesAnyDescripti
 import { ToolError } from "../tools/tool-errors";
 import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
+import { buildRestartArgs, relaunchSelf } from "../utils/relaunch";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
 import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
 import type { AssistantMessageComponent } from "./components/assistant-message";
@@ -340,6 +341,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastEscapeTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
+	/** Set by {@link restart}: relaunch self after shutdown teardown instead of exiting. */
+	#restartRequested = false;
 	hookSelector: HookSelectorComponent | undefined = undefined;
 	hookInput: HookInputComponent | undefined = undefined;
 	hookEditor: HookEditorComponent | undefined = undefined;
@@ -2632,6 +2635,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		popTerminalTitle();
 		this.stop();
 
+		if (this.#restartRequested) {
+			// Resolve the session file only now: shutdown's flush above is what
+			// materializes a fresh session's file on disk, so reading it any
+			// earlier relaunches into a new session instead of resuming.
+			const relaunchArgs = buildRestartArgs(this.sessionManager.getSessionFile());
+			// Run postmortem handlers without exiting (the exec replaces the
+			// process image, skipping every exit hook); on the spawn-and-wait
+			// fallback, exit with the child's code.
+			await postmortem.cleanup();
+			process.exit(await relaunchSelf(relaunchArgs));
+		}
+
 		// Print resumption hint if this is a persisted session
 		const sessionId = this.sessionManager.getSessionId();
 		const sessionFile = this.sessionManager.getSessionFile();
@@ -2640,6 +2655,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		await postmortem.quit(0);
+	}
+
+	/**
+	 * Restart the omp process in place and resume this session: identical
+	 * teardown to {@link shutdown}, then the process is replaced with a fresh
+	 * `omp --resume <session-file>` (plain relaunch when the session is not
+	 * persisted). Loads freshly rebuilt code without the quit → `omp --resume`
+	 * → pick-session loop. Flags from the original invocation (`--models`,
+	 * `--config` overlays) are not re-applied; persisted session/settings
+	 * state covers model and thinking selection.
+	 */
+	async restart(): Promise<void> {
+		this.#restartRequested = true;
+		await this.shutdown();
 	}
 
 	async checkShutdownRequested(): Promise<void> {

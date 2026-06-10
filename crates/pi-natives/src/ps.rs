@@ -193,3 +193,29 @@ impl Process {
 		Self { inner }
 	}
 }
+
+/// Replace the current process image with `argv` (POSIX `execvp`).
+///
+/// `argv[0]` resolves against `PATH` when it contains no slash. On success
+/// this never returns: the calling runtime, its threads, and signal handlers
+/// are all replaced; file descriptors without `CLOEXEC` (stdio included)
+/// carry over to the new image. The caller must have restored the terminal
+/// first. Returns an error when the exec fails (missing binary, permissions)
+/// or on Windows, which has no process-replacement primitive; callers fall
+/// back to spawn-and-wait there.
+#[napi]
+pub fn process_exec(argv: Vec<String>) -> Result<()> {
+	if argv.is_empty() {
+		return Err(napi::Error::from_reason("process_exec requires a non-empty argv"));
+	}
+	#[cfg(unix)]
+	{
+		use std::os::unix::process::CommandExt;
+		let err = std::process::Command::new(&argv[0]).args(&argv[1..]).exec();
+		Err(napi::Error::from_reason(format!("execvp {} failed: {err}", argv[0])))
+	}
+	#[cfg(not(unix))]
+	{
+		Err(napi::Error::from_reason("process_exec is not supported on this platform"))
+	}
+}

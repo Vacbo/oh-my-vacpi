@@ -1137,6 +1137,15 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: shutdownHandlerTui,
 	},
 	{
+		name: "restart",
+		description: "Restart omp and resume this session (loads rebuilt code)",
+		handleTui: (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			void runtime.ctx.restart();
+			return commandConsumed();
+		},
+	},
+	{
 		name: "marketplace",
 		description: "Manage marketplace plugin sources and installed plugins",
 		acpDescription: "Manage plugins from marketplaces",

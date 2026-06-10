@@ -7,6 +7,7 @@
 #### Added
 
 - Added `envClear` to `PtyStartOptions`: when true, the PTY child starts from an empty environment and `env` defines it exactly, instead of the default merge over the parent's environment. Lets callers actually *remove* inherited variables (the coding agent's `tui_drive` uses it to scrub terminal-identity vars like `CMUX_SURFACE_ID` from driven children).
+- Added `processExec(argv)`: POSIX `execvp` process-image replacement (never returns on success; errors return control). Backs the coding agent's `/restart` command so a restart keeps the pid, controlling terminal, and foreground process-group state without leaving a dormant parent behind. Reports unsupported on Windows, where callers fall back to spawn-and-wait.
 
 ## [15.10.12] - 2026-06-10
 

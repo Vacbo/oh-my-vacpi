@@ -1210,6 +1210,18 @@ export declare function parseKey(data: string, kittyProtocolActive: boolean): st
  */
 export declare function parseKittySequence(data: string): ParsedKittyResult | null
 
+/**
+ * Replace the current process image with `argv` (POSIX `execvp` semantics:
+ * `argv[0]` resolves against `PATH` when it contains no slash). On success
+ * this never returns: the calling runtime, its threads, and signal handlers
+ * are all replaced; file descriptors without `CLOEXEC` (stdio included)
+ * carry over to the new image. The caller must have restored the terminal
+ * first. Returns an error when the exec fails (missing binary, permissions)
+ * or on Windows, which has no process-replacement primitive; callers fall
+ * back to spawn-and-wait there.
+ */
+export declare function processExec(argv: Array<string>): void
+
 /** Current state of a process reference. */
 export declare enum ProcessStatus {
   /** The referenced process is still running. */
