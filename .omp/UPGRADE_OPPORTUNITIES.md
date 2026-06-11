@@ -172,7 +172,7 @@ git fetch --all --tags
 
 **Fix sketch (layered)**: (a) Capability table: tool definitions declare `provides: "todo" | "plan" | ...`; eager prelude, reminders, forceActive, and plan-mode enforcement resolve "the active tool providing X" through the registry instead of literals; plugins declaring a capability supersede the built-in. Capability means a minimal behavioral contract (args shape a forced tool_choice can rely on), not just a label. (b) Structured system prompt: assemble named ordered sections derived from the capability table; additive extension hook `{ add, replace, remove }` by section id with deterministic ordering and a logged diff; keep the `string[]` hook for back-compat. Propose (b) upstream before building to avoid extension-API divergence.
 
-## 2026-06-09 — Fork Anthropic max_tokens policy is interleaved inside upstream's buildParams   `[open]` `[high]`
+## 2026-06-09 — Fork Anthropic max_tokens policy is interleaved inside upstream's buildParams   `[done]` `[high]`
 
 **Where**: `packages/ai/src/providers/anthropic.ts` (`buildParams` max_tokens default, `ensureMaxTokensForThinking`), `packages/ai/test/anthropic-alignment.test.ts`.
 
@@ -180,13 +180,17 @@ git fetch --all --tags
 
 **Fix sketch**: Extract the entire fork policy into one fork-owned function, e.g. `applyForkOutputBudget(params, model, options, maxOutputTokens)`, called once at the end of `buildParams`. Upstream restructures then produce at most a one-line conflict at the callsite instead of three multi-line conflicts in interleaved bodies. The 2026-06-09 resolution kept the inline shape; do the extraction as a standalone commit after the merge settles.
 
-## 2026-06-09 — Fork-contract assertions live inside upstream test files   `[open]` `[med]`
+**Shipped in fork (2026-06-11)**: Extraction landed exactly as sketched. `buildParams` and `ensureMaxTokensForThinking` are byte-identical to upstream v15.11.0 again; the whole policy (the `/3` default, the OAuth-conditional cap interplay, the adaptive carve-out) lives in fork-owned `applyForkOutputBudget`, called on one inserted line after `ensureMaxTokensForThinking`. The function re-runs upstream's `ensureMaxTokensForThinking` after lowering the default so enabled-thinking budgets re-fit through upstream's own raise/clamp logic instead of a duplicated copy (the no-double-clamp equivalence holds because a first clamp always leaves `budget + buffer <= cap`). Wire behavior unchanged: all 80 pre-existing anthropic param tests passed without modification before the test relocation below.
+
+## 2026-06-09 — Fork-contract assertions live inside upstream test files   `[done]` `[med]`
 
 **Where**: `packages/ai/test/anthropic-alignment.test.ts` (the `/3` default tests, the API-key ceiling test rewritten this merge), `packages/coding-agent/test/agent-session-eager-todo.test.ts`.
 
 **Problem**: Fork behavior divergences are tested by editing upstream's test files in place. Upstream rewrites these files every release, so each merge surfaces them as conflicts or post-merge failures that need manual re-derivation (this merge: upstream's new "keeps the full model output ceiling for API-key requests" test asserted their no-`/3` default and had to be split into a fork pair).
 
 **Fix sketch**: Move fork-contract tests into fork-owned files (e.g. `packages/ai/test/fork-anthropic-output-budget.test.ts`) and leave upstream's files byte-identical to upstream wherever the contract genuinely diverges; delete the upstream test of the replaced default in one tightly-scoped hunk instead of rewriting it. Merges then auto-resolve the fork files and the diff against upstream stays reviewable.
+
+**Shipped in fork (2026-06-11), scoped to packages/ai**: `fork-anthropic-output-budget.test.ts` now owns the whole output-budget contract: the relocated `/3` default and 64k-cap tests, the folded-in `anthropic-adaptive-max-tokens.test.ts` (one fork function, one contract file), and new coverage for /3-exceeds-cap clamping (OAuth vs API key), the enabled-thinking re-fit raise, and over-ceiling budget clamping. `anthropic-alignment.test.ts` restored to upstream bytes except one contiguous deletion hunk (upstream's three replaced-default tests) and the `Effort.Max` efforts token, which belongs to the effort-ladder feature, not this entry. Deliberate non-action on `agent-session-eager-todo.test.ts`: its `todo` → `todo_write` renames are forced by the fork's tool registry (irreducible in-place divergence), and relocating the one fork-added test would duplicate the ~180-line AgentSession harness, which drifts with upstream session-construction APIs and would cost more per merge than the insert-only hunk it replaces.
 
 ## 2026-06-09 — TeeTerminal mirrors the Terminal interface member-by-member   `[open]` `[med]`
 
