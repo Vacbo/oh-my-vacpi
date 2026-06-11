@@ -25,6 +25,8 @@ import { captureMirrorScreenshot, getSharedMirror, resolveTuiScreenshotDest } fr
 
 const MAX_DRIVE_SESSIONS = 4;
 const MAX_SNAPSHOT_TEXT = 20_000;
+const DEFAULT_SCROLLBACK_LINES = 200;
+const MAX_SCROLLBACK_TEXT = 40_000;
 const MAX_DIFF_ROWS = 40;
 const MAX_DIFF_ROW_CHARS = 400;
 const DEFAULT_COLS = 120;
@@ -260,7 +262,7 @@ async function resolveOmpRunId(session: DriveSession): Promise<string> {
 
 const tuiDriveSchema = z.object({
 	action: z
-		.enum(["start", "input", "wait", "screen", "screenshot", "diff", "resize", "kill", "list"])
+		.enum(["start", "input", "wait", "screen", "scrollback", "screenshot", "diff", "resize", "kill", "list"])
 		.default("screen")
 		.describe("Drive action. Defaults to reading the current screen."),
 	session: z.string().optional().describe("Drive session id from `start`/`list`. Defaults to the only live session."),
@@ -294,6 +296,12 @@ const tuiDriveSchema = z.object({
 		.describe(
 			`Output-idle window before returning the screen (default ${DEFAULT_DEBOUNCE_MS}, max ${MAX_DEBOUNCE_MS}).`,
 		),
+	limit: z
+		.number()
+		.int()
+		.positive()
+		.optional()
+		.describe(`For scrollback: last N logical lines to return (default ${DEFAULT_SCROLLBACK_LINES}).`),
 });
 
 /** Input schema for the tui_drive tool. */
@@ -344,6 +352,8 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 				return await this.#wait(params);
 			case "screen":
 				return await this.#screen(params);
+			case "scrollback":
+				return await this.#scrollback(params);
 			case "screenshot":
 				return await this.#screenshot(params, signal);
 			case "diff":
@@ -472,6 +482,25 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 	async #screen(params: TuiDriveParams): Promise<AgentToolResult<TuiDriveDetails>> {
 		const session = this.#resolve(params);
 		return this.#result(params, session, await this.#screenPayload(session));
+	}
+
+	async #scrollback(params: TuiDriveParams): Promise<AgentToolResult<TuiDriveDetails>> {
+		const session = this.#resolve(params);
+		await session.recorder.flush();
+		const capture = session.recorder.scrollback(params.limit ?? DEFAULT_SCROLLBACK_LINES);
+		const truncated = capture.text.length > MAX_SCROLLBACK_TEXT;
+		const payload = {
+			session: session.id,
+			status: session.exit ? "exited" : "running",
+			bufferType: capture.bufferType,
+			totalLines: capture.totalLines,
+			showingFromLine: capture.startLine,
+			...(capture.bufferType === "alternate"
+				? { note: "App is on the alternate screen; this tape is the normal buffer it will restore to." }
+				: {}),
+			text: truncated ? `… (truncated head)\n${capture.text.slice(-MAX_SCROLLBACK_TEXT)}` : capture.text,
+		};
+		return this.#result(params, session, payload);
 	}
 
 	async #screenshot(params: TuiDriveParams, signal?: AbortSignal): Promise<AgentToolResult<TuiDriveDetails>> {

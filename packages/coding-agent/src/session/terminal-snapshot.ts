@@ -57,6 +57,16 @@ export interface TerminalSnapshot {
 	lines: TerminalLineSnapshot[];
 }
 
+export interface TerminalScrollbackCapture {
+	/** Logical (wrap-joined) lines in the whole tape, trailing blank rows dropped. */
+	totalLines: number;
+	/** Index of the first logical line included in `text`. */
+	startLine: number;
+	/** Active buffer at capture time; "alternate" means the tape is what the app restores to. */
+	bufferType: "normal" | "alternate";
+	text: string;
+}
+
 export interface TerminalSnapshotRecorderOptions {
 	path: string;
 	cols?: number;
@@ -153,6 +163,32 @@ export class TerminalSnapshotRecorder {
 				.join("\n")
 				.trimEnd(),
 			lines,
+		};
+	}
+
+	/**
+	 * The full normal-buffer tape (scrollback plus screen) as logical lines,
+	 * wrapped rows joined back together. Scrollback only accumulates on the
+	 * normal buffer, so an app on the alternate screen reports the tape it
+	 * will restore to. Returns the last `limit` logical lines.
+	 */
+	scrollback(limit: number): TerminalScrollbackCapture {
+		const buffer = this.#terminal.buffer.normal;
+		const lines: string[] = [];
+		for (let row = 0; row < buffer.length; row++) {
+			const line = buffer.getLine(row);
+			if (!line) continue;
+			const text = line.translateToString(true);
+			if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+			else lines.push(text);
+		}
+		while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+		const startLine = Math.max(0, lines.length - Math.max(1, limit));
+		return {
+			totalLines: lines.length,
+			startLine,
+			bufferType: this.#terminal.buffer.active.type,
+			text: lines.slice(startLine).join("\n"),
 		};
 	}
 

@@ -52,6 +52,9 @@ const ECHO_FIXTURE = `bun -e 'process.stdin.setRawMode(true); process.stdout.wri
 /** Emits a DSR cursor-position query and echoes whatever reply arrives on stdin. */
 const DSR_FIXTURE = `bun -e 'process.stdin.setRawMode(true); process.stdout.write("\\u001b[6n"); process.stdin.on("data", b => { process.stdout.write("reply:" + JSON.stringify(b.toString()) + "\\n"); if (b.toString().includes("R")) process.exit(0); });'`;
 
+/** Prints a marker, a 158-char line that wraps at 80 cols, 40 filler lines, then TAPE-DONE. */
+const TAPE_FIXTURE = `bun -e 'console.log("early-marker"); console.log("W".repeat(150) + "-WRAPEND"); for (let i = 0; i < 40; i++) console.log("filler-" + i); console.log("TAPE-DONE");'`;
+
 describe("tui_drive tool", () => {
 	it("classifies read vs exec actions for approval gating", () => {
 		const tool = new TuiDriveTool(fakeSession());
@@ -61,6 +64,7 @@ describe("tui_drive tool", () => {
 		expect(approval({ action: "list" })).toBe("read");
 		expect(approval({ action: "wait" })).toBe("read");
 		expect(approval({ action: "diff" })).toBe("read");
+		expect(approval({ action: "scrollback" })).toBe("read");
 		expect(approval({ action: "start" })).toBe("exec");
 		expect(approval({ action: "input" })).toBe("exec");
 		expect(approval({ action: "resize" })).toBe("exec");
@@ -170,5 +174,40 @@ describe("tui_drive tool", () => {
 		);
 		expect(resized.cols).toBe(80);
 		expect(resized.rows).toBe(24);
+	});
+
+	it("returns scrolled-off content as wrap-joined logical lines via scrollback", async () => {
+		const tool = new TuiDriveTool(fakeSession());
+		const started = payloadOf(
+			await tool.execute("sb1", { action: "start", command: TAPE_FIXTURE, cols: 80, rows: 10, debounceMs: 50 }),
+		);
+		const session = started.session;
+		await tool.execute("sb2", { action: "wait", session, waitText: "TAPE-DONE", timeoutMs: 5000 });
+
+		// The 10-row window has lost the head of the output…
+		const screen = payloadOf(await tool.execute("sb3", { action: "screen", session }));
+		expect(screen.text).not.toContain("early-marker");
+		expect(screen.text).not.toContain("WRAPEND");
+
+		// …but the tape still has it, exactly once, with the wrapped line rejoined.
+		interface ScrollbackPayload {
+			totalLines: number;
+			showingFromLine: number;
+			bufferType: string;
+			text: string;
+		}
+		const tape = payloadOf<ScrollbackPayload>(await tool.execute("sb4", { action: "scrollback", session }));
+		expect(tape.bufferType).toBe("normal");
+		expect(tape.totalLines).toBeGreaterThanOrEqual(43);
+		expect(tape.text.split("early-marker")).toHaveLength(2);
+		expect(tape.text).toMatch(/^W{150}-WRAPEND$/m);
+		expect(tape.text).toContain("TAPE-DONE");
+
+		// limit returns only the tail and reports where it starts.
+		const tail = payloadOf<ScrollbackPayload>(await tool.execute("sb5", { action: "scrollback", session, limit: 5 }));
+		expect(tail.text).toContain("TAPE-DONE");
+		expect(tail.text).not.toContain("early-marker");
+		expect(tail.showingFromLine).toBe(tail.totalLines - 5);
+		expect(tail.text.split("\n").length).toBeLessThanOrEqual(5);
 	});
 });
