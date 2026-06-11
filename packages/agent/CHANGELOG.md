@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### oh-my-vacpi (fork)
+
+#### Added
+
+- Added `NothingToCompactError` to `compaction/errors`: a typed sentinel raised when a compaction request finds nothing to summarize (branch below the minimum size, or already ending in a compaction entry). Callers that compact opportunistically can classify the benign no-op via `instanceof` instead of sniffing error messages.
+
 ## [15.11.0] - 2026-06-10
 ### Breaking Changes
 

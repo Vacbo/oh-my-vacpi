@@ -999,6 +999,11 @@ export class EventController {
 		// Don't schedule idle work while context maintenance is already running; the
 		// maintenance flow may reset the session before this timer fires.
 		if (this.ctx.session.isCompacting) return;
+		// Never arm while the plan-review overlay awaits a decision: the overlay
+		// offers explicit context choices (compact / keep / fresh session) and a
+		// background compaction would preempt them. The overlay's close path
+		// re-arms via rescheduleIdleCompaction().
+		if (this.ctx.planReviewActive) return;
 
 		const idleSettings = settings.getGroup("compaction");
 		if (!idleSettings.idleEnabled) return;
@@ -1017,11 +1022,19 @@ export class EventController {
 			// the timer and now, dropping usage back below the idle threshold.
 			if (this.ctx.session.isStreaming) return;
 			if (this.ctx.session.isCompacting) return;
+			if (this.ctx.planReviewActive) return;
 			if (this.ctx.editor.getText().trim()) return;
 			if (this.#currentContextTokens() < threshold) return;
 			void this.ctx.session.runIdleCompaction();
 		}, timeoutMs);
 		this.#idleCompactionTimer.unref?.();
+	}
+
+	/** Re-arm the idle-compaction timer after the plan-review overlay closes.
+	 *  Scheduling and firing are both suppressed while the overlay is up, so
+	 *  the overlay's close path owns re-arming. */
+	rescheduleIdleCompaction(): void {
+		this.#scheduleIdleCompaction();
 	}
 
 	#currentContextTokens(): number {

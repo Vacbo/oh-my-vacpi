@@ -371,6 +371,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planModeHasEntered = false;
 	#planReviewOverlay: PlanReviewOverlay | undefined;
 	#planReviewOverlayHandle: OverlayHandle | undefined;
+
+	/** True while the plan-review overlay is awaiting an approval decision.
+	 *  Gates idle compaction: the overlay offers explicit context choices
+	 *  (compact / keep / fresh session), so background compaction must not
+	 *  preempt them. */
+	get planReviewActive(): boolean {
+		return this.#planReviewOverlay !== undefined;
+	}
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
@@ -1826,6 +1834,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (settled) return;
 			settled = true;
 			this.#hidePlanReview();
+			// The idle-compaction timer refuses to fire while the overlay is up;
+			// re-arm it now that the operator has decided (or cancelled).
+			this.#eventController.rescheduleIdleCompaction();
 			this.ui.requestRender();
 			resolve(choice);
 		};

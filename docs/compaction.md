@@ -126,6 +126,7 @@ The automatic paths are intentionally different:
 - **Idle maintenance**
   - Trigger: `runIdleCompaction()` when not streaming or already compacting.
   - Uses `reason: "idle"` and does not auto-continue afterward.
+  - In the interactive TUI, the idle timer neither arms nor fires while the plan-review overlay is pending: the review's options (compact context, keep context, fresh session) own the context decision. The overlay's close path re-arms the timer.
 
 ### Snapcompact strategy
 
@@ -377,6 +378,7 @@ Post-navigation event exposing new/old leaf and optional summary entry.
 ## Runtime behavior and failure semantics
 
 - Manual compaction aborts current agent operation first.
+- Compaction with nothing to summarize (already compacted, or branch below the minimum size) raises the typed `NothingToCompactError`; the TUI maps it to a warning notice with outcome `ok` (not `failed`), so plan approval's compact-then-execute branch still dispatches execution.
 - `abortCompaction()` cancels manual compaction, auto-compaction, and handoff generation controllers.
 - Auto compaction emits start/end session events for UI/state updates.
 - Auto compaction can try multiple model candidates and retry transient failures; long retry delays prefer the next candidate when one is available.

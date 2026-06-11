@@ -1,7 +1,11 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CompactionCancelledError, type CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
+import {
+	CompactionCancelledError,
+	type CompactionOutcome,
+	NothingToCompactError,
+} from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	getEnvApiKey,
 	getProviderDetails,
@@ -1136,6 +1140,11 @@ export class CommandController {
 			if (error instanceof CompactionCancelledError) {
 				outcome = "cancelled";
 				this.ctx.showError("Compaction cancelled");
+			} else if (error instanceof NothingToCompactError) {
+				// Benign no-op: the branch is already compacted or too small. Treat as
+				// success so flows that compact opportunistically (plan approval's
+				// "compact context" branch racing idle compaction) proceed normally.
+				this.ctx.showWarning(error.message);
 			} else {
 				outcome = "failed";
 				const message = error instanceof Error ? error.message : String(error);

@@ -19,6 +19,22 @@ export class CompactionCancelledError extends Error {
 }
 
 /**
+ * Raised when a compaction request finds nothing to summarize — the branch is
+ * below the minimum size or already ends in a compaction entry. This is a
+ * benign no-op, not a failure: callers that compact opportunistically (idle
+ * compaction racing a manual request, plan approval's "compact context"
+ * branch) discriminate it via `instanceof` and proceed without surfacing an
+ * error.
+ */
+export class NothingToCompactError extends Error {
+	readonly name = "NothingToCompactError" as const;
+
+	constructor(message = "Nothing to compact") {
+		super(message);
+	}
+}
+
+/**
  * Outcome of a compaction attempt, surfaced by `CommandController.executeCompaction`
  * so callers (e.g. the plan-mode approval flow) can distinguish a deliberate abort
  * from an unrelated failure.

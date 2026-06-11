@@ -114,6 +114,8 @@ export interface InteractiveModeContext {
 	loopPrompt?: string;
 	loopLimit?: LoopLimitRuntime;
 	planModePlanFilePath?: string;
+	/** True while the plan-review overlay is awaiting an approval decision. */
+	readonly planReviewActive: boolean;
 	hideThinkingBlock: boolean;
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];

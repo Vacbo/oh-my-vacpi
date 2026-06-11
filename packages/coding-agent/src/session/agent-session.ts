@@ -50,6 +50,7 @@ import {
 	estimateTokens,
 	generateBranchSummary,
 	generateHandoff,
+	NothingToCompactError,
 	prepareCompaction,
 	resolveThresholdTokens,
 	type ShakeConfig,
@@ -6338,9 +6339,9 @@ export class AgentSession {
 				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
 				if (lastEntry?.type === "compaction") {
-					throw new Error("Already compacted");
+					throw new NothingToCompactError("Already compacted");
 				}
-				throw new Error("Nothing to compact (session too small)");
+				throw new NothingToCompactError("Nothing to compact (session too small)");
 			}
 
 			let hookCompaction: CompactionResult | undefined;
