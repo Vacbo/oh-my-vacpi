@@ -2429,31 +2429,9 @@ function disableThinkingIfToolChoiceForced(params: MessageCreateParamsStreaming)
 	}
 }
 
-function ensureMaxTokensForThinking(
-	params: MessageCreateParamsStreaming,
-	maxAllowedTokens: number,
-	callerProvidedMaxTokens: boolean,
-): void {
+function ensureMaxTokensForThinking(params: MessageCreateParamsStreaming, maxAllowedTokens: number): void {
 	const thinking = params.thinking;
-	if (!thinking) return;
-
-	// Adaptive mode: the model self-allocates thinking vs output, so the per-response
-	// ceiling needs to be the full allowed output ceiling (OAuth-conditional). The
-	// buildParams default of `model.maxTokens / 3` can leave too little room for a
-	// long thinking burst plus
-	// a large structured tool_use (e.g. a multi-phase todo_write), tripping
-	// `stop_reason: "max_tokens"` mid-emission; partial-JSON repair then silently
-	// closes the truncated call so the user sees a clean-looking incomplete result.
-	// Skip when the caller explicitly passed maxTokens — they've opted into a custom budget.
-	if (thinking.type === "adaptive") {
-		if (callerProvidedMaxTokens) return;
-		if (maxAllowedTokens > 0 && (params.max_tokens ?? 0) < maxAllowedTokens) {
-			params.max_tokens = maxAllowedTokens;
-		}
-		return;
-	}
-
-	if (thinking.type !== "enabled") return;
+	if (thinking?.type !== "enabled") return;
 
 	const budgetTokens = thinking.budget_tokens ?? 0;
 	if (budgetTokens <= 0) return;
@@ -2474,6 +2452,35 @@ function ensureMaxTokensForThinking(
 		);
 	}
 	thinking.budget_tokens = clampedBudget;
+}
+
+/**
+ * Fork output-budget policy, applied after upstream's param pipeline so the
+ * upstream code above stays byte-identical (merge surface: this function plus
+ * its single buildParams callsite).
+ *
+ * When the caller does not pin `maxTokens`, request a third of the catalog
+ * ceiling instead of the full ceiling, clamped to the OAuth-conditional cap
+ * (Claude Code 64k fingerprint parity; API-key callers keep the full model
+ * ceiling). Adaptive thinking keeps the full ceiling: the model self-allocates
+ * thinking vs output, and a /3 budget can leave too little room for a long
+ * thinking burst plus a large structured tool_use (e.g. a multi-phase
+ * todo_write), tripping `stop_reason: "max_tokens"` mid-emission, after which
+ * partial-JSON repair silently closes the truncated call and the user sees a
+ * clean-looking incomplete result.
+ */
+function applyForkOutputBudget(
+	params: MessageCreateParamsStreaming,
+	model: Model<"anthropic-messages">,
+	options: AnthropicOptions | undefined,
+	maxOutputTokens: number,
+): void {
+	if (options?.maxTokens) return;
+	if (params.thinking?.type === "adaptive") return;
+	params.max_tokens = Math.min(maxOutputTokens, (model.maxTokens / 3) | 0);
+	// Re-fit enabled-thinking budgets against the lowered default. Reusing
+	// upstream's raise/clamp logic keeps the two policies from drifting.
+	ensureMaxTokensForThinking(params, maxOutputTokens);
 }
 
 type CacheControlBlock = {
@@ -2828,11 +2835,7 @@ function buildParams(
 		...(systemBlocks && { system: systemBlocks }),
 		...(tools !== undefined && { tools }),
 		...(metadata && { metadata }),
-		// Fork default: when the caller does not pin maxTokens, request a third of the catalog
-		// ceiling (ensureMaxTokensForThinking raises adaptive turns back up), clamped to the
-		// OAuth-conditional cap above (Claude Code 64k fingerprint parity; API-key callers
-		// keep the full model ceiling).
-		max_tokens: Math.min(maxOutputTokens, options?.maxTokens || (model.maxTokens / 3) | 0),
+		max_tokens: Math.min(maxOutputTokens, options?.maxTokens || model.maxTokens),
 		...(thinking && { thinking }),
 		...(contextManagement && { context_management: contextManagement }),
 		...(outputConfig && { output_config: outputConfig }),
@@ -2888,7 +2891,8 @@ function buildParams(
 	}
 
 	disableThinkingIfToolChoiceForced(params);
-	ensureMaxTokensForThinking(params, maxOutputTokens, !!options?.maxTokens);
+	ensureMaxTokensForThinking(params, maxOutputTokens);
+	applyForkOutputBudget(params, model, options, maxOutputTokens);
 	applyPromptCaching(params, cacheControl);
 	enforceCacheControlLimit(params, 4);
 	normalizeCacheControlTtlOrdering(params);

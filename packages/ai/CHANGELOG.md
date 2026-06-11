@@ -13,6 +13,7 @@
 - Promoted saved `Effort.XHigh` configs to `Effort.Max` on Opus 4.6/Bedrock Opus models that support `max` but not `xhigh`, re-inferred thinking metadata on `ModelRegistry` cache reads so stale `xhigh` ladders upgrade, accepted `reasoning_effort: max` in the OpenAI-compat servers, exposed `thinkingBudgets.max` in settings, and aligned Bedrock thinking budgets to Converse limits.
 - Extended the fork's Anthropic adaptive effort ladders to Claude Fable/Mythos 5: on the Messages API they ride the Opus 4.7+ ladder (`xhigh` plus the top `max` tier) instead of upstream's `xhigh`-capped default, and on Bedrock they collapse to the Opus 4.6 ladder.
 - Rebased the fork's adaptive-thinking `max_tokens` raise and the `/3` no-explicit-maxTokens default onto upstream 15.10.10's OAuth-conditional output cap: OAuth requests stay clamped to the Claude Code 64k fingerprint ceiling, while API-key callers now get the full model ceiling (e.g. 128k on Opus 4.8) for both the default and the adaptive raise.
+- Extracted the fork's Anthropic output-budget policy (the `/3` no-explicit-maxTokens default and the adaptive-thinking full-ceiling carve-out) out of upstream's `buildParams`/`ensureMaxTokensForThinking` bodies into a single fork-owned `applyForkOutputBudget` applied at the end of the param pipeline. Wire behavior is unchanged; the upstream functions are byte-identical to upstream again, shrinking the recurring three-hunk merge conflict to one insert-only callsite.
 
 #### Fixed
 
