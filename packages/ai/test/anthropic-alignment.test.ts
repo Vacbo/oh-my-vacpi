@@ -76,7 +76,6 @@ type CaptureAnthropicOptions = {
 	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
 	thinkingDisplay?: "summarized" | "omitted";
 	sessionId?: string;
-	maxTokens?: number;
 };
 
 function captureAnthropicPayload(
@@ -99,7 +98,6 @@ function captureAnthropicPayload(
 		toolChoice: options?.toolChoice,
 		thinkingDisplay: options?.thinkingDisplay,
 		sessionId: options?.sessionId,
-		maxTokens: options?.maxTokens,
 		onPayload: payload => resolve(payload),
 	});
 	return promise;
@@ -293,65 +291,6 @@ describe("Anthropic request fingerprint alignment", () => {
 			type: "ephemeral",
 			ttl: "1h",
 		});
-	});
-
-	it("defaults max_tokens to a third of the model ceiling, clamped to Claude Code's 64k cap", async () => {
-		const payload = (await captureAnthropicPayload(
-			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 }),
-			{
-				systemPrompt: ["Stay concise."],
-				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-			},
-		)) as { max_tokens?: number };
-		// Fork default: no explicit maxTokens → model.maxTokens / 3 (42666 < the 64k cap).
-		expect(payload.max_tokens).toBe((128_000 / 3) | 0);
-	});
-
-	it("clamps requested max_tokens to Claude Code's 64k cap when the model ceiling is higher", async () => {
-		const payload = (await captureAnthropicPayload(
-			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 }),
-			{
-				systemPrompt: ["Stay concise."],
-				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-			},
-			{ maxTokens: 128_000 },
-		)) as { max_tokens?: number };
-		expect(payload.max_tokens).toBe(64_000);
-	});
-
-	it("derives the default max_tokens from a sub-64k model ceiling", async () => {
-		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
-			systemPrompt: ["Stay concise."],
-			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-		})) as { max_tokens?: number };
-		// Fork default: 8192 / 3.
-		expect(payload.max_tokens).toBe((8_192 / 3) | 0);
-	});
-
-	it("keeps the full model output ceiling for API-key requests", async () => {
-		const payload = (await captureAnthropicPayload(
-			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 }),
-			{
-				systemPrompt: ["Stay concise."],
-				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-			},
-			{ isOAuth: false, maxTokens: 128_000 },
-		)) as { max_tokens?: number };
-		// The Claude Code 64k cap is OAuth-only fingerprint parity; API-key callers
-		// keep the full catalog ceiling (contrast with the OAuth clamp test above).
-		expect(payload.max_tokens).toBe(128_000);
-	});
-
-	it("applies the fork /3 default for API-key requests without an explicit budget", async () => {
-		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 },
-			{
-				systemPrompt: ["Stay concise."],
-				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-			},
-			{ isOAuth: false },
-		)) as { max_tokens?: number };
-		expect(payload.max_tokens).toBe((128_000 / 3) | 0);
 	});
 
 	it("does not place cache_control on thinking blocks in the trailing cache window", async () => {
