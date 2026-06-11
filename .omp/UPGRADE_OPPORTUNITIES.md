@@ -41,6 +41,22 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-11 — tui_drive/tui_observe cannot verify streaming-render bugs: no history replay, no scrollback readback, no cross-run diff   `[open]` `[high]`
+
+**Context**: async-bash progress spray (fixed same day, see coding-agent CHANGELOG): every background-job output chunk recommitted the frozen bash tool box plus the streaming thinking below it into native scrollback, one near-identical copy per tick (`isTranscriptBlockFinalized()` accepted-freeze for `async.state === "running"` blocks vs. `reportProgress` mutating the render → `#auditCommittedPrefix` resync per frame). The user asked for the natural evaluation: recapture the moment from the recorded session, re-render with the fixed code, diff before/after. The current tool surface cannot do that evaluation. Gaps, in decreasing severity:
+
+1. **No deterministic session replay through the live render path.** The spray is a streaming-path artifact (partial tool updates mutating a block the engine already committed). `omp --resume` and the mirror sessions view render the *rebuilt* transcript (final message states), so this bug class is invisible after the fact by construction. Sessions persist messages, not the event stream with timing: there is nothing to feed back through EventController → TranscriptContainer → TUI. Upgrade: an opt-in event-tape recorder (agent events, partial-update deltas, terminal geometry, frame timestamps) plus a replay driver that feeds the tape through InteractiveMode against a ghostty-web `VirtualTerminal` with a virtual clock. That turns "weird render in a screenshot" into a reproducible fixture, and before/after-fix comparison becomes a diff of two deterministic tapes.
+
+2. **`tui_drive` exposes the window, not the tape.** Evidence for this bug class lives in *committed scrollback*: the visible window always looks fine, the duplicates scroll out of it. `tui_drive screen` returns visible text only; `tui_observe emulator_screen` can include scrollback but only for registry-live sessions running inside cmux. The drive PTY's emulator is ours, so the data already exists in-process. Upgrade: a `scrollback`/`tape` action on `tui_drive` returning scrollback + grid with line counts, so an agent can assert "box chrome rendered exactly once" against a driven repro.
+
+3. **No cross-run capture diff.** `tui_observe render_diff` compares internal snapshot vs. live emulator of the *same* moment. Before/after-fix needs diffing captures from two different builds/runs. Cheap once (2) exists (dump tapes, `diff` in bash); a first-class `tui_drive diff --against <saved capture>` would make it one call.
+
+4. **Historical moments are unrecoverable.** Observe snapshots are live-only; per-frame snapshots are not persisted, so a screenshot of a past glitch cannot be reopened as structured state. Subsumed by (1) if the tape lands.
+
+**Workaround used today**: scenario regression test modeled on `packages/tui/test/render-stress-harness.ts` (drives the renderer's real emitted ANSI into a ghostty-web `VirtualTerminal` with a shadow commit ledger): a finalized-but-mutating block with streaming content below at small height; assert the tape contains the block's chrome exactly once. Running the same scenario pre-fix yields one copy per progress tick — that pair is the before/after evidence, deterministic and CI-safe, but it lives at the component level rather than replaying the real session.
+
+---
+
 ## 2026-06-10 — Merged upstream v15.10.12: Effort.Max ladder re-homed into pi-catalog; refreshModelThinking dropped   `[done]` `[high]`
 
 **Merge**: v15.10.10 → v15.10.12 (236 upstream commits, 901 files). 42 conflicted paths, dominated by upstream's catalog extraction: the model catalog moved out of `pi-ai` into the new `packages/catalog` (`@oh-my-pi/pi-catalog`), and the TUI render core was rewritten around an append-only native-scrollback contract (`Component.render` now returns `readonly string[]`).

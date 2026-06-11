@@ -396,6 +396,123 @@ describe("tool live-region scrollback", () => {
 		}
 	});
 
+	it("drops partial updates on a frozen background-async block (render must not drift)", async () => {
+		const term = new VirtualTerminal(120, 12);
+		const tui = new TUI(term);
+		const component = new ToolExecutionComponent("bash", { command: "sleep 600" }, {}, undefined, tui, process.cwd());
+		// The async handoff shape from the event controller: the call's own
+		// result is the background-start notice, routed with isPartial=true
+		// (isBackgroundRunning) and async.state="running" — the accepted-freeze.
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "Background job bg_9 started: sleep 600" }],
+				details: { timeoutSeconds: 1800, async: { state: "running", jobId: "bg_9", type: "bash" } },
+			},
+			true,
+		);
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+		const frozen = component.render(100).slice();
+
+		// Background output ticks arrive as partial updates; a frozen block
+		// must ignore them — its rows may already be in native scrollback.
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "tick-1\ntick-2\ntick-3" }],
+				details: { timeoutSeconds: 1800, async: { state: "running", jobId: "bg_9", type: "bash" } },
+			},
+			true,
+		);
+		expect(component.render(100)).toEqual(frozen);
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+
+		// The completion is a real late result (non-partial): it may rewrite
+		// the block once — the engine's accepted late-result repaint.
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "done output" }],
+				details: { timeoutSeconds: 1800, async: { state: "completed", jobId: "bg_9", type: "bash" } },
+			},
+			false,
+		);
+		expect(component.render(100).join("\n")).toContain("done output");
+		component.stopAnimation();
+	});
+
+	it("never resprays native scrollback from background-bash progress ticks", async () => {
+		if (process.platform === "win32") return;
+
+		// Field shape (2026-06-11 report): an async bash job ticking output while
+		// the assistant streams below it. Pre-fix, every tick mutated the frozen
+		// box, tripped the committed-prefix audit, and recommitted [box, thinking]
+		// into the tape — one near-identical copy per tick.
+		const term = new VirtualTerminal(120, 12);
+		const tui = new TUI(term);
+		const chat = new TranscriptContainer();
+		const component = new ToolExecutionComponent(
+			"bash",
+			{ command: "bun install --frozen-lockfile" },
+			{},
+			undefined,
+			tui,
+			process.cwd(),
+		);
+		const thinking = new MutableLiveBlock(["thinking-0"]);
+
+		try {
+			chat.addChild(new Text("prior filler", 0, 0));
+			tui.addChild(chat);
+			tui.start();
+			await term.waitForRender();
+
+			chat.addChild(component);
+			tui.requestRender();
+			await term.waitForRender();
+
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "Background job bg_5 started: bun install --frozen-lockfile" }],
+					details: { timeoutSeconds: 1800, async: { state: "running", jobId: "bg_5", type: "bash" } },
+				},
+				true,
+			);
+			chat.addChild(thinking);
+			tui.requestRender();
+			await term.waitForRender();
+
+			// Shifting 10-row tail window (every visible row changes per tick)
+			// while the live block below grows one row per tick.
+			for (let tick = 1; tick <= 8; tick++) {
+				const tail = Array.from({ length: 10 }, (_unused, i) => `compile-tick-${tick + i}`).join("\n");
+				component.updateResult(
+					{
+						content: [{ type: "text", text: tail }],
+						details: { timeoutSeconds: 1800, async: { state: "running", jobId: "bg_5", type: "bash" } },
+					},
+					true,
+				);
+				thinking.setLines(Array.from({ length: tick + 1 }, (_unused, i) => `thinking-${i}`));
+				tui.requestRender();
+				await term.waitForRender();
+			}
+
+			const tape = term.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+			const tapeText = tape.join("\n");
+			const rowsContaining = (needle: string) => tape.filter(row => row.includes(needle)).length;
+
+			// The frozen start notice reached history exactly once.
+			expect(rowsContaining("Background job bg_5 started")).toBe(1);
+			// No progress tick ever entered the tape: the frozen render never drifted.
+			expect(tapeText).not.toContain("compile-tick-");
+			// Nothing below the box was resprayed: each thinking row appears once.
+			expect(rowsContaining("thinking-0")).toBe(1);
+			expect(rowsContaining("thinking-3")).toBe(1);
+		} finally {
+			component.stopAnimation();
+			tui.stop();
+			await term.flush();
+		}
+	});
+
 	it("scroll-appends a tall expanded streaming write into native scrollback mid-stream", async () => {
 		if (process.platform === "win32") return;
 

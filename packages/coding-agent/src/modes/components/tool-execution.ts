@@ -363,6 +363,18 @@ export class ToolExecutionComponent extends Container {
 		isPartial = false,
 		_toolCallId?: string,
 	): void {
+		// Freeze guard: once this block has reported
+		// isTranscriptBlockFinalized() === true, the engine may have committed
+		// its rows to native scrollback, and any render drift trips the
+		// committed-prefix audit into recommitting the block plus everything
+		// below it (one duplicated transcript snapshot per update: the
+		// background-bash progress "spray"). Partial updates are display-only
+		// progress, e.g. a background job's output ticks, so they are dropped
+		// outright; jobs:// and `job` polls still serve the live output, and
+		// the final result lands below as its own async-result delivery. A
+		// non-partial update is a real late result and may rewrite the window
+		// once (the engine's accepted late-result repaint).
+		if (isPartial && this.isTranscriptBlockFinalized()) return;
 		this.#result = result;
 		this.#isPartial = isPartial;
 		// A `job` poll that found every watched job still running is transient
