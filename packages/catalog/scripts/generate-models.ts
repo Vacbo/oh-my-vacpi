@@ -36,12 +36,13 @@ import {
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	mapModelsDevToModels,
 	stripFireworksDeepSeekThinkingToggle,
-	UNK_CONTEXT_WINDOW,
-	UNK_MAX_TOKENS,
 } from "../src/provider-models/openai-compat";
 import type { ModelSpec } from "../src/types";
+import { cleanModelName } from "../src/utils";
+import { collapseEffortVariantsAcrossProviders } from "../src/variant-collapse";
 import { JWT_CLAIM_PATH } from "../src/wire/codex";
 import {
+	applyCanonicalLimitFallback,
 	applyGeneratedModelPolicies,
 	CLOUDFLARE_FALLBACK_MODEL,
 	linkOpenAIPromotionTargets,
@@ -108,6 +109,19 @@ async function fetchProviderModelsFromCatalog(descriptor: CatalogProviderDescrip
 		console.log(`Fetching models from ${descriptor.catalogDiscovery.label} model manager...`);
 		const manager = createModelManager(descriptor.createModelManagerOptions({ apiKey }));
 		const result = await manager.refresh("online");
+		// `stale: true` means the dynamic fetch failed and the manager fell back
+		// to merging the local agent.db model cache over the static catalog —
+		// fine for a live session ("stale state remains visible"), poison for a
+		// committed bundle: cache rows written by older code leak outdated
+		// limits into models.json (e.g. the xai-oauth maxTokens regression).
+		// Treat it like missing credentials so the prev-snapshot/curated-seed
+		// fallback applies instead.
+		if (result.stale) {
+			console.warn(
+				`${descriptor.catalogDiscovery.label} dynamic fetch failed (stale cache merge), using fallback models`,
+			);
+			return [];
+		}
 		const models = result.models.filter(model => model.provider === descriptor.providerId);
 		if (models.length === 0) {
 			console.warn(`${descriptor.catalogDiscovery.label} discovery returned no models, using fallback models`);
@@ -145,19 +159,18 @@ function createGlobalModelsDevReferenceMap(modelsDevModels: readonly ModelSpec[]
 			references.set(model.id, model);
 			continue;
 		}
-		if (model.contextWindow > existing.contextWindow) {
+		if ((model.contextWindow ?? 0) > (existing.contextWindow ?? 0)) {
 			references.set(model.id, model);
 			continue;
 		}
-		if (model.contextWindow === existing.contextWindow && model.maxTokens > existing.maxTokens) {
+		if (
+			(model.contextWindow ?? 0) === (existing.contextWindow ?? 0) &&
+			(model.maxTokens ?? 0) > (existing.maxTokens ?? 0)
+		) {
 			references.set(model.id, model);
 		}
 	}
 	return references;
-}
-
-function inheritModelsDevLimit(value: number, referenceValue: number, unspecifiedValue: number): number {
-	return value === unspecifiedValue ? referenceValue : value;
 }
 
 function applyGlobalModelsDevFallback(
@@ -181,8 +194,8 @@ function applyGlobalModelsDevFallback(
 			input: reference.input,
 			// Fill unknown endpoint limits from same-id models.dev references, but keep
 			// provider-specific values when discovery returned them explicitly.
-			contextWindow: inheritModelsDevLimit(model.contextWindow, reference.contextWindow, UNK_CONTEXT_WINDOW),
-			maxTokens: inheritModelsDevLimit(model.maxTokens, reference.maxTokens, UNK_MAX_TOKENS),
+			contextWindow: model.contextWindow ?? reference.contextWindow,
+			maxTokens: model.maxTokens ?? reference.maxTokens,
 		};
 	});
 }
@@ -265,6 +278,50 @@ function applyFireworksDeepSeekReasoningShape(models: readonly ModelSpec[]): Mod
 		if (model.provider !== "fireworks" || model.api !== "openai-completions") return model;
 		// `.api` equality doesn't narrow the generic; the guard makes this cast sound.
 		return stripFireworksDeepSeekThinkingToggle(model as ModelSpec<"openai-completions">, model.id);
+	});
+}
+
+/**
+ * Z.AI's `/v1/models` advertises context-tier variants with a `[1m]` suffix
+ * (e.g. `glm-5.2[1m]`). That suffix is a Claude Code-side convention — Z.AI's
+ * own docs instruct users to append `[1m]` to enable 1M context *inside Claude
+ * Code* — but the inference endpoint rejects the bracketed id outright with
+ * `[1211][Unknown Model, please check the model code.]`. The base id
+ * (`glm-5.2`) already carries the full 1M context window (pinned by
+ * {@link applyGeneratedModelPolicy}), so drop the unusable bracketed siblings
+ * from the bundled catalog rather than ship a model that 400s on first use.
+ */
+function dropUnusableZaiContextTierIds(models: readonly ModelSpec[]): ModelSpec[] {
+	return models.filter(model => !(model.provider === "zai" && model.id.endsWith("[1m]")));
+}
+
+/**
+ * Fireworks discovery and prior snapshots can surface internal control-plane
+ * resource ids (`accounts/fireworks/{models,routers}/...`) alongside the public
+ * request ids (`kimi-k2.7-code`, `deepseek-v4-flash`, ...). The wire ids are an
+ * implementation detail the request path reconstructs from the public id, so
+ * drop them from the bundle outright.
+ */
+function dropFireworksWireIds(models: readonly ModelSpec[]): ModelSpec[] {
+	return models.filter(
+		model =>
+			!(
+				(model.provider === "fireworks" || model.provider === "firepass") &&
+				model.id.startsWith("accounts/fireworks/")
+			),
+	);
+}
+
+/**
+ * Xiaomi's `/v1/models` can advertise ASR/TTS ids alongside chat/completions
+ * models. Runtime discovery filters them, but previous bundled snapshots can
+ * still resurrect those stale ids via the fallback merge. Drop them here so the
+ * committed catalog matches the runtime surface.
+ */
+function dropXiaomiAudioOnlyIds(models: readonly ModelSpec[]): ModelSpec[] {
+	return models.filter(model => {
+		const isXiaomiProvider = model.provider === "xiaomi" || model.provider.startsWith("xiaomi-token-plan-");
+		return !isXiaomiProvider || (!model.id.includes("-tts") && !model.id.includes("-asr"));
 	});
 }
 
@@ -387,11 +444,12 @@ async function generateModels() {
 		allModels.push(CLOUDFLARE_FALLBACK_MODEL as ModelSpec<"anthropic-messages">);
 	}
 
-	// xai-oauth has no upstream catalog source (not in models.dev or
-	// MODELS_DEV_PROVIDER_DESCRIPTORS). The curated chat models live in
-	// XAI_OAUTH_CURATED_MODELS and reach the runtime via
-	// xaiOAuthModelManagerOptions().staticModels. Bundling them here too lets
-	// ModelRegistry.#loadModels() pick them up synchronously at boot, so a
+	// xai-oauth is not in models.dev; its descriptor's catalogDiscovery fetch
+	// only succeeds with live SuperGrok OAuth credentials (and on success the
+	// dynamic entries — already overlaid by applyXAIOAuthCuration — win dedup
+	// below). Always push the curated seed so a regen without credentials, or
+	// with a failed fetch, still bundles XAI_OAUTH_CURATED_MODELS verbatim:
+	// ModelRegistry.#loadModels() picks them up synchronously at boot, so a
 	// persisted `modelRoles.default = "xai-oauth/<id>"` is honored before the
 	// async refresh fires (interactive boot does not await refresh).
 	allModels.push(...buildXaiOAuthStaticSeed());
@@ -461,8 +519,25 @@ async function generateModels() {
 	allModels = applyCodexPricingFallback(allModels);
 	allModels = applyFireworksKimiMaxTokensCap(allModels);
 	allModels = applyFireworksDeepSeekReasoningShape(allModels);
+	allModels = dropFireworksWireIds(allModels);
+	allModels = dropUnusableZaiContextTierIds(allModels);
+	allModels = dropXiaomiAudioOnlyIds(allModels);
+	// Normalize display names: gateway author prefixes ("OpenAI: …"), alias
+	// markers ("(latest)"), provider attribution ("(Antigravity)"), and
+	// price/promo tags are model-extrinsic — strip them from the bundle.
+	allModels = allModels.map(model => {
+		const name = cleanModelName(model.name);
+		return name === model.name ? model : { ...model, name };
+	});
 	applyGeneratedModelPolicies(allModels);
 	linkOpenAIPromotionTargets(allModels);
+	// Collapse effort-tier variants AFTER the policy re-bake: live-discovery
+	// entries are already collapsed (rebake skips them); this pass folds
+	// previous-snapshot raw members into their logical families.
+	allModels = collapseEffortVariantsAcrossProviders(allModels);
+	// Fill remaining null endpoint limits from each model's canonical-family
+	// reference. Runs last so canonical ids and explicit policy limits are final.
+	applyCanonicalLimitFallback(allModels);
 
 	// Group by provider and sort each provider's models
 	const providers: Record<string, Record<string, ModelSpec>> = {};

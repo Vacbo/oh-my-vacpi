@@ -7,7 +7,9 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { LiveSessionMetadata } from "@oh-my-pi/pi-coding-agent/session/live-session-registry";
 import { TerminalSnapshotRecorder } from "@oh-my-pi/pi-coding-agent/session/terminal-snapshot";
 import {
+	buildRegionScreenshotCode,
 	inlineScreenshotImage,
+	parseScreenshotRegion,
 	resolveTuiScreenshotDest,
 	stopSharedMirror,
 	TuiObserveTool,
@@ -154,6 +156,65 @@ describe("tui_observe tool", () => {
 		expect(meta.height).toBe(1);
 
 		expect(await inlineScreenshotImage(path.join(dir, "missing.png"))).toBeUndefined();
+	});
+});
+
+describe("parseScreenshotRegion", () => {
+	it("returns undefined when no region params are present", () => {
+		expect(parseScreenshotRegion({})).toBeUndefined();
+	});
+
+	it("parses a single row and an inclusive row range", () => {
+		expect(parseScreenshotRegion({ rows: "5" })).toEqual({ rows: [5, 5] });
+		expect(parseScreenshotRegion({ rows: "4-9" })).toEqual({ rows: [4, 9] });
+	});
+
+	it("parses cols within rows and carries highlight", () => {
+		expect(parseScreenshotRegion({ rows: "4-9", cols: "10-40", highlight: true })).toEqual({
+			rows: [4, 9],
+			cols: [10, 40],
+			highlight: true,
+		});
+	});
+
+	it("accepts a raw selector escape hatch", () => {
+		expect(parseScreenshotRegion({ selector: '[data-terminal-row="3"]' })).toEqual({
+			selector: '[data-terminal-row="3"]',
+		});
+	});
+
+	it("rejects cols without rows", () => {
+		expect(() => parseScreenshotRegion({ cols: "1-2" })).toThrow(/cols.*requires.*rows/i);
+	});
+
+	it("rejects rows and selector together", () => {
+		expect(() => parseScreenshotRegion({ rows: "1", selector: ".x" })).toThrow(/either.*rows.*selector/i);
+	});
+
+	it("rejects highlight without a region", () => {
+		expect(() => parseScreenshotRegion({ highlight: true })).toThrow(/highlight.*requires/i);
+	});
+
+	it("rejects malformed and inverted ranges", () => {
+		expect(() => parseScreenshotRegion({ rows: "abc" })).toThrow(/Invalid rows range/);
+		expect(() => parseScreenshotRegion({ rows: "9-4" })).toThrow(/start greater than end/);
+	});
+});
+
+describe("buildRegionScreenshotCode", () => {
+	it("crops to the selection overlay by default and carries the spec", () => {
+		const region = parseScreenshotRegion({ rows: "4-9" })!;
+		const code = buildRegionScreenshotCode(region, "/tmp/shot.png");
+		expect(code).toContain('selector: "#__omp_sel_overlay"');
+		expect(code).toContain('"rows":[4,9]');
+		expect(code).not.toContain("fullPage: true");
+	});
+
+	it("captures full page when highlighting instead of cropping", () => {
+		const region = parseScreenshotRegion({ rows: "4-9", highlight: true })!;
+		const code = buildRegionScreenshotCode(region, "/tmp/shot.png");
+		expect(code).toContain("fullPage: true");
+		expect(code).not.toContain("#__omp_sel_overlay");
 	});
 });
 

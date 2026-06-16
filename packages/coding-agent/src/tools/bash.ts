@@ -9,7 +9,7 @@ import type {
 import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { z } from "zod/v4";
 import { type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -32,7 +32,7 @@ import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-ski
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
-import { capPreviewLines, formatToolWorkingDirectory, replaceTabs } from "./render-utils";
+import { capPreviewLines, formatToolWorkingDirectory, previewWindowRows, replaceTabs } from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
@@ -371,7 +371,11 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 	readonly loadMode = "essential";
 	readonly description: string;
 	readonly parameters: BashToolSchema;
-	readonly concurrency = "exclusive";
+	// Non-pty calls run alongside each other (the executor isolates overlapping
+	// runs on the same shell session); pty takes over the terminal UI and must
+	// run alone.
+	readonly concurrency = (args: Partial<BashToolInput>): "shared" | "exclusive" =>
+		args.pty === true ? "exclusive" : "shared";
 	readonly strict = true;
 	readonly #asyncEnabled: boolean;
 	readonly #autoBackgroundEnabled: boolean;
@@ -1261,6 +1265,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedRawOutput: string | undefined;
 			let cachedIsPartial: boolean | undefined;
 			let cachedLines: readonly string[] | undefined;
+			let cachedPreviewWindow: number | undefined;
 
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
@@ -1275,6 +1280,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const rawOutput = renderContext?.output ?? result.content?.find(c => c.type === "text")?.text ?? "";
 
 					const isPartial = options.isPartial === true;
+					const previewWindow = previewWindowRows();
 
 					if (
 						cachedLines !== undefined &&
@@ -1282,7 +1288,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedPreviewLines === previewLines &&
 						cachedExpanded === expanded &&
 						cachedRawOutput === rawOutput &&
-						cachedIsPartial === isPartial
+						cachedIsPartial === isPartial &&
+						cachedPreviewWindow === previewWindow
 					) {
 						return cachedLines;
 					}
@@ -1368,7 +1375,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							state: isPartial ? "pending" : isError ? "error" : "success",
 							sections: [
 								{
-									lines: isPartial ? capPreviewLines(cmdLines ?? [], uiTheme, { expanded }) : (cmdLines ?? []),
+									// Viewport-sized tail window in every state — streaming and final
+									// render identically; only ctrl+o uncaps.
+									lines: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
 								},
 								{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
 							],
@@ -1382,6 +1391,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedExpanded = expanded;
 					cachedRawOutput = rawOutput;
 					cachedIsPartial = isPartial;
+					cachedPreviewWindow = previewWindow;
 					cachedLines = framed;
 					return framed;
 				},
@@ -1393,11 +1403,16 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedExpanded = undefined;
 					cachedRawOutput = undefined;
 					cachedIsPartial = undefined;
+					cachedPreviewWindow = undefined;
 				},
 			});
 		},
 		mergeCallAndResult: true,
 		inline: true,
+		// Collapsed pending preview caps the command to a viewport-sized tail
+		// window that shifts while args stream. Expanded output is top-anchored
+		// enough for the transcript to commit its settled prefix.
+		provisionalPendingPreview: "collapsed",
 	};
 }
 

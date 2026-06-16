@@ -41,6 +41,24 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-16 — Merged upstream v16.0.1: dialect/extension cutover with fork tool names preserved   `[done]` `[high]`
+
+**Merge**: fork `15.11.0` + local `feat(coding-agent): add restart tool` → upstream `v16.0.1`.
+
+**Divergence calls**:
+- **Preserved `todo_write` as the fork's model-facing todo tool name** while adopting upstream's `todo.eager` / `task.eager` enum semantics (`default | preferred | always`). The upstream reminder and force-active logic were re-homed to resolve `toolRefs.todo` and forced tool choice through `todo_write`, so discovery-all sessions keep the fork contract without losing upstream's preferred-vs-always behavior.
+- **Kept the fork's live-session restart path** and added upstream advisor/read-only-tool plumbing to the same `AgentSessionConfig`, rather than choosing either side. `liveSession` disposal now awaits alongside upstream's async Mnemopi disposal.
+- **Adopted upstream's `session-entries` split and shared worktree-test fixture** instead of resurrecting the older in-file session-entry definitions and per-test repo setup. The fork's discovery-selection behavior remains through the `mcp_tool_selection` comments and restoration path.
+- **Synthesized native scrollback behavior**: upstream's task-specific freeze path remains, but the fork's generic "drop partial updates after finalized" guard stays so background-bash progress cannot respray committed scrollback. The fork's scrollback regression file is retained even though upstream deleted it.
+- **Adopted upstream's filtered thinking effort maps in tests**, dropping stale `max`/`xhigh` expectations where explicit model metadata declares a narrower effort set. The fork's `Effort.Max` catalog behavior remains in catalog policy/tests.
+- **Synthesized Fireworks provider metadata**: upstream's `kimi-k2.7-code` default wins, fork-only `FIREWORKS_PASS_API_KEY` remains.
+
+**Residual levers**:
+- If upstream eventually renames the public todo tool back to `todo_write` or introduces an aliasing layer, delete the fork-only force-active translation and collapse `toolRefs.todo` back to the upstream registry name.
+- The retained scrollback tests may overlap future upstream TUI coverage. When upstream lands equivalent native-scrollback tape regressions, compare contracts and drop duplicate fork tests only after the background-bash respray scenario remains covered.
+
+---
+
 ## 2026-06-11 — tui_drive/tui_observe cannot verify streaming-render bugs: no history replay, no cross-run diff (scrollback readback shipped same session)   `[open]` `[high]`
 
 **Context**: async-bash progress spray (fixed same day, see coding-agent CHANGELOG): every background-job output chunk recommitted the frozen bash tool box plus the streaming thinking below it into native scrollback, one near-identical copy per tick (`isTranscriptBlockFinalized()` accepted-freeze for `async.state === "running"` blocks vs. `reportProgress` mutating the render → `#auditCommittedPrefix` resync per frame). The user asked for the natural evaluation: recapture the moment from the recorded session, re-render with the fixed code, diff before/after. The current tool surface cannot do that evaluation. Gaps, in decreasing severity:

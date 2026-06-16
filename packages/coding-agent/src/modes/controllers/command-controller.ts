@@ -15,9 +15,10 @@ import {
 } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, type OverlayHandle, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
-import { $ } from "bun";
 import { reset as resetCapabilities } from "../../capability";
 import { clearClaudePluginRootsCache } from "../../discovery/helpers";
+import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
+import { shareSession } from "../../export/share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import {
 	diffMentalModelContent,
@@ -38,13 +39,14 @@ import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import { TranscriptBlock } from "../../modes/components/transcript-container";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
-import { buildContextManifest } from "../../modes/utils/context-manifest";
+import { buildContextManifest, toContextManifestSession } from "../../modes/utils/context-manifest";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
-import type { AuthStorage } from "../../session/auth-storage";
-import type { NewSessionOptions } from "../../session/session-manager";
+import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
+import type { NewSessionOptions } from "../../session/session-entries";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
+import { limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
 import { replaceTabs } from "../../tools/render-utils";
@@ -88,9 +90,9 @@ export class CommandController {
 		}
 	}
 
-	handleDumpCommand() {
+	handleDumpCommand(isRaw = false) {
 		try {
-			const formatted = this.ctx.session.formatSessionAsText();
+			const formatted = this.ctx.session.formatSessionAsText({ compact: !isRaw });
 			if (!formatted) {
 				this.ctx.showError("No messages to dump yet.");
 				return;
@@ -99,6 +101,26 @@ export class CommandController {
 			this.ctx.showStatus("Session copied to clipboard");
 		} catch (error: unknown) {
 			this.ctx.showError(`Failed to copy session: ${error instanceof Error ? error.message : "Unknown error"}`);
+		}
+	}
+
+	handleAdvisorDumpCommand(isRaw = false) {
+		try {
+			const advisorHistory = this.ctx.session.formatAdvisorHistoryAsText({ compact: !isRaw });
+			if (advisorHistory === null) {
+				this.ctx.showError("Advisor is not active for this session.");
+				return;
+			}
+			if (!advisorHistory) {
+				this.ctx.showError("Advisor has no history yet.");
+				return;
+			}
+			copyToClipboard(advisorHistory);
+			this.ctx.showStatus("Advisor history copied to clipboard");
+		} catch (error: unknown) {
+			this.ctx.showError(
+				`Failed to copy advisor history: ${error instanceof Error ? error.message : "Unknown error"}`,
+			);
 		}
 	}
 
@@ -122,126 +144,84 @@ export class CommandController {
 	}
 
 	async handleShareCommand(): Promise<void> {
-		const tmpFile = path.join(os.tmpdir(), `${Snowflake.next()}.html`);
-		const cleanupTempFile = async () => {
-			try {
-				await fs.rm(tmpFile, { force: true });
-			} catch {
-				// Ignore cleanup errors
-			}
-		};
+		let customShare: LoadedCustomShare | null;
 		try {
-			await this.ctx.session.exportToHtml(tmpFile);
-		} catch (error: unknown) {
-			this.ctx.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
-			return;
-		}
-
-		try {
-			const { loadCustomShare } = await import("../../export/custom-share");
-			const customShare = await loadCustomShare();
-			if (customShare) {
-				const loader = new BorderedLoader(this.ctx.ui, theme, "Sharing...");
-				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(loader);
-				this.ctx.ui.setFocus(loader);
-				this.ctx.ui.requestRender();
-
-				const restoreEditor = async () => {
-					loader.dispose();
-					this.ctx.editorContainer.clear();
-					this.ctx.editorContainer.addChild(this.ctx.editor);
-					this.ctx.ui.setFocus(this.ctx.editor);
-					await cleanupTempFile();
-				};
-
-				try {
-					const result = await customShare.fn(tmpFile);
-					await restoreEditor();
-
-					if (typeof result === "string") {
-						this.ctx.showStatus(`Share URL: ${result}`);
-						this.openInBrowser(result);
-					} else if (result) {
-						const parts: string[] = [];
-						if (result.url) parts.push(`Share URL: ${result.url}`);
-						if (result.message) parts.push(result.message);
-						if (parts.length > 0) this.ctx.showStatus(parts.join("\n"));
-						if (result.url) this.openInBrowser(result.url);
-					} else {
-						this.ctx.showStatus("Session shared");
-					}
-					return;
-				} catch (err) {
-					await restoreEditor();
-					this.ctx.showError(`Custom share failed: ${err instanceof Error ? err.message : String(err)}`);
-					return;
-				}
-			}
+			customShare = await loadCustomShare();
 		} catch (err) {
-			await cleanupTempFile();
 			this.ctx.showError(err instanceof Error ? err.message : String(err));
 			return;
 		}
 
-		try {
-			const authResult = await $`gh auth status`.quiet().nothrow();
-			if (authResult.exitCode !== 0) {
-				await cleanupTempFile();
-				this.ctx.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
-				return;
-			}
-		} catch {
-			await cleanupTempFile();
-			this.ctx.showError("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/");
-			return;
-		}
-
-		const loader = new BorderedLoader(this.ctx.ui, theme, "Creating gist...");
+		const loader = new BorderedLoader(this.ctx.ui, theme, "Sharing session...");
 		this.ctx.editorContainer.clear();
 		this.ctx.editorContainer.addChild(loader);
 		this.ctx.ui.setFocus(loader);
 		this.ctx.ui.requestRender();
 
-		const restoreEditor = async () => {
+		const restoreEditor = () => {
 			loader.dispose();
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(this.ctx.editor);
-			await cleanupTempFile();
 		};
-
 		loader.onAbort = () => {
-			void restoreEditor();
+			restoreEditor();
 			this.ctx.showStatus("Share cancelled");
 		};
 
+		// Custom share scripts keep their legacy contract: they receive a path
+		// to a standalone HTML export. No fallback to the default flow on error.
+		if (customShare) {
+			const tmpFile = path.join(os.tmpdir(), `${Snowflake.next()}.html`);
+			try {
+				await this.ctx.session.exportToHtml(tmpFile);
+				const result = await customShare.fn(tmpFile);
+				if (loader.signal.aborted) return;
+				restoreEditor();
+
+				if (typeof result === "string") {
+					this.ctx.showStatus(`Share URL: ${result}`);
+					this.openInBrowser(result);
+				} else if (result) {
+					const parts: string[] = [];
+					if (result.url) parts.push(`Share URL: ${result.url}`);
+					if (result.message) parts.push(result.message);
+					if (parts.length > 0) this.ctx.showStatus(parts.join("\n"));
+					if (result.url) this.openInBrowser(result.url);
+				} else {
+					this.ctx.showStatus("Session shared");
+				}
+			} catch (err) {
+				if (!loader.signal.aborted) {
+					restoreEditor();
+					this.ctx.showError(`Custom share failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			} finally {
+				await fs.rm(tmpFile, { force: true }).catch(() => {});
+			}
+			return;
+		}
+
+		// Default: encrypted snapshot to a secret gist (preferred) or the share
+		// server; the key rides in the link fragment and never leaves the client.
 		try {
-			const result = await $`gh gist create --public=false ${tmpFile}`.quiet().nothrow();
+			const result = await shareSession(this.ctx.session.sessionManager, {
+				serverUrl: this.ctx.settings.get("share.serverUrl"),
+				state: this.ctx.session.state,
+				obfuscator: this.ctx.settings.get("share.redactSecrets") ? this.ctx.session.obfuscator : undefined,
+			});
 			if (loader.signal.aborted) return;
+			restoreEditor();
 
-			await restoreEditor();
-
-			if (result.exitCode !== 0) {
-				const errorMsg = result.stderr.toString("utf-8").trim() || "Unknown error";
-				this.ctx.showError(`Failed to create gist: ${errorMsg}`);
-				return;
-			}
-
-			const gistUrl = result.stdout.toString("utf-8").trim();
-			const gistId = gistUrl.split("/").pop();
-			if (!gistId) {
-				this.ctx.showError("Failed to parse gist ID from gh output");
-				return;
-			}
-
-			const previewUrl = `https://gistpreview.github.io/?${gistId}`;
-			this.ctx.showStatus(`Share URL: ${previewUrl}\nGist: ${gistUrl}`);
-			this.openInBrowser(previewUrl);
+			const lines = [`Share URL: ${result.url}`];
+			if (result.gistUrl) lines.push(`Gist: ${result.gistUrl}`);
+			if (result.truncated) lines.push("Note: large content was trimmed to fit the share size limit.");
+			this.ctx.showStatus(lines.join("\n"));
+			this.openInBrowser(result.url);
 		} catch (error: unknown) {
 			if (!loader.signal.aborted) {
-				await restoreEditor();
-				this.ctx.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
+				restoreEditor();
+				this.ctx.showError(`Failed to share session: ${error instanceof Error ? error.message : "Unknown error"}`);
 			}
 		}
 	}
@@ -366,6 +346,53 @@ export class CommandController {
 		this.ctx.present([new Spacer(1), new Text(info, 1, 0)]);
 	}
 
+	async handleAdvisorStatusCommand(): Promise<void> {
+		const stats = this.ctx.session.getAdvisorStats();
+		if (!stats.active) {
+			this.ctx.present([
+				new Spacer(1),
+				new Text(
+					stats.configured
+						? "Advisor setting is enabled, but no model is assigned to the 'advisor' role."
+						: "Advisor is disabled.",
+					1,
+					0,
+				),
+			]);
+			return;
+		}
+		const model = stats.model!;
+		let info = `${theme.bold("Advisor Status")}\n\n`;
+		info += `${theme.bold("Provider")}\n`;
+		info += `${theme.fg("dim", "Model:")} ${model.provider}/${model.id}\n`;
+		info += `\n${theme.bold("Messages")}\n`;
+		info += `${theme.fg("dim", "User:")} ${stats.messages.user.toLocaleString()}\n`;
+		info += `${theme.fg("dim", "Assistant:")} ${stats.messages.assistant.toLocaleString()}\n`;
+		info += `${theme.fg("dim", "Total:")} ${stats.messages.total.toLocaleString()}\n`;
+		info += `\n${theme.bold("Context")}\n`;
+		if (stats.contextWindow > 0) {
+			const percent = Math.round((stats.contextTokens / stats.contextWindow) * 100);
+			info += `${theme.fg("dim", "Tokens:")} ${stats.contextTokens.toLocaleString()} / ${stats.contextWindow.toLocaleString()} (${percent}%)\n`;
+		} else {
+			info += `${theme.fg("dim", "Tokens:")} ${stats.contextTokens.toLocaleString()}\n`;
+		}
+		info += `\n${theme.bold("Spend")}\n`;
+		info += `${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}\n`;
+		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
+		if (stats.tokens.cacheRead > 0) {
+			info += `${theme.fg("dim", "Cache Read:")} ${stats.tokens.cacheRead.toLocaleString()}\n`;
+		}
+		if (stats.tokens.cacheWrite > 0) {
+			info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
+		}
+		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
+		if (stats.cost > 0) {
+			info += `\n${theme.bold("Cost")}\n`;
+			info += `${theme.fg("dim", "Total:")} $${stats.cost.toFixed(4)}\n`;
+		}
+		this.ctx.present([new Spacer(1), new Text(info, 1, 0)]);
+	}
+
 	async handleJobsCommand(): Promise<void> {
 		const snapshot = this.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
 		if (!snapshot) {
@@ -425,7 +452,16 @@ export class CommandController {
 		}
 
 		const availableWidth = Math.max(40, (this.ctx.ui.terminal.columns ?? 100) - 2);
-		const output = renderUsageReports(usageReports, theme, Date.now(), availableWidth);
+		const currentProvider = this.ctx.session.model?.provider;
+		const activeAccount = currentProvider
+			? this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
+					currentProvider,
+					this.ctx.session.sessionId,
+				)
+			: undefined;
+		const output = renderUsageReports(usageReports, theme, Date.now(), availableWidth, provider =>
+			provider === currentProvider ? activeAccount : undefined,
+		);
 		this.ctx.present([new Spacer(1), new Text(output, 1, 0)]);
 	}
 
@@ -466,7 +502,7 @@ export class CommandController {
 			this.#openContextInspector();
 			return;
 		}
-		const breakdown = computeContextBreakdown(this.ctx.session);
+		const breakdown = computeContextBreakdown(this.ctx.session, { snapcompactSavings: true });
 		if (breakdown.contextWindow <= 0) {
 			this.ctx.showWarning("Context usage is unavailable: no model is selected for this session.");
 			return;
@@ -482,7 +518,7 @@ export class CommandController {
 	}
 
 	#openContextInspector(): void {
-		const manifest = buildContextManifest(this.ctx.session);
+		const manifest = buildContextManifest(toContextManifestSession(this.ctx.session));
 		if (manifest.summary.contextWindow <= 0) {
 			this.ctx.showWarning("Context inspector is unavailable: no model is selected for this session.");
 			return;
@@ -1045,7 +1081,10 @@ export class CommandController {
 		this.ctx.ui.requestRender();
 	}
 
-	async handleCompactCommand(customInstructions?: string): Promise<CompactionOutcome> {
+	async handleCompactCommand(
+		customInstructions?: string,
+		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+	): Promise<CompactionOutcome> {
 		const entries = this.ctx.sessionManager.getEntries();
 		const messageCount = entries.filter(e => e.type === "message").length;
 
@@ -1054,7 +1093,7 @@ export class CommandController {
 			return "ok";
 		}
 
-		return this.executeCompaction(customInstructions, false);
+		return this.executeCompaction(customInstructions, false, beforeFlush);
 	}
 
 	/**
@@ -1099,6 +1138,7 @@ export class CommandController {
 	async executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto = false,
+		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
 	): Promise<CompactionOutcome> {
 		if (this.ctx.loadingAnimation) {
 			this.ctx.loadingAnimation.stop();
@@ -1106,12 +1146,6 @@ export class CommandController {
 		}
 		this.ctx.statusContainer.clear();
 
-		const originalOnEscape = this.ctx.editor.onEscape;
-		this.ctx.editor.onEscape = () => {
-			this.ctx.session.abortCompaction();
-		};
-
-		this.ctx.chatContainer.addChild(new Spacer(1));
 		const label = isAuto ? "Auto-compacting context... (esc to cancel)" : "Compacting context... (esc to cancel)";
 		const compactingLoader = new Loader(
 			this.ctx.ui,
@@ -1132,6 +1166,8 @@ export class CommandController {
 					: undefined;
 			await this.ctx.session.compact(instructions, options);
 
+			compactingLoader.stop();
+			this.ctx.statusContainer.clear();
 			this.ctx.rebuildChatFromMessages();
 
 			this.ctx.statusLine.invalidate();
@@ -1153,8 +1189,12 @@ export class CommandController {
 		} finally {
 			compactingLoader.stop();
 			this.ctx.statusContainer.clear();
-			this.ctx.editor.onEscape = originalOnEscape;
 		}
+		// Run the caller's pre-flush hook (e.g. the plan-approval model transition)
+		// before queued user input is dispatched, so any turn queued during
+		// compaction executes on the post-compaction model rather than the model
+		// compaction itself ran on.
+		if (beforeFlush) await beforeFlush(outcome);
 		await this.ctx.flushCompactionQueue({ willRetry: false });
 		return outcome;
 	}
@@ -1173,11 +1213,6 @@ export class CommandController {
 			this.ctx.loadingAnimation = undefined;
 		}
 		this.ctx.statusContainer.clear();
-
-		const originalOnEscape = this.ctx.editor.onEscape;
-		this.ctx.editor.onEscape = () => {
-			this.ctx.session.abortHandoff();
-		};
 
 		const handoffLoader = new Loader(
 			this.ctx.ui,
@@ -1223,7 +1258,6 @@ export class CommandController {
 		} finally {
 			handoffLoader.stop();
 			this.ctx.statusContainer.clear();
-			this.ctx.editor.onEscape = originalOnEscape;
 		}
 		this.ctx.ui.requestRender();
 	}
@@ -1365,12 +1399,17 @@ function formatAccountHeaderRow(
 	nowMs: number,
 	columnWidth: number,
 	uiTheme: typeof theme,
+	activeAccount?: OAuthAccountIdentity,
 ): string[] {
 	const parts = limits.map((limit, index) => {
 		const reset = formatResetShort(limit, nowMs);
+		const report = reports[index];
+		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
+		const label = formatAccountLabel(limit, report, index);
 		return {
-			label: formatAccountLabel(limit, reports[index], index),
+			label: active ? `● ${label}` : label,
 			suffix: reset ? `(${reset})` : "",
+			active,
 		};
 	});
 	const maxSuffixWidth = parts.reduce((max, p) => Math.max(max, visibleWidth(p.suffix)), 0);
@@ -1381,16 +1420,18 @@ function formatAccountHeaderRow(
 	if (prefixBudget < 2) {
 		return parts.map(p => {
 			const full = p.suffix ? `${p.label} ${p.suffix}` : p.label;
-			return padColumn(truncateJobLabel(full, columnWidth), columnWidth);
+			const cell = padColumn(truncateJobLabel(full, columnWidth), columnWidth);
+			return p.active ? uiTheme.fg("accent", cell) : cell;
 		});
 	}
 
 	return parts.map(p => {
 		const prefix = truncateJobLabel(p.label, prefixBudget);
 		const prefixCell = prefix + " ".repeat(prefixBudget - visibleWidth(prefix));
-		if (!p.suffix) return prefixCell + " ".repeat(maxSuffixWidth + gap);
+		const styledPrefix = p.active ? uiTheme.fg("accent", prefixCell) : prefixCell;
+		if (!p.suffix) return styledPrefix + " ".repeat(maxSuffixWidth + gap);
 		const suffixPad = " ".repeat(maxSuffixWidth - visibleWidth(p.suffix));
-		return `${prefixCell} ${suffixPad}${uiTheme.fg("dim", p.suffix)}`;
+		return `${styledPrefix} ${suffixPad}${uiTheme.fg("dim", p.suffix)}`;
 	});
 }
 
@@ -1510,6 +1551,7 @@ function renderUsageReports(
 	uiTheme: typeof theme,
 	nowMs: number,
 	availableWidth: number,
+	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
 ): string {
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
@@ -1535,6 +1577,7 @@ function renderUsageReports(
 	for (const { provider, providerReports } of providerEntries) {
 		lines.push("");
 		const providerName = formatProviderName(provider);
+		const activeAccount = resolveActiveAccount?.(provider);
 
 		const limitGroups = new Map<
 			string,
@@ -1558,6 +1601,33 @@ function renderUsageReports(
 		}
 
 		lines.push(uiTheme.bold(uiTheme.fg("accent", providerName)));
+		const activeAccountLabel = activeAccount?.email ?? activeAccount?.accountId ?? activeAccount?.projectId;
+		if (activeAccountLabel) {
+			lines.push(`  ${uiTheme.fg("accent", "in use by this session:")} ${activeAccountLabel}`);
+		}
+
+		const resetAccountLines: string[] = [];
+		for (const report of providerReports) {
+			const count = report.resetCredits?.availableCount ?? 0;
+			if (count <= 0) continue;
+			const label =
+				(report.metadata?.email as string | undefined) ??
+				(report.metadata?.accountId as string | undefined) ??
+				"account";
+			const isActive =
+				!!activeAccount &&
+				((!!activeAccount.accountId && activeAccount.accountId === report.metadata?.accountId) ||
+					(!!activeAccount.email && activeAccount.email === report.metadata?.email));
+			resetAccountLines.push(
+				`    • ${label}: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`,
+			);
+		}
+		if (resetAccountLines.length > 0) {
+			lines.push(
+				`  ${uiTheme.fg("accent", "Saved rate-limit resets")} ${uiTheme.fg("dim", "(/usage reset to spend)")}`,
+			);
+			for (const line of resetAccountLines) lines.push(uiTheme.fg("dim", line));
+		}
 
 		const renderableGroups = Array.from(limitGroups.values()).map(group => {
 			const entries = group.limits.map((limit, index) => ({
@@ -1587,7 +1657,14 @@ function renderUsageReports(
 
 			const windowSuffix = formatWindowSuffix(group.label, group.windowLabel, uiTheme);
 			lines.push(`${statusIcon} ${uiTheme.bold(group.label)} ${windowSuffix}`.trim());
-			const accountLabels = formatAccountHeaderRow(sortedLimits, sortedReports, nowMs, sectionColumnWidth, uiTheme);
+			const accountLabels = formatAccountHeaderRow(
+				sortedLimits,
+				sortedReports,
+				nowMs,
+				sectionColumnWidth,
+				uiTheme,
+				activeAccount,
+			);
 			lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
 			const bars = sortedLimits.map(limit =>
 				padColumn(renderUsageBar(limit, uiTheme, sectionColumnWidth), sectionColumnWidth),

@@ -8,11 +8,13 @@ import { glob, type SummaryResult, summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { getRemoteDir, logger, prompt, readImageMetadata, untilAborted } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { LRUCache } from "lru-cache/raw";
+import { z } from "zod/v4";
 import {
 	canonicalSnapshotKey,
 	getFileSnapshotStore,
 	recordFileSnapshot,
+	recordSeenLinesFromBody,
 	SNAPSHOT_MAX_BYTES,
 } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
@@ -37,7 +39,12 @@ import { fileHyperlink, renderCodeCell, renderMarkdownCell, renderStatusLine, tr
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import { ImageInputTooLargeError, loadImageInput, MAX_IMAGE_INPUT_BYTES } from "../utils/image-loading";
+import {
+	ImageInputTooLargeError,
+	loadImageInput,
+	MAX_IMAGE_INPUT_BYTES,
+	webpExclusionForModel,
+} from "../utils/image-loading";
 import { convertFileWithMarkit } from "../utils/markit";
 import { buildDirectoryTree, type DirectoryTree } from "../workspace-tree";
 import { type ArchiveReader, formatArchiveEntryLines, openArchive, parseArchivePathCandidates } from "./archive-reader";
@@ -113,6 +120,27 @@ function assertConflictPathGuard(entry: ConflictEntry, requestedPath: string, cw
 	);
 }
 
+// Per-session memo for tree-sitter summaries. `summarizeCode` is a pure function
+// of (code, path, fold settings) but costs ~12-18ms for a ~1500-line file, and a
+// repeat summary read of the same unchanged file re-parses from scratch. Key on
+// the content hash of the freshly-read bytes (+ path + fold settings): the file
+// is still read fresh on every call, so a hit only reuses the deterministic
+// parse — there is no staleness window and no stat guard is needed. Bounded LRU,
+// aged out with the session via WeakMap.
+// Unusable results (not parsed, or nothing elided) are memoized as `false`: the
+// full SummaryResult embeds the whole source in kept segments, and the caller
+// only ever renders `parsed && elided` summaries — caching the segments would
+// retain up to 48 near-2MiB sources just to remember "no summary".
+const SUMMARY_CACHE_MAX = 48;
+const summaryParseCaches = new WeakMap<object, LRUCache<string, SummaryResult | false>>();
+function getSummaryParseCache(session: object): LRUCache<string, SummaryResult | false> {
+	let cache = summaryParseCaches.get(session);
+	if (!cache) {
+		cache = new LRUCache<string, SummaryResult | false>({ max: SUMMARY_CACHE_MAX });
+		summaryParseCaches.set(session, cache);
+	}
+	return cache;
+}
 // Document types converted to markdown via markit.
 const CONVERTIBLE_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".rtf", ".epub"]);
 
@@ -750,17 +778,6 @@ interface ResolvedSqliteReadPath {
 type SuffixMatchCache = Map<string, { absolutePath: string; displayPath: string } | null>;
 
 /**
- * Repeated whole-file reads of the same path pin stale copies in context.
- * From this per-session read count onward, file reads carry a trailing nudge
- * to prefer narrower re-reads.
- */
-const REPEAT_READ_NOTICE_THRESHOLD = 3;
-
-function formatRepeatReadNotice(count: number): string {
-	return `[note: read #${count} of this file this session — after edits, prefer the context echoed in the edit result or a narrow range re-read]`;
-}
-
-/**
  * Read tool implementation.
  *
  * Reads files with support for images, converted documents (via markit), and text.
@@ -778,8 +795,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	readonly #autoResizeImages: boolean;
 	readonly #defaultLimit: number;
 	readonly #inspectImageEnabled: boolean;
-	/** Successful file reads per resolved base path (selector stripped) this session. */
-	readonly #readCounts = new Map<string, number>();
 
 	constructor(private readonly session: ToolSession) {
 		const displayMode = resolveFileDisplayMode(session);
@@ -796,19 +811,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
 			INSPECT_IMAGE_ENABLED: this.#inspectImageEnabled,
 		});
-	}
-
-	/**
-	 * Count a file read of `absolutePath` and return the repeat-read nudge once
-	 * the per-session count reaches {@link REPEAT_READ_NOTICE_THRESHOLD}.
-	 * Non-file sources (URLs, internal resources, directories, archives,
-	 * SQLite, images) are never counted.
-	 */
-	#repeatReadNotice(absolutePath: string): string | undefined {
-		const count = (this.#readCounts.get(absolutePath) ?? 0) + 1;
-		this.#readCounts.set(absolutePath, count);
-		if (count < REPEAT_READ_NOTICE_THRESHOLD) return undefined;
-		return formatRepeatReadNotice(count);
 	}
 
 	async #tryReadDelimitedPaths(
@@ -987,8 +989,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			ignoreResultLimits?: boolean;
 			raw?: boolean;
 			immutable?: boolean;
-			/** Trailing repeat-read nudge; appended at the very end of the text. */
-			repeatNotice?: string;
 		},
 	): AgentToolResult<ReadToolDetails> {
 		const displayMode = resolveFileDisplayMode(this.session, { raw: options.raw, immutable: options.immutable });
@@ -1133,9 +1133,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					: formatLineEntries(buildLineEntries(endLine), startLineDisplay);
 		}
 
-		if (options.repeatNotice) {
-			outputText += `\n${options.repeatNotice}`;
-		}
 		resultBuilder.text(outputText);
 		if (truncationInfo) {
 			resultBuilder.truncation(truncationInfo.result, truncationInfo.options);
@@ -1161,8 +1158,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			entityLabel: string;
 			raw?: boolean;
 			immutable?: boolean;
-			/** Trailing repeat-read nudge; appended at the very end of the text. */
-			repeatNotice?: string;
 		},
 	): AgentToolResult<ReadToolDetails> {
 		const displayMode = resolveFileDisplayMode(this.session, { raw: options.raw, immutable: options.immutable });
@@ -1223,11 +1218,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const bound = range.endLine !== undefined ? `${range.startLine}-${range.endLine}` : `${range.startLine}`;
 			notices.push(`[Range ${bound} is beyond end of ${options.entityLabel} (${totalLines} lines total); skipped]`);
 		}
-		let finalText =
+		const finalText =
 			notices.length > 0 ? (outputText ? `${outputText}\n${notices.join("\n")}` : notices.join("\n")) : outputText;
-		if (options.repeatNotice) {
-			finalText = finalText ? `${finalText}\n${options.repeatNotice}` : options.repeatNotice;
-		}
 		resultBuilder.text(finalText);
 		return resultBuilder.done();
 	}
@@ -1245,7 +1237,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		parsed: ParsedSelector,
 		displayMode: { hashLines: boolean; lineNumbers: boolean },
 		suffixResolution: { from: string; to: string } | undefined,
-		repeatNotice: string | undefined,
 		signal: AbortSignal | undefined,
 	): Promise<{
 		outputText: string;
@@ -1265,7 +1256,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					sourcePath: absolutePath,
 					entityLabel: "file",
 					raw: rawSelector,
-					repeatNotice,
 				});
 				if (suffixResolution) {
 					const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
@@ -1379,6 +1369,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (shouldAddHashLines && outputText) {
 			const tag = await recordFileSnapshot(this.session, absolutePath);
 			if (tag) {
+				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText);
 				outputText = `${formatHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
 			}
 		}
@@ -1665,15 +1656,25 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			if (lineCount > MAX_SUMMARY_LINES) return null;
 			if (lineCount < this.session.settings.get("read.summarize.minTotalLines")) return null;
 
+			const minBodyLines = this.session.settings.get("read.summarize.minBodyLines");
+			const minCommentLines = this.session.settings.get("read.summarize.minCommentLines");
+			const unfoldUntilLines = this.session.settings.get("read.summarize.unfoldUntil");
+			const unfoldLimitLines = this.session.settings.get("read.summarize.unfoldLimit");
+			const cache = getSummaryParseCache(this.session);
+			const cacheKey = `${absolutePath}\0${Bun.hash(code)}\0${minBodyLines},${minCommentLines},${unfoldUntilLines},${unfoldLimitLines}`;
+			const memoized = cache.get(cacheKey);
+			if (memoized !== undefined) return memoized || null;
 			const result = summarizeCode({
 				code,
 				path: absolutePath,
-				minBodyLines: this.session.settings.get("read.summarize.minBodyLines"),
-				minCommentLines: this.session.settings.get("read.summarize.minCommentLines"),
-				unfoldUntilLines: this.session.settings.get("read.summarize.unfoldUntil"),
-				unfoldLimitLines: this.session.settings.get("read.summarize.unfoldLimit"),
+				minBodyLines,
+				minCommentLines,
+				unfoldUntilLines,
+				unfoldLimitLines,
 			});
-			return result;
+			const usable = result.parsed && result.elided ? result : false;
+			cache.set(cacheKey, usable);
+			return usable || null;
 		} catch {
 			return null;
 		}
@@ -1946,7 +1947,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		let details: ReadToolDetails = {};
 		let sourcePath: string | undefined;
 		let columnTruncated = 0;
-		let repeatNotice: string | undefined;
 		let truncationInfo:
 			| { result: TruncationResult; options: { direction: "head"; startLine?: number; totalFileLines?: number } }
 			| undefined;
@@ -1992,6 +1992,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						maxBytes: MAX_IMAGE_SIZE,
 						resolvedPath: absolutePath,
 						detectedMimeType: mimeType,
+						excludeWebP: webpExclusionForModel(this.session.getActiveModel?.()),
 					});
 					if (!imageInput) {
 						throw new ToolError(`Read image file [${mimeType}] failed: unsupported image format.`);
@@ -2011,13 +2012,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 		} else if (isNotebookPath(absolutePath) && !isRawSelector(parsed)) {
 			const notebookText = await readEditableNotebookText(absolutePath, localReadPath);
-			repeatNotice = this.#repeatReadNotice(absolutePath);
 			if (isMultiRange(parsed) && parsed.kind === "lines") {
 				return this.#buildInMemoryMultiRangeResult(notebookText, parsed.ranges, {
 					details: { resolvedPath: absolutePath },
 					sourcePath: absolutePath,
 					entityLabel: "notebook",
-					repeatNotice,
 				});
 			}
 			const { offset, limit } = selToOffsetLimit(parsed);
@@ -2025,13 +2024,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				details: { resolvedPath: absolutePath },
 				sourcePath: absolutePath,
 				entityLabel: "notebook",
-				repeatNotice,
 			});
 		} else if (shouldConvertWithMarkit) {
 			// Convert document via markit.
 			const result = await convertFileWithMarkit(absolutePath, signal);
 			if (result.ok) {
-				repeatNotice = this.#repeatReadNotice(absolutePath);
 				// Route the converted markdown through the in-memory text builder
 				// so line-range selectors (`file.pdf:50-100`, `:5-16,40-80`) and
 				// raw mode apply against the converted output. Without this,
@@ -2042,7 +2039,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						details: { resolvedPath: absolutePath },
 						sourcePath: absolutePath,
 						entityLabel: "document",
-						repeatNotice,
 					});
 				}
 				const { offset, limit } = selToOffsetLimit(parsed);
@@ -2051,7 +2047,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					sourcePath: absolutePath,
 					entityLabel: "document",
 					raw: isRawSelector(parsed),
-					repeatNotice,
 				});
 			} else if (result.error) {
 				content = [{ type: "text", text: `[Cannot read ${ext} file: ${result.error || "conversion failed"}]` }];
@@ -2059,7 +2054,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				content = [{ type: "text", text: `[Cannot read ${ext} file: conversion failed]` }];
 			}
 		} else {
-			repeatNotice = this.#repeatReadNotice(absolutePath);
 			if (
 				parsed.kind === "none" &&
 				this.session.settings.get("read.summarize.enabled") &&
@@ -2078,6 +2072,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						: undefined;
 					const bodyText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
 					const modelText = prependHashlineHeader(bodyText, summaryHashContext);
+					if (summaryHashContext?.tag) {
+						recordSeenLinesFromBody(this.session, absolutePath, summaryHashContext.tag, renderedSummary.text);
+					}
 					details = {
 						displayContent: { text: renderedSummary.displayText, startLine: 1 },
 						summary: {
@@ -2101,7 +2098,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						parsed,
 						displayMode,
 						suffixResolution,
-						repeatNotice,
 						undefined, // plain-file read: deterministic and fast, never abort mid-read
 					);
 					if (multiResult.bridgeResult) return multiResult.bridgeResult;
@@ -2125,7 +2121,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 								sourcePath: absolutePath,
 								entityLabel: "file",
 								raw: isRawSelector(parsed),
-								repeatNotice,
 							});
 							if (suffixResolution) {
 								const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
@@ -2375,6 +2370,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						sourcePath = absolutePath;
 					}
 
+					if (hashContext?.tag) {
+						recordSeenLinesFromBody(this.session, absolutePath, hashContext.tag, outputText);
+					}
+
 					if (capturedDisplayContent) {
 						details.displayContent = capturedDisplayContent;
 					}
@@ -2425,14 +2424,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				firstText.text = `${notice}\n${firstText.text}`;
 			} else {
 				content = [{ type: "text", text: notice }, ...content];
-			}
-		}
-		if (repeatNotice) {
-			// Trailing nudge goes at the very end of the textual result so it never
-			// disturbs hashline tag headers or inline notices.
-			const lastText = content.findLast((c): c is TextContent => c.type === "text");
-			if (lastText) {
-				lastText.text = `${lastText.text}\n${repeatNotice}`;
 			}
 		}
 		const resultBuilder = toolResult(details).content(content);

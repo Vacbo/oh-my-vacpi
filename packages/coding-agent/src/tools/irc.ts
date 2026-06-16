@@ -10,15 +10,17 @@
  */
 
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatAge, formatDuration, prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { z } from "zod/v4";
 import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../irc/bus";
 import type { Theme } from "../modes/theme/theme";
 import ircDescription from "../prompts/tools/irc.md" with { type: "text" };
 import type { AgentRegistry } from "../registry/agent-registry";
+import { canSpawnAtDepth } from "../task/types";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
 import {
@@ -41,8 +43,10 @@ const DEFAULT_IRC_TIMEOUT_MS = 120_000;
  */
 export function isIrcEnabled(settings: Settings, taskDepth: number): boolean {
 	if (taskDepth > 0) return true;
+	// Top-level session: peers exist only if it can still spawn subagents — the
+	// same capacity gate the task tool uses, reused here to avoid drift.
 	const maxDepth = settings.get("task.maxRecursionDepth") ?? 2;
-	return maxDepth < 0 || taskDepth < maxDepth;
+	return canSpawnAtDepth(maxDepth, taskDepth);
 }
 
 const ircSchema = z.object({
@@ -66,6 +70,7 @@ interface IrcPeerInfo {
 	parentId?: string;
 	unread: number;
 	lastActivity: number;
+	activity?: string;
 }
 
 export interface IrcDetails {
@@ -92,6 +97,46 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 	readonly description: string;
 	readonly parameters = ircSchema;
 	readonly strict = true;
+
+	readonly examples: readonly ToolExample<z.input<typeof ircSchema>>[] = [
+		{
+			caption: "List peers",
+			call: { op: "list" },
+		},
+		{
+			caption: "Fire-and-forget DM — same send wakes idle/parked peers",
+			call: {
+				op: "send",
+				to: "AuthLoader",
+				message: "Still touching src/server/auth.ts? I need to add a 401 path.",
+			},
+		},
+		{
+			caption: "Round-trip when you cannot proceed without the answer",
+			call: {
+				op: "send",
+				to: "Main",
+				message: "JWT or session cookies for the auth flow?",
+				await: true,
+			},
+		},
+		{
+			caption: "Block until a specific peer answers",
+			call: { op: "wait", from: "AuthLoader", timeoutMs: 60000 },
+		},
+		{
+			caption: "Drain pending messages",
+			call: { op: "inbox" },
+		},
+		{
+			caption: "Broadcast to live peers (no replies expected)",
+			call: {
+				op: "send",
+				to: "all",
+				message: "About to refactor src/server/middleware/*. Anyone already in there?",
+			},
+		},
+	];
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(ircDescription);
@@ -146,6 +191,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				parentId: ref.parentId,
 				unread: bus.unreadCount(ref.id),
 				lastActivity: ref.lastActivity,
+				activity: ref.activity,
 			}));
 		const lines: string[] = [];
 		if (peers.length === 0) {
@@ -154,6 +200,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			lines.push(`${peers.length} peer(s):`);
 			for (const peer of peers) {
 				const extras = [
+					peer.activity || undefined,
 					peer.unread > 0 ? `unread ${peer.unread}` : undefined,
 					peer.parentId ? `parent ${peer.parentId}` : undefined,
 					`active ${formatDuration(Date.now() - peer.lastActivity)} ago`,
@@ -234,7 +281,15 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			// through the bus unfiltered so parked recipients are revived.
 			const targets = isBroadcast ? registry.listVisibleTo(senderId).map(ref => ref.id) : [to];
 			const receipts = await Promise.all(
-				targets.map(target => bus.send({ from: senderId, to: target, body: message, replyTo: params.replyTo })),
+				targets.map(target =>
+					bus.send(
+						{ from: senderId, to: target, body: message, replyTo: params.replyTo },
+						// Awaited sends mark the sender as blocked on an answer so a
+						// busy recipient that cannot reach a step boundary (async
+						// disabled) auto-replies instead of stranding the sender.
+						params.await ? { expectsReply: true } : undefined,
+					),
+				),
 			);
 
 			const lines: string[] = [];
@@ -302,6 +357,8 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			return {
 				content: [{ type: "text", text: `No message${filterNote} within ${formatDuration(timeoutMs)}.` }],
 				details: { op: "wait", from: senderId, waited: null },
+				// A clean wait timeout carries no information once consumed.
+				useless: true,
 			};
 		}
 		return {
@@ -316,6 +373,8 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			return {
 				content: [{ type: "text", text: "Inbox empty." }],
 				details: { op: "inbox", from: senderId, inbox: [] },
+				// An empty inbox drain carries no information once consumed.
+				useless: true,
 			};
 		}
 		const header = params.peek ? `${messages.length} unread message(s):` : `${messages.length} message(s):`;
@@ -457,13 +516,14 @@ function callMeta(args: IrcRenderArgs | undefined): string[] {
 
 /**
  * Display-only transcript card for live IRC traffic: `irc:incoming` DMs
- * delivered to this session and `irc:relay` observations of agent↔agent
+ * delivered to this session, `irc:autoreply` side-channel replies sent on
+ * this session's behalf, and `irc:relay` observations of agent↔agent
  * traffic. Shares the tool renderer's glyph + quote-border conventions so
  * cards and `irc` tool output look identical in the transcript.
  */
 export function createIrcMessageCard(
 	card: {
-		kind: "incoming" | "relay";
+		kind: "incoming" | "autoreply" | "relay";
 		from?: string;
 		to?: string;
 		body?: string;
@@ -477,9 +537,12 @@ export function createIrcMessageCard(
 	const title =
 		card.kind === "incoming"
 			? `IRC ${uiTheme.nav.back} ${from}`
-			: `IRC ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
+			: card.kind === "autoreply"
+				? `IRC ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
+				: `IRC ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
 	const body = card.body ?? "";
 	const meta: string[] = [];
+	if (card.kind === "autoreply") meta.push("auto");
 	if (card.replyTo) meta.push("reply");
 	const age = messageAge(card.timestamp);
 	if (age) meta.push(age);
@@ -657,7 +720,9 @@ function renderListResult(details: Partial<IrcDetails>, expanded: boolean, theme
 				const kindText = peer.parentId ? `${peer.kind}${theme.sep.dot}of ${peer.parentId}` : peer.kind;
 				const unread = peer.unread > 0 ? ` ${formatBadge(`${peer.unread} unread`, "warning", theme)}` : "";
 				const age = messageAge(peer.lastActivity);
-				return `${peerStatusBadge(peer.status, theme)} ${theme.bold(replaceTabs(peer.id))} ${theme.fg("dim", kindText)}${unread}${age ? ` ${theme.fg("dim", age)}` : ""}`;
+				const activity = peer.activity ? ` ${theme.fg("dim", replaceTabs(peer.activity))}` : "";
+				const name = theme.fg("dim", replaceTabs(peer.displayName));
+				return `${peerStatusBadge(peer.status, theme)} ${theme.bold(replaceTabs(peer.id))} ${name} ${theme.fg("dim", kindText)}${activity}${unread}${age ? ` ${theme.fg("dim", age)}` : ""}`;
 			},
 		},
 		theme,

@@ -71,6 +71,26 @@ const tuiObserveSchema = z.object({
 			"Max recent events for the events action; for emulator_screen, only the last N lines (includes scrollback).",
 		),
 	running: z.boolean().optional().describe("For list: only include running sessions."),
+	rows: z
+		.string()
+		.optional()
+		.describe(
+			'For screenshot: terminal row range to crop or highlight, e.g. "4" or "4-9" (matches data-terminal-row).',
+		),
+	cols: z
+		.string()
+		.optional()
+		.describe('For screenshot: column (cell index) range within the selected rows, e.g. "10-40". Requires rows.'),
+	selector: z
+		.string()
+		.optional()
+		.describe(
+			"For screenshot: raw CSS selector to crop or highlight instead of rows/cols (mutually exclusive with rows).",
+		),
+	highlight: z
+		.boolean()
+		.optional()
+		.describe("For screenshot: outline the region on a full-page capture instead of cropping to it."),
 });
 
 /** Input schema for the tui_observe tool. */
@@ -85,6 +105,20 @@ export interface TuiObserveDetails {
 	mirrorUrl?: string;
 }
 
+export interface MirrorRegion {
+	rows?: readonly [number, number];
+	cols?: readonly [number, number];
+	selector?: string;
+	highlight?: boolean;
+}
+
+export interface MirrorSelectionInfo {
+	rows?: readonly [number, number];
+	cols?: readonly [number, number];
+	selector?: string;
+	text: string;
+}
+
 export interface MirrorScreenshotResult {
 	path: string;
 	mimeType: string;
@@ -93,6 +127,7 @@ export interface MirrorScreenshotResult {
 	height: number;
 	url: string;
 	displays: Array<TextContent | ImageContent>;
+	selection?: MirrorSelectionInfo;
 }
 
 let sharedMirror: { agentDir: string; handle: SessionsServerHandle } | undefined;
@@ -141,6 +176,115 @@ export function resolveTuiScreenshotDest(
 	return path.join(base, `omp-tui-${safeRun}-${kind}-${stamp}.png`);
 }
 
+const REGION_OVERLAY_ID = "__omp_sel_overlay";
+
+/**
+ * Page-context function (serialized onto the mirror's photo page) that resolves a
+ * selection to its DOM elements, computes the union bounding box in document
+ * coordinates, injects a positioned overlay (`#__omp_sel_overlay`) used as the
+ * crop/highlight anchor, and returns the selected text. A crop capture
+ * screenshots the transparent overlay; a highlight capture outlines it on a full-page shot.
+ */
+const REGION_SELECT_PAGE_FN = `(s) => {
+	const prev = document.getElementById(${JSON.stringify(REGION_OVERLAY_ID)});
+	if (prev) prev.remove();
+	const els = [];
+	let text = "";
+	if (s.selector) {
+		const el = document.querySelector(s.selector);
+		if (el) { els.push(el); text = el.getAttribute("data-text") || el.textContent || ""; }
+	} else if (s.rows) {
+		for (let r = s.rows[0]; r <= s.rows[1]; r++) {
+			const row = document.querySelector('[data-terminal-row="' + r + '"]');
+			if (!row) continue;
+			const rowText = row.getAttribute("data-text") || "";
+			if (s.cols) {
+				const cells = row.querySelectorAll("[data-terminal-cell]");
+				for (let c = s.cols[0]; c <= s.cols[1] && c < cells.length; c++) els.push(cells[c]);
+				text += rowText.slice(s.cols[0], s.cols[1] + 1) + "\\n";
+			} else { els.push(row); text += rowText + "\\n"; }
+		}
+	}
+	if (els.length === 0) return { ok: false };
+	let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+	for (const el of els) {
+		const rc = el.getBoundingClientRect();
+		left = Math.min(left, rc.left + window.scrollX);
+		top = Math.min(top, rc.top + window.scrollY);
+		right = Math.max(right, rc.right + window.scrollX);
+		bottom = Math.max(bottom, rc.bottom + window.scrollY);
+	}
+	const ov = document.createElement("div");
+	ov.id = ${JSON.stringify(REGION_OVERLAY_ID)};
+	ov.style.position = "absolute";
+	ov.style.left = left + "px";
+	ov.style.top = top + "px";
+	ov.style.width = (right - left) + "px";
+	ov.style.height = (bottom - top) + "px";
+	ov.style.pointerEvents = "none";
+	ov.style.zIndex = "2147483647";
+	ov.style.background = "transparent";
+	if (s.highlight) { ov.style.outline = "2px solid #ff3b30"; ov.style.boxShadow = "0 0 0 9999px rgba(0,0,0,0.45)"; }
+	document.body.appendChild(ov);
+	return { ok: true, text: text.replace(/\\n+$/, ""), rect: { x: left, y: top, width: right - left, height: bottom - top } };
+}`;
+
+/** Build the `runInTab` code string that selects a region then captures it. */
+export function buildRegionScreenshotCode(region: MirrorRegion, destPath: string): string {
+	const spec = {
+		rows: region.rows ?? null,
+		cols: region.cols ?? null,
+		selector: region.selector ?? null,
+		highlight: region.highlight ?? false,
+	};
+	const shot = region.highlight
+		? `{ fullPage: true, save: ${JSON.stringify(destPath)} }`
+		: `{ selector: ${JSON.stringify(`#${REGION_OVERLAY_ID}`)}, save: ${JSON.stringify(destPath)} }`;
+	return `const __sel = await tab.evaluate(${REGION_SELECT_PAGE_FN}, ${JSON.stringify(spec)});
+if (!__sel || !__sel.ok) return { ok: false };
+await tab.screenshot(${shot});
+return __sel;`;
+}
+
+/** Describe a region for error messages. */
+function describeRegion(region: MirrorRegion): string {
+	if (region.selector) return `selector ${JSON.stringify(region.selector)}`;
+	const rows = region.rows ? `rows ${region.rows[0]}-${region.rows[1]}` : "rows ?";
+	return region.cols ? `${rows}, cols ${region.cols[0]}-${region.cols[1]}` : rows;
+}
+
+/** Parse a `"N"` or `"N-M"` range into an inclusive numeric pair. */
+function parseRowRange(value: string, label: string): readonly [number, number] {
+	const match = /^\s*(\d+)(?:\s*-\s*(\d+))?\s*$/u.exec(value);
+	if (!match) throw new ToolError(`Invalid ${label} range ${JSON.stringify(value)} (use "N" or "N-M").`);
+	const start = Number(match[1]);
+	const end = match[2] !== undefined ? Number(match[2]) : start;
+	if (end < start) throw new ToolError(`Invalid ${label} range ${JSON.stringify(value)} (start greater than end).`);
+	return [start, end];
+}
+
+/** Resolve screenshot region params into a `MirrorRegion`, or undefined for a full-page capture. */
+export function parseScreenshotRegion(
+	params: Pick<TuiObserveParams, "rows" | "cols" | "selector" | "highlight">,
+): MirrorRegion | undefined {
+	const hasRows = typeof params.rows === "string" && params.rows.length > 0;
+	const hasSelector = typeof params.selector === "string" && params.selector.length > 0;
+	const hasCols = typeof params.cols === "string" && params.cols.length > 0;
+	if (!hasRows && !hasSelector) {
+		if (hasCols) throw new ToolError("`cols` requires `rows`.");
+		if (params.highlight) throw new ToolError("`highlight` requires `rows` or `selector`.");
+		return undefined;
+	}
+	if (hasRows && hasSelector) throw new ToolError("Use either `rows` or `selector`, not both.");
+	if (hasCols && !hasRows) throw new ToolError("`cols` requires `rows`.");
+	const region: MirrorRegion = {};
+	if (params.highlight) region.highlight = true;
+	if (hasSelector) region.selector = params.selector;
+	if (hasRows) region.rows = parseRowRange(params.rows as string, "rows");
+	if (hasCols) region.cols = parseRowRange(params.cols as string, "cols");
+	return region;
+}
+
 /** Capture the run's terminal through the loopback mirror's photo view and save a PNG. */
 export async function captureMirrorScreenshot(options: {
 	session: ToolSession;
@@ -149,6 +293,7 @@ export async function captureMirrorScreenshot(options: {
 	destPath: string;
 	timeoutMs: number;
 	signal?: AbortSignal;
+	region?: MirrorRegion;
 }): Promise<MirrorScreenshotResult> {
 	const photoUrl = `${options.mirrorUrl}/sessions?run=${encodeURIComponent(options.runId)}&mode=photo`;
 	await fs.mkdir(path.dirname(options.destPath), { recursive: true });
@@ -164,7 +309,9 @@ export async function captureMirrorScreenshot(options: {
 			timeoutMs: options.timeoutMs,
 			signal: options.signal,
 		});
-		const code = `await tab.screenshot({ fullPage: true, save: ${JSON.stringify(options.destPath)} }); return true;`;
+		const code = options.region
+			? buildRegionScreenshotCode(options.region, options.destPath)
+			: `await tab.screenshot({ fullPage: true, save: ${JSON.stringify(options.destPath)} }); return null;`;
 		const result = await runInTab(tabName, {
 			code,
 			timeoutMs: options.timeoutMs,
@@ -172,7 +319,23 @@ export async function captureMirrorScreenshot(options: {
 			session: options.session,
 		});
 		const shot: ScreenshotResult | undefined = result.screenshots[0];
-		if (!shot) throw new ToolError("Mirror screenshot did not produce an image.");
+		if (!shot) {
+			const ret = result.returnValue as { ok?: boolean } | null;
+			if (options.region && (!ret || ret.ok === false)) {
+				throw new ToolError(`TUI region matched no cells (${describeRegion(options.region)}).`);
+			}
+			throw new ToolError("Mirror screenshot did not produce an image.");
+		}
+		let selection: MirrorSelectionInfo | undefined;
+		if (options.region) {
+			const ret = result.returnValue as { ok: boolean; text?: string } | null;
+			selection = {
+				rows: options.region.rows,
+				cols: options.region.cols,
+				selector: options.region.selector,
+				text: ret?.text ?? "",
+			};
+		}
 		return {
 			path: shot.dest,
 			mimeType: shot.mimeType,
@@ -181,6 +344,7 @@ export async function captureMirrorScreenshot(options: {
 			height: shot.height,
 			url: photoUrl,
 			displays: result.displays,
+			selection,
 		};
 	} finally {
 		await releaseTab(tabName, { kill: false });
@@ -339,6 +503,7 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 		const mirror = getSharedMirror(agentDir);
 		const destPath = resolveTuiScreenshotDest(this.session.settings, "mirror", session.runId);
 		const timeoutMs = clampTimeout("browser", undefined) * 1000;
+		const region = parseScreenshotRegion(params);
 		const capture = await captureMirrorScreenshot({
 			session: this.session,
 			mirrorUrl: mirror.url,
@@ -346,12 +511,14 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 			destPath,
 			timeoutMs,
 			signal,
+			region,
 		});
 		const summary = JSON.stringify(
 			{
 				runId: session.runId,
 				screenshot: { path: capture.path, mimeType: capture.mimeType, bytes: capture.bytes, source: "mirror" },
 				url: capture.url,
+				selection: capture.selection,
 			},
 			null,
 			2,

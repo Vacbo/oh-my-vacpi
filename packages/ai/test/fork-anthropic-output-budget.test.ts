@@ -57,6 +57,13 @@ const budgetModel: Model<"anthropic-messages"> = buildModel({
 	compat: { disableAdaptiveThinking: true },
 });
 
+function requireMaxTokens(model: Model<"anthropic-messages">): number {
+	if (model.maxTokens == null) {
+		throw new Error(`Expected maxTokens on ${model.provider}/${model.id}`);
+	}
+	return model.maxTokens;
+}
+
 const baseContext: Context = {
 	systemPrompt: ["Stay concise."],
 	messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -140,7 +147,7 @@ describe("Anthropic fork output budget — thinking interplay", () => {
 		expect(params.thinking?.type).toBe("adaptive");
 		// Under the /3 default the ceiling would be 64_000 / 3 = 21_333, which can
 		// truncate a long thinking burst plus a structured tool_use mid-emission.
-		expect(params.max_tokens).toBe(baseAdaptiveModel.maxTokens);
+		expect(params.max_tokens).toBe(requireMaxTokens(baseAdaptiveModel));
 	});
 
 	it("respects an explicit caller-supplied maxTokens in adaptive mode", async () => {
@@ -159,7 +166,7 @@ describe("Anthropic fork output budget — thinking interplay", () => {
 
 		// Without active thinking the /3 default is preserved and the adaptive
 		// carve-out is never entered.
-		expect(params.max_tokens).toBe(Math.floor(baseAdaptiveModel.maxTokens / 3));
+		expect(params.max_tokens).toBe(Math.floor(requireMaxTokens(baseAdaptiveModel) / 3));
 	});
 
 	it("raises the /3 default to fit an explicit enabled-thinking budget", async () => {
@@ -182,8 +189,8 @@ describe("Anthropic fork output budget — thinking interplay", () => {
 		});
 
 		expect(params.thinking?.type).toBe("enabled");
-		expect(params.max_tokens).toBe(budgetModel.maxTokens);
-		expect(params.thinking?.budget_tokens).toBe(budgetModel.maxTokens - OUTPUT_FALLBACK_BUFFER);
+		expect(params.max_tokens).toBe(requireMaxTokens(budgetModel));
+		expect(params.thinking?.budget_tokens).toBe(requireMaxTokens(budgetModel) - OUTPUT_FALLBACK_BUFFER);
 	});
 
 	it("keeps the OUTPUT_FALLBACK_BUFFER floor for the default thinking budget", async () => {
@@ -195,8 +202,9 @@ describe("Anthropic fork output budget — thinking interplay", () => {
 		// Budget-mode invariant: max_tokens MUST be at least budget + buffer (capped
 		// at model.maxTokens). The /3 default may already exceed that floor; either
 		// way we never go below it and never above the cap.
-		const floor = Math.min(budgetTokens + OUTPUT_FALLBACK_BUFFER, budgetModel.maxTokens);
+		const modelMaxTokens = requireMaxTokens(budgetModel);
+		const floor = Math.min(budgetTokens + OUTPUT_FALLBACK_BUFFER, modelMaxTokens);
 		expect(params.max_tokens ?? 0).toBeGreaterThanOrEqual(floor);
-		expect(params.max_tokens ?? 0).toBeLessThanOrEqual(budgetModel.maxTokens);
+		expect(params.max_tokens ?? 0).toBeLessThanOrEqual(modelMaxTokens);
 	});
 });

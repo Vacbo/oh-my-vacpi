@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
 	type AuthCredential,
 	type AuthCredentialStore,
+	isSqliteBusyError,
 	SqliteAuthCredentialStore,
 	type StoredAuthCredential,
 } from "@oh-my-pi/pi-ai";
@@ -93,10 +94,14 @@ export class AgentStorage {
 	 * AuthCredentialStore handles auth_credentials and cache tables.
 	 */
 	#initializeSchema(): void {
+		// Install the busy handler BEFORE any lock-taking statement (incl.
+		// `PRAGMA journal_mode=WAL`, which acquires an exclusive lock during WAL
+		// recovery). Without this, concurrent omp startups can crash here with
+		// `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY`. See issue #2421.
+		this.#db.run("PRAGMA busy_timeout = 5000");
 		this.#db.run(`
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
-PRAGMA busy_timeout=5000;
 
 CREATE TABLE IF NOT EXISTS model_usage (
 	model_key TEXT PRIMARY KEY,
@@ -240,7 +245,8 @@ CREATE TABLE IF NOT EXISTS slash_command_usage (
 
 	/**
 	 * Returns singleton instance for the given database path, creating if needed.
-	 * Retries on SQLITE_BUSY with exponential backoff.
+	 * Retries on the `SQLITE_BUSY` family (including `SQLITE_BUSY_RECOVERY`) with
+	 * exponential backoff. See issue #2421.
 	 * @param dbPath - Path to the SQLite database file (defaults to config path)
 	 * @returns AgentStorage instance for the given path
 	 */
@@ -248,7 +254,7 @@ CREATE TABLE IF NOT EXISTS slash_command_usage (
 		const existing = instances.get(dbPath);
 		if (existing) return existing;
 
-		const maxRetries = 3;
+		const maxRetries = 4;
 		const baseDelayMs = 100;
 		let lastError: Error | undefined;
 
@@ -258,17 +264,20 @@ CREATE TABLE IF NOT EXISTS slash_command_usage (
 				instances.set(dbPath, storage);
 				return storage;
 			} catch (err) {
-				const isSqliteBusy = err && typeof err === "object" && (err as { code?: string }).code === "SQLITE_BUSY";
-				if (!isSqliteBusy) {
+				if (!isSqliteBusyError(err)) {
 					throw err;
 				}
-				lastError = err as Error;
-				const delayMs = baseDelayMs * 2 ** attempt;
-				await Bun.sleep(delayMs);
+				lastError = err instanceof Error ? err : new Error(String(err));
+				if (attempt < maxRetries - 1) {
+					await Bun.sleep(baseDelayMs * 2 ** attempt);
+				}
 			}
 		}
 
-		throw lastError ?? new Error("Failed to open database after retries");
+		throw new Error(
+			`Failed to open agent database at '${dbPath}' after ${maxRetries} attempts: ${lastError?.message}`,
+			{ cause: lastError },
+		);
 	}
 
 	/**

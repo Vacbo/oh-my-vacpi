@@ -24,6 +24,7 @@ import type { ZodType, z } from "zod/v4";
 import type { ApiKey } from "./auth-retry";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
+import type { StopDetails } from "./providers/anthropic-wire";
 import type { AzureOpenAIResponsesOptions } from "./providers/azure-openai-responses";
 import type { CursorOptions } from "./providers/cursor";
 import type { GoogleOptions } from "./providers/google";
@@ -35,6 +36,7 @@ import type { OpenAICompletionsOptions } from "./providers/openai-completions";
 import type { OpenAIResponsesOptions } from "./providers/openai-responses";
 import type { AssistantMessageEventStream } from "./utils/event-stream";
 
+export type { StopDetails } from "./providers/anthropic-wire";
 export type { AssistantMessageEventStream } from "./utils/event-stream";
 
 /**
@@ -425,6 +427,11 @@ export interface ToolCall {
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
 	intent?: string; // Harness-level intent metadata extracted from traced tool arguments
 	/**
+	 * Verbatim in-band syntax block that produced this synthetic `ptc_*` call.
+	 * Present only for owned prompt/tool-call formats; provider-native calls omit it.
+	 */
+	rawBlock?: string;
+	/**
 	 * Original wire-level name when the tool was invoked via OpenAI's custom-tool
 	 * mechanism (e.g., `apply_patch`). Set by `openai-responses` on receive so
 	 * the history-replay path can re-emit the call as `custom_tool_call` with
@@ -486,6 +493,7 @@ export interface AssistantMessage {
 	upstreamProvider?: string;
 	usage: Usage;
 	stopReason: StopReason;
+	stopDetails?: StopDetails | null;
 	errorMessage?: string;
 	/** HTTP status surfaced by the provider when the request failed. Populated by every provider's catch block alongside `errorMessage` so consumers (auth retry, telemetry, UI) can branch without regex-scraping the message. */
 	errorStatus?: number;
@@ -515,6 +523,12 @@ export interface ToolResultMessage<TDetails = any> {
 	attribution?: MessageAttribution;
 	/** Timestamp when output was pruned (ms since epoch). Undefined if unpruned. */
 	prunedAt?: number;
+	/**
+	 * Tool-declared: this result carried no information worth retaining once
+	 * consumed (zero matches, elapsed wait). Compaction passes may elide it.
+	 * Never set together with isError.
+	 */
+	useless?: boolean;
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
@@ -573,6 +587,24 @@ export type TSchema = ZodType | TJsonSchema;
 /** Resolve parameter types for tool execution / handlers. */
 export type Static<S> = S extends ZodType ? z.infer<S> : S extends { static: infer T } ? T : unknown;
 
+export interface ToolCallExample<TArgs = Record<string, unknown>> {
+	caption?: string;
+	call: TArgs;
+}
+export interface ToolCompareExample<TArgs = Record<string, unknown>> {
+	caption?: string;
+	bad: TArgs;
+	good: TArgs;
+}
+export interface ToolNoteExample {
+	caption: string;
+	note?: string;
+}
+export type ToolExample<TArgs = Record<string, unknown>> =
+	| ToolCallExample<TArgs>
+	| ToolCompareExample<TArgs>
+	| ToolNoteExample;
+
 export interface Tool<TParameters extends TSchema = TSchema> {
 	name: string;
 	description: string;
@@ -596,6 +628,15 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	 * calls route correctly. Absent for regular JSON function tools.
 	 */
 	customWireName?: string;
+	/**
+	 * Illustrative calls/notes; the AI layer renders them into an `<examples>`
+	 * block in the model's native tool-call syntax and appends to the wire
+	 * description. Author `call`/`bad`/`good` as plain argument objects WITHOUT
+	 * `_i` — when intent tracing injects `_i` into the schema, the renderer adds
+	 * a placeholder `_i` automatically. Type each tool's `examples` against its
+	 * own schema (e.g. `readonly ToolExample<z.input<typeof schema>>[]`).
+	 */
+	examples?: readonly ToolExample[];
 }
 
 export interface Context {

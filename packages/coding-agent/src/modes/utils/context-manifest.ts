@@ -62,6 +62,45 @@ export interface ContextManifestSession {
 	};
 	messages?: readonly AgentMessage[];
 }
+
+export function toContextManifestSession(session: {
+	systemPrompt?: readonly string[];
+	agent?: {
+		state?: {
+			tools?: readonly { name: string; description?: string; parameters?: unknown }[];
+		};
+	};
+	skills?: readonly { name: string; description?: string; filePath?: string; source?: string }[];
+	model?: { id: string; name?: string; contextWindow: number | null };
+	settings: {
+		getGroup(name: "compaction"): CompactionSettings;
+	};
+	messages?: readonly AgentMessage[];
+}): ContextManifestSession {
+	return {
+		systemPrompt: session.systemPrompt,
+		agent: {
+			state: {
+				tools: (session.agent?.state?.tools ?? []).map(tool => ({
+					name: tool.name,
+					description: tool.description ?? "",
+					parameters: tool.parameters,
+				})),
+			},
+		},
+		skills: (session.skills ?? []).map(skill => ({
+			name: skill.name,
+			description: skill.description ?? "",
+			filePath: skill.filePath,
+			source: skill.source,
+		})),
+		model: session.model
+			? { id: session.model.id, name: session.model.name, contextWindow: session.model.contextWindow ?? 0 }
+			: undefined,
+		settings: session.settings,
+		messages: session.messages,
+	};
+}
 export type ManifestNodeKind =
 	| "root"
 	| "group"

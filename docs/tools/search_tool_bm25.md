@@ -52,7 +52,7 @@
    - missing discovery hooks -> `ToolError("Tool discovery is unavailable in this session.")`
    - discovery disabled and no skill entries in the corpus -> `ToolError("Tool discovery is disabled. Enable tools.discoveryMode, mcp.discoveryMode, or skills.discoveryMode to use search_tool_bm25.")`
 4. `query` is trimmed and validated; `limit` is defaulted/validated.
-5. `getDiscoverableToolSearchIndexForExecution()` fetches the cached generic search index from the session when available, otherwise falls back to the legacy MCP cache, otherwise rebuilds an index from the current discoverable-tool list.
+5. `getDiscoverableToolSearchIndexForExecution()` fetches the cached generic search index from the session when available, otherwise rebuilds an index from the current discoverable-tool list.
 6. `getSelectedToolNames()` reads the current discovered selections so already-selected tools can be excluded from fresh results.
 7. `searchDiscoverableTools()` in `packages/coding-agent/src/tool-discovery/tool-index.ts` tokenizes the query, scores every document with BM25, sorts by descending score then `tool.name`, and returns up to `searchIndex.documents.length` results; `execute()` then filters already-selected names and slices to `limit`.
 8. If any non-skill matches remain, `activateTools()` activates them through `session.activateDiscoveredTools()` or legacy `activateDiscoveredMCPTools()`. Skill matches are never activated: they surface in `content` as `{name, description, read}` entries whose `read` is a `skill://<name>` URI the model reads directly.
@@ -69,9 +69,8 @@
   - legacy `mcp.discoveryMode = true`: same as MCP-only.
   - `skills.discoveryMode = "search"`: unpinned skills (not matching `skills.pinnedSkills` globs) leave the system prompt `<skills>` listing — replaced by a `<skills-discovery>` roster line — and join the corpus as `source: "skill"` entries named `skill:<name>`. This keeps `search_tool_bm25` alive even when tool discovery resolves to off. Frontmatter-hidden skills (`hide: true` / `disable-model-invocation: true`) stay out of both the listing and the corpus. Pins are editable as comma-separated globs in the Settings panel (tools tab) or per skill with `ctrl+p` in the Extension Control Center (`/extensions`), which toggles literal names and badges pinned rows. The settings input suggests the closest skill names from the discovered pool while typing (↑/↓ choose, Tab accepts; glob segments preview their matches) and shows a live `matches N of M skills` count.
 - Search-index source:
-  - generic cached discoverable index from the session
-  - legacy cached MCP index, cast to the generic shape
-  - rebuilt ad hoc from the current discoverable-tool list if neither cache path works
+  - generic cached discoverable index from the session (`getDiscoverableToolSearchIndex()`)
+  - rebuilt ad hoc from the current discoverable-tool list when the cache path fails
 - Activation backend:
   - generic `activateDiscoveredTools()`
   - legacy `activateDiscoveredMCPTools()` fallback

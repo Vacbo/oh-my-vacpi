@@ -248,12 +248,130 @@ a { color: inherit; text-decoration: none; }
 .meta { display: grid; grid-template-columns: max-content 1fr; gap: .35rem .75rem; margin-bottom: 1rem; }
 .meta dt { color: #8b949e; }
 .meta dd { margin: 0; overflow-wrap: anywhere; }
-${terminalStyle({ fontPx: 15, rowPx: 19, frame: true, animate: true })}`;
+${terminalStyle({ fontPx: 15, rowPx: 19, frame: true, animate: true })}
+.omp-sel-box { position: fixed; border: 1px solid #58a6ff; background: rgba(88,166,255,0.18); pointer-events: none; z-index: 2147483646; }
+.omp-sel-readout { position: fixed; right: 1rem; bottom: 1rem; max-width: 28rem; padding: .7rem .8rem; background: #111822; border: 1px solid #58a6ff; border-radius: .5rem; font-size: .8rem; z-index: 2147483647; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+.omp-sel-title { font-weight: 600; margin-bottom: .4rem; }
+.omp-sel-cmd { display: block; font-family: ui-monospace, monospace; color: #79c0ff; word-break: break-all; margin-bottom: .4rem; }
+.omp-sel-copy { font: inherit; cursor: pointer; padding: .2rem .5rem; margin-bottom: .4rem; background: #1f6feb; color: #fff; border: none; border-radius: .35rem; }
+.omp-sel-text { white-space: pre-wrap; max-height: 8rem; overflow: auto; margin: 0; color: #c9d1d9; background: #0b0f14; padding: .4rem; border-radius: .35rem; }`;
 
 const PHOTO_STYLE = `:root { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #05070a; color: #e6edf3; }
 ${terminalStyle({ fontPx: 15, rowPx: 19, frame: false, animate: false })}`;
+
+// Drag-select overlay for the human-viewable mirror page only (never the photo page,
+// which must stay free of overlays so region screenshots crop cleanly). The user drags
+// a box over the grid; the script resolves the covered `data-terminal-row` rows and the
+// intersected `data-terminal-cell` column span, then surfaces the matching
+// `tui_observe screenshot rows=…/cols=…` invocation plus the selected text to copy.
+const SELECT_OVERLAY_SCRIPT = `(() => {
+	const snapshot = document.querySelector("[data-terminal-snapshot]");
+	if (!snapshot) return;
+	const runEl = document.querySelector('[data-field="runId"]');
+	const runId = runEl ? (runEl.textContent || "") : "";
+	let box = null;
+	let readout = null;
+	let startX = 0, startY = 0, dragging = false;
+	function ensureReadout() {
+		if (!readout) {
+			readout = document.createElement("div");
+			readout.className = "omp-sel-readout";
+			document.body.appendChild(readout);
+		}
+		return readout;
+	}
+	function update(e) {
+		const left = Math.min(startX, e.clientX);
+		const top = Math.min(startY, e.clientY);
+		const width = Math.abs(e.clientX - startX);
+		const height = Math.abs(e.clientY - startY);
+		if (box) {
+			box.style.left = left + "px";
+			box.style.top = top + "px";
+			box.style.width = width + "px";
+			box.style.height = height + "px";
+		}
+		return { left: left, top: top, right: left + width, bottom: top + height, width: width, height: height };
+	}
+	function finish(rect) {
+		const rows = [];
+		for (const row of snapshot.querySelectorAll("[data-terminal-row]")) {
+			const r = row.getBoundingClientRect();
+			if (r.bottom >= rect.top && r.top <= rect.bottom) rows.push(row);
+		}
+		if (rows.length === 0) return;
+		let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity;
+		for (const row of rows) {
+			const n = Number(row.getAttribute("data-terminal-row"));
+			if (n < minRow) minRow = n;
+			if (n > maxRow) maxRow = n;
+			const cells = row.querySelectorAll("[data-terminal-cell]");
+			for (let i = 0; i < cells.length; i++) {
+				const c = cells[i].getBoundingClientRect();
+				if (c.right < rect.left || c.left > rect.right) continue;
+				if (i < minCol) minCol = i;
+				if (i > maxCol) maxCol = i;
+			}
+		}
+		const cols = minCol <= maxCol ? [minCol, maxCol] : null;
+		let text = "";
+		for (const row of rows) {
+			const rowText = row.getAttribute("data-text") || "";
+			text += (cols ? rowText.slice(cols[0], cols[1] + 1) : rowText) + "\\n";
+		}
+		text = text.replace(/\\n+$/, "");
+		const rowsArg = minRow === maxRow ? String(minRow) : minRow + "-" + maxRow;
+		const colsArg = cols ? (cols[0] === cols[1] ? String(cols[0]) : cols[0] + "-" + cols[1]) : "";
+		let cmd = "tui_observe screenshot";
+		if (runId) cmd += ' run="' + runId + '"';
+		cmd += ' rows="' + rowsArg + '"';
+		if (colsArg) cmd += ' cols="' + colsArg + '"';
+		const panel = ensureReadout();
+		panel.innerHTML = "";
+		const title = document.createElement("div");
+		title.className = "omp-sel-title";
+		title.textContent = "Selection: rows " + rowsArg + (colsArg ? ", cols " + colsArg : "");
+		const code = document.createElement("code");
+		code.className = "omp-sel-cmd";
+		code.textContent = cmd;
+		const copy = document.createElement("button");
+		copy.className = "omp-sel-copy";
+		copy.textContent = "Copy command";
+		copy.addEventListener("click", () => {
+			if (navigator.clipboard) navigator.clipboard.writeText(cmd);
+			copy.textContent = "Copied";
+			setTimeout(() => { copy.textContent = "Copy command"; }, 1200);
+		});
+		const pre = document.createElement("pre");
+		pre.className = "omp-sel-text";
+		pre.textContent = text;
+		panel.appendChild(title);
+		panel.appendChild(code);
+		panel.appendChild(copy);
+		panel.appendChild(pre);
+	}
+	snapshot.addEventListener("mousedown", (e) => {
+		if (e.button !== 0) return;
+		dragging = true;
+		startX = e.clientX;
+		startY = e.clientY;
+		box = document.createElement("div");
+		box.className = "omp-sel-box";
+		document.body.appendChild(box);
+		update(e);
+		e.preventDefault();
+	});
+	window.addEventListener("mousemove", (e) => { if (dragging) update(e); });
+	window.addEventListener("mouseup", (e) => {
+		if (!dragging) return;
+		dragging = false;
+		const rect = update(e);
+		if (box) { box.remove(); box = null; }
+		if (rect.width > 2 && rect.height > 2) finish(rect);
+	});
+})();`;
 
 function renderSessionsPage(
 	sessions: LiveSessionSummary[],
@@ -276,6 +394,7 @@ ${sessions.map(item => renderSessionLink(item, session?.runId)).join("\n")}
 <main>
 ${session ? renderSessionDetail(session, terminal) : "<p>No live sessions found.</p>"}
 </main>
+${session ? `<script>${SELECT_OVERLAY_SCRIPT}</script>` : ""}
 </body>
 </html>`;
 }

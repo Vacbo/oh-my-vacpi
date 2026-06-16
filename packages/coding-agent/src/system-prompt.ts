@@ -4,22 +4,34 @@
 
 import * as os from "node:os";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { ToolExample, TSchema } from "@oh-my-pi/pi-ai";
+import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
 import { $env, getGpuCachePath, getProjectDir, hasFsCode, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { contextFileCapability } from "./capability/context-file";
 import { systemPromptCapability } from "./capability/system-prompt";
 import { findConfigFile } from "./config";
-import type { SkillsSettings } from "./config/settings";
+import type { Personality, SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
 import { loadSkills, partitionSkillsForPrompt, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
+import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
+import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
+import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { TOOL_DISCOVERY_SEARCH_TOOL_NAME } from "./tool-discovery/mode";
 import { shortenPath } from "./tools/render-utils";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
+
+/** Bundled personality specs, keyed by the `personality` setting value. */
+const PERSONALITY_SPECS: Record<Exclude<Personality, "none">, string> = {
+	default: defaultPersonality,
+	friendly: friendlyPersonality,
+	pragmatic: pragmaticPersonality,
+};
 
 interface AlwaysApplyRule {
 	name: string;
@@ -321,6 +333,10 @@ export interface SystemPromptToolMetadata {
 	description: string;
 	/** Tool name the model sees on the provider wire. Defaults to the internal tool name. */
 	wireName?: string;
+	/** Tool parameters schema (Zod or JSON Schema), fed to the verbose inventory renderer. */
+	parameters?: TSchema;
+	/** Illustrative examples rendered into the verbose inventory. */
+	examples?: readonly ToolExample[];
 }
 
 export function buildSystemPromptToolMetadata(
@@ -340,6 +356,8 @@ export function buildSystemPromptToolMetadata(
 					label: override?.label ?? (typeof toolRecord.label === "string" ? toolRecord.label : ""),
 					description:
 						override?.description ?? (typeof toolRecord.description === "string" ? toolRecord.description : ""),
+					parameters: toolRecord.parameters,
+					examples: toolRecord.examples,
 					wireName,
 				},
 			] as const;
@@ -358,6 +376,12 @@ export interface BuildSystemPromptOptions {
 	appendSystemPrompt?: string;
 	/** Repeat full tool descriptions in system prompt. Default: false */
 	repeatToolDescriptions?: boolean;
+	/**
+	 * Whether provider-native tool calling is active (no owned/in-band syntax).
+	 * When true and `repeatToolDescriptions` is false, the inventory renders as a
+	 * compact tool-name list; otherwise it renders full `# Tool:` sections. Default: true
+	 */
+	nativeTools?: boolean;
 	/** Skills settings for discovery. */
 	skillsSettings?: SkillsSettings;
 	/** Working directory. Default: getProjectDir() */
@@ -376,6 +400,10 @@ export interface BuildSystemPromptOptions {
 	mcpDiscoveryServerSummaries?: string[];
 	/** Encourage the agent to delegate via tasks unless changes are trivial. */
 	eagerTasks?: boolean;
+	/** When true, the Eager Tasks section uses the hard MUST/ONLY wording (`task.eager: always`) rather than the softer `preferred` nudge. */
+	eagerTasksAlways?: boolean;
+	/** Whether `task.batch` is enabled; gates batch-call guidance in the Eager Tasks section. */
+	taskBatch?: boolean;
 	/** Rules with alwaysApply=true — their full content is injected into the prompt. */
 	alwaysApplyRules?: AlwaysApplyRule[];
 	/** Whether secret obfuscation is active. When true, explains the redaction format in the prompt. */
@@ -386,6 +414,8 @@ export interface BuildSystemPromptOptions {
 	memoryRootEnabled?: boolean;
 	/** Active model identifier (e.g. "anthropic/claude-opus-4") surfaced to the agent. */
 	model?: string;
+	/** Personality preset rendered into the default system prompt. "none" omits the block. Default: "default" */
+	personality?: Personality;
 }
 
 /** Result of building provider-facing system prompt messages. */
@@ -405,6 +435,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		tools,
 		appendSystemPrompt,
 		repeatToolDescriptions = false,
+		nativeTools = true,
 		skillsSettings,
 		toolNames: providedToolNames,
 		cwd,
@@ -416,10 +447,13 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		mcpDiscoveryMode = false,
 		mcpDiscoveryServerSummaries = [],
 		eagerTasks = false,
+		eagerTasksAlways = false,
+		taskBatch = true,
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
 		memoryRootEnabled = false,
 		model,
+		personality = "default",
 	} = options;
 	const resolvedCwd = cwd ?? getProjectDir();
 
@@ -562,6 +596,20 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		label: tools?.get(name)?.label ?? "",
 		description: tools?.get(name)?.description ?? "",
 	}));
+	const inventoryTools = toolNames.map(name => {
+		const meta = tools?.get(name);
+		return {
+			name: toolPromptNames.get(name) ?? name,
+			description: meta?.description ?? "",
+			parameters: meta?.parameters ?? ({ type: "object" } as TSchema),
+			examples: meta?.examples,
+		};
+	});
+	// List mode shows a compact tool-name list; it only applies when descriptions
+	// are not repeated AND native tool calling is active (the model already has the
+	// schemas). Otherwise render full `# Tool:` sections.
+	const toolListMode = !repeatToolDescriptions && nativeTools;
+	const toolInventory = toolListMode ? "" : renderToolInventory(inventoryTools, model ?? "");
 
 	// Filter skills for the rendered system prompt:
 	// - require the `read` tool so the model can actually fetch skill content;
@@ -587,7 +635,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		appendPrompt: resolvedAppendPrompt ?? "",
 		tools: toolNames,
 		toolInfo,
+		toolInventory,
 		repeatToolDescriptions,
+		toolListMode,
 		toolRefs,
 		environment,
 		contextFiles,
@@ -601,12 +651,15 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		dateTime,
 		cwd: promptCwd,
 		model: model ?? "",
+		personality: personality === "none" ? "" : PERSONALITY_SPECS[personality].trim(),
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		mcpDiscoveryMode,
 		hasMCPDiscoveryServers: mcpDiscoveryServerSummaries.length > 0,
 		mcpDiscoveryServerSummaries,
 		eagerTasks,
+		eagerTasksAlways,
+		taskBatch,
 		secretsEnabled,
 		hasMemoryRoot: memoryRootEnabled,
 		hasObsidian: hasObsidian(),

@@ -20,11 +20,10 @@
  * never blocked on the network and never throws.
  */
 import { Database } from "bun:sqlite";
-import path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
-import { $env, $flag, getAgentDir, getInstallId, logger, VERSION } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
+import { $env, $flag, getAutoQaDbDir, getInstallId, logger, VERSION } from "@oh-my-pi/pi-utils";
+import { z } from "zod/v4";
 import type { Settings } from "..";
 import type { ToolSession } from "./index";
 
@@ -184,10 +183,6 @@ export async function resolveAutoQaConsent(settings: Settings | undefined): Prom
 	return consentInFlight;
 }
 
-export function getAutoQaDbPath(): string {
-	return path.join(getAgentDir(), "autoqa.db");
-}
-
 let cachedDb: Database | null = null;
 
 /**
@@ -205,11 +200,12 @@ let cachedDb: Database | null = null;
 export function openAutoQaDb(): Database | null {
 	if (cachedDb) return cachedDb;
 	try {
-		const db = new Database(getAutoQaDbPath());
+		const db = new Database(getAutoQaDbDir());
+		// Install the busy handler BEFORE any lock-taking statement. See #2421.
+		db.run("PRAGMA busy_timeout = 5000");
 		db.run(`
 			PRAGMA journal_mode=WAL;
 			PRAGMA synchronous=NORMAL;
-			PRAGMA busy_timeout=5000;
 			CREATE TABLE IF NOT EXISTS grievances (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				model TEXT NOT NULL,

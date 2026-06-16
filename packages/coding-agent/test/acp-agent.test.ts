@@ -477,7 +477,7 @@ async function createHarness(
  * `setTimeout` drift without slowing tests meaningfully.
  */
 async function waitForBootstrapGuard(): Promise<void> {
-	await Bun.sleep(ACP_BOOTSTRAP_RACE_GUARD_MS + 30);
+	await Bun.sleep(ACP_BOOTSTRAP_RACE_GUARD_MS + 150);
 }
 
 describe("ACP agent", () => {
@@ -488,13 +488,16 @@ describe("ACP agent", () => {
 		expectAcpStructure(zNewSessionResponse, first);
 		expectAcpStructure(zNewSessionResponse, second);
 
-		expect(first.models?.availableModels.map(model => model.modelId)).toEqual(
+		const modelOption = first.configOptions?.find(opt => opt.id === "model");
+		expect(modelOption?.type).toBe("select");
+		expect((modelOption as any).options?.map((opt: any) => opt.value)).toEqual(
 			TEST_MODELS.map(model => `${model.provider}/${model.id}`),
 		);
 
-		await harness.agent.unstable_setSessionModel({
+		await harness.agent.setSessionConfigOption({
 			sessionId: first.sessionId,
-			modelId: `${TEST_MODELS[1]!.provider}/${TEST_MODELS[1]!.id}`,
+			configId: "model",
+			value: `${TEST_MODELS[1]!.provider}/${TEST_MODELS[1]!.id}`,
 		});
 		await harness.agent.setSessionConfigOption({
 			sessionId: first.sessionId,
@@ -914,16 +917,14 @@ describe("ACP agent", () => {
 		const live = await harness.agent.newSession({ cwd: harness.cwdB, mcpServers: [] });
 		const response = await harness.agent.prompt({
 			sessionId: live.sessionId,
-			messageId: "05b17a6f-b310-4be7-b767-6b4f3a84eb63",
 			prompt: [{ type: "text", text: "ping" }],
-		} as PromptRequest);
+		});
 		expectAcpStructure(zPromptResponse, response);
 		expectAcpNotifications(harness.updates);
 
 		const liveChunks = harness.updates.filter(
 			update => update.sessionId === live.sessionId && update.update.sessionUpdate === "agent_message_chunk",
 		);
-		expect(response.userMessageId).toBe("05b17a6f-b310-4be7-b767-6b4f3a84eb63");
 		expect(response.usage).toEqual({
 			inputTokens: 10,
 			outputTokens: 5,
@@ -1299,16 +1300,26 @@ describe("ACP agent", () => {
 			},
 		};
 
-		await waitForBootstrapGuard();
+		// Drive a deterministic re-advertisement instead of sleeping through
+		// the bootstrap timer: under full-suite load the 50ms guard plus the
+		// awaited slash-command scan can outlive the fixed wait, leaving zero
+		// command updates observed (#flake). `/reload-plugins` awaits the
+		// refresh and emits an advertisement that includes the stubs above.
+		await harness.agent.prompt({
+			sessionId: created.sessionId,
+			messageId: "00000000-0000-4000-8000-000000000005",
+			prompt: [{ type: "text", text: "/reload-plugins" }],
+		} as PromptRequest);
 
 		const commandUpdates = harness.updates.filter(
 			update =>
 				update.sessionId === created.sessionId && update.update.sessionUpdate === "available_commands_update",
 		);
-		// Flatten all advertised commands from all updates for this session.
-		const allCommands = commandUpdates.flatMap(update =>
-			update.update.sessionUpdate === "available_commands_update" ? update.update.availableCommands : [],
-		);
+		// Each update is a complete advertisement; assert on the latest one
+		// (the bootstrap update may or may not have landed by now).
+		const lastUpdate = commandUpdates.at(-1);
+		const allCommands =
+			lastUpdate?.update.sessionUpdate === "available_commands_update" ? lastUpdate.update.availableCommands : [];
 		const names = allCommands.map(c => c.name);
 
 		// Extension command must surface.
@@ -1498,9 +1509,8 @@ describe("ACP agent", () => {
 
 		const firstPrompt = harness.agent.prompt({
 			sessionId: created.sessionId,
-			messageId: "00000000-0000-4000-8000-000000000029",
 			prompt: [{ type: "text", text: "wait for cleanup" }],
-		} as PromptRequest);
+		});
 		await idleBlocked;
 
 		try {
@@ -1509,8 +1519,7 @@ describe("ACP agent", () => {
 			expect(session.waitForIdleCalls).toBe(1);
 
 			unblockIdle();
-			const response = await firstPrompt;
-			expect(response.userMessageId).toBe("00000000-0000-4000-8000-000000000029");
+			await firstPrompt;
 		} finally {
 			unblockIdle();
 			harness.abortController.abort();
@@ -1538,9 +1547,8 @@ describe("ACP agent", () => {
 
 		const prompt = harness.agent.prompt({
 			sessionId: created.sessionId,
-			messageId: "00000000-0000-4000-8000-000000000047",
 			prompt: [{ type: "text", text: "wait for async delivery" }],
-		} as PromptRequest);
+		});
 		await deliveryBlocked.promise;
 
 		try {
@@ -1549,8 +1557,7 @@ describe("ACP agent", () => {
 			expect(session.waitForIdleCalls).toBe(1);
 
 			releaseDelivery();
-			const response = await prompt;
-			expect(response.userMessageId).toBe("00000000-0000-4000-8000-000000000047");
+			await prompt;
 			expect(session.waitForIdleCalls).toBe(2);
 			expect(drainCalls).toBe(2);
 		} finally {
@@ -1893,16 +1900,14 @@ describe("ACP agent", () => {
 		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
 		const session = harness.findSession(created.sessionId)!;
 
-		const response = await harness.agent.prompt({
+		await harness.agent.prompt({
 			sessionId: created.sessionId,
-			messageId: "00000000-0000-4000-8000-000000000002",
 			prompt: [{ type: "text", text: "/fast status" }],
-		} as PromptRequest);
+		});
 
 		const chunks = harness.updates.filter(
 			update => update.sessionId === created.sessionId && update.update.sessionUpdate === "agent_message_chunk",
 		);
-		expect(response.userMessageId).toBe("00000000-0000-4000-8000-000000000002");
 		expect(session.promptCalls).toEqual([]);
 		expect(
 			chunks.some(

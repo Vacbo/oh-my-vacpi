@@ -490,7 +490,10 @@ async fn create_session(config: &ShellConfig) -> Result<ShellSessionCore> {
 	}
 	shell.register_builtin("sleep", builtins::builtin::<SleepCommand, _>());
 	shell.register_builtin("timeout", builtins::builtin::<TimeoutCommand, _>());
-	shell.register_builtin("nohup", builtins::builtin::<NohupCommand, _>());
+	shell.register_builtin(
+		"nohup",
+		builtins::builtin::<NohupCommand, _>().transparent_background_wrapper(),
+	);
 
 	let mut merged_path: Option<String> = None;
 	for (key, value) in std::env::vars() {
@@ -867,7 +870,7 @@ async fn run_shell_command_segmented_chain(
 
 async fn run_shell_command_once(
 	session: &mut ShellSessionCore,
-	command: String,
+	mut command: String,
 	mut params: ExecutionParameters,
 	on_chunk: Option<mpsc::UnboundedSender<String>>,
 	cancel_token: CancellationToken,
@@ -930,6 +933,7 @@ async fn run_shell_command_once(
 			terminate_new_descendants(&baseline_descendants).await;
 		}
 	});
+	ensure_trailing_newline_for_heredoc(&mut command);
 	let source_info = SourceInfo::from("pi-natives:command");
 	let result = session
 		.shell
@@ -1091,10 +1095,12 @@ async fn run_shell_command_streams(
 			}
 		}
 	});
+	let mut command = options.command.clone();
+	ensure_trailing_newline_for_heredoc(&mut command);
 	let source_info = SourceInfo::from("pi-shell:streams");
 	let result = session
 		.shell
-		.run_string(options.command.clone(), &source_info, &params)
+		.run_string(command, &source_info, &params)
 		.await;
 
 	if cancel_token.is_cancelled() {
@@ -1347,8 +1353,15 @@ fn apply_env_fallback(shell: &mut BrushShell) -> Result<()> {
 		.map_err(|err| Error::msg(format!("Failed to set env fallback: {err}")))
 }
 
+fn is_macos_malloc_stack_logging_var(key: &str) -> bool {
+	matches!(key, "MallocStackLogging" | "MallocStackLoggingNoCompact")
+}
+
 fn should_skip_env_var(key: &str) -> bool {
 	if key.starts_with("BASH_FUNC_") && key.ends_with("%%") {
+		return true;
+	}
+	if is_macos_malloc_stack_logging_var(key) {
 		return true;
 	}
 
@@ -1403,6 +1416,13 @@ fn should_skip_env_var(key: &str) -> bool {
 			| "HOSTNAME"
 			| "HOSTTYPE"
 	)
+}
+
+fn ensure_trailing_newline_for_heredoc(command: &mut String) {
+	if command.ends_with('\n') || !command.as_bytes().windows(2).any(|window| window == b"<<") {
+		return;
+	}
+	command.push('\n');
 }
 
 const fn session_keepalive(result: &ExecutionResult) -> bool {
@@ -2198,6 +2218,32 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		assert_eq!(minimized.output_bytes, 9);
 	}
 
+	/// Regression: a quoted here-doc followed by another command must execute
+	/// instead of failing with "unterminated here document". The minimizer's
+	/// segmented runner used to rebuild each segment via the brush AST Display
+	/// impl, which re-emitted the `<<'PY'` close tag as the quoted `'PY'` — an
+	/// invalid delimiter that left the body unterminated. Here-doc-bearing
+	/// commands now bail out of segmentation and run whole via the single path.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn quoted_heredoc_in_chain_runs_via_single_path() {
+		let root = unique_temp_dir("heredoc-chain");
+		let minimizer = printf_minimizer(&root.join("minimizer.toml"), None);
+		let (result, output) = run_command_capture(
+			"/bin/cat <<'PY'\nhello $USER\nPY\nprintf 'after\\n'",
+			None,
+			Some(minimizer),
+			CancelToken::default(),
+		)
+		.await;
+		let _ = std::fs::remove_dir_all(&root);
+		assert_eq!(result.exit_code, Some(0));
+		// Quoted delimiter keeps the body literal ($USER unexpanded) and the
+		// trailing command still runs in order.
+		assert_eq!(output, "hello $USER\nafter\n");
+		assert!(!output.contains("unterminated"));
+	}
+
 	#[cfg(unix)]
 	#[tokio::test(flavor = "multi_thread")]
 	async fn segmented_chain_exceeding_aggregate_capture_cap_stays_raw() {
@@ -2278,9 +2324,12 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		use std::io::Read as _;
 
 		// SAFETY: `getsid(0)` only queries the current process session; the return
-		// value is checked.
+		// value is checked. Inside a PID namespace (the containerized CI runner)
+		// the host's session leader can live outside the namespace, so `getsid(0)`
+		// legitimately reports 0 — only -1 is a real failure. The child-session
+		// invariants below (own session, distinct from host) stay meaningful.
 		let host_sid = unsafe { libc::getsid(0) };
-		assert!(host_sid > 0, "getsid(0) failed: {}", std::io::Error::last_os_error());
+		assert!(host_sid >= 0, "getsid(0) failed: {}", std::io::Error::last_os_error());
 
 		// Build the same kind of session pi-natives uses in production.
 		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
@@ -2399,9 +2448,12 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 	async fn embedded_pipeline_stage_runs_in_its_own_session() {
 		use std::io::Read as _;
 
-		// SAFETY: `getsid(0)` only queries the current process session; checked below.
+		// SAFETY: `getsid(0)` only queries the current process session; checked
+		// below. In a PID namespace (containerized CI) the host's session leader
+		// can live outside the namespace, so `getsid(0)` reports 0, not an error;
+		// only -1 is a real failure.
 		let host_sid = unsafe { libc::getsid(0) };
-		assert!(host_sid > 0, "getsid(0) failed: {}", std::io::Error::last_os_error());
+		assert!(host_sid >= 0, "getsid(0) failed: {}", std::io::Error::last_os_error());
 
 		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
 		let mut session = create_session(&config).await.expect("create_session");
@@ -2498,6 +2550,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		);
 	}
 
+	#[cfg(unix)]
 	#[tokio::test(flavor = "multi_thread")]
 	async fn wait_accepts_last_background_process_id() {
 		let options = ShellExecuteOptions {
@@ -2514,6 +2567,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		assert!(!result.timed_out);
 	}
 
+	#[cfg(unix)]
 	#[tokio::test(flavor = "multi_thread")]
 	async fn wait_n_p_records_completed_process_id() {
 		let options = ShellExecuteOptions {
@@ -2533,6 +2587,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		assert!(!result.timed_out);
 	}
 
+	#[cfg(unix)]
 	#[tokio::test(flavor = "multi_thread")]
 	async fn wait_f_accepts_process_id() {
 		let options = ShellExecuteOptions {
@@ -2749,6 +2804,25 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		assert_eq!(stdout, b"prod:8080");
 	}
 
+	/// Quoted heredoc delimiters at EOF must behave like bash. `brush-parser`
+	/// currently rejects that shape unless the input stream ends with a newline,
+	/// which surfaced as `unterminated here document sequence; tag(s) [...]` for
+	/// normal paste-run Python snippets.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn quoted_heredoc_without_trailing_newline_runs() {
+		let (result, output) = run_command_capture(
+			"/bin/cat <<'PY'\nhello $USER\nPY",
+			None,
+			None,
+			CancelToken::default(),
+		)
+		.await;
+
+		assert_eq!(result.exit_code, Some(0));
+		assert_eq!(output, "hello $USER\n");
+	}
+
 	/// Regression for a Windows/macOS deadlock in
 	/// `brush_core::interp::setup_open_file_with_contents`. The body is
 	/// 256 KiB — well past the default pipe buffer on every platform
@@ -2781,16 +2855,48 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 	/// own exit status — not nohup's (`125`/`126`/`127`) error codes.
 	#[tokio::test(flavor = "multi_thread")]
 	async fn nohup_builtin_propagates_command_exit_code() {
-		let options = ShellExecuteOptions {
-			command: "nohup /bin/sh -c 'exit 7'".to_string(),
-			..Default::default()
+		let command = if cfg!(windows) {
+			"nohup cmd /C exit 7"
+		} else {
+			"nohup /bin/sh -c 'exit 7'"
 		};
+		let options = ShellExecuteOptions { command: command.to_string(), ..Default::default() };
 		let result = execute_shell(options, None, CancelToken::default())
 			.await
 			.expect("execute should succeed");
 		assert_eq!(result.exit_code, Some(7));
 		assert!(!result.cancelled);
 		assert!(!result.timed_out);
+	}
+
+	/// `nohup` is a no-op builtin in this embedded shell, but `nohup cmd &`
+	/// must still behave like a process-launching background command for `$!`.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn nohup_background_captures_operand_pid() {
+		let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+		let options = ShellExecuteOptions {
+			command: "nohup /bin/sh -c 'exit 0' >/dev/null 2>&1 & pid=$!; printf 'pid=%s\n' \
+			          \"$pid\"; test -n \"$pid\""
+				.to_string(),
+			..Default::default()
+		};
+		let result = execute_shell(options, Some(tx), CancelToken::default())
+			.await
+			.expect("execute should succeed");
+		assert_eq!(result.exit_code, Some(0));
+		assert!(!result.cancelled);
+		assert!(!result.timed_out);
+
+		let mut out = String::new();
+		while let Some(chunk) = rx.recv().await {
+			out.push_str(&chunk);
+		}
+		let pid = out
+			.trim()
+			.strip_prefix("pid=")
+			.expect("nohup background PID output should include pid= prefix");
+		assert!(pid.parse::<i32>().is_ok_and(|pid| pid > 0), "invalid PID output: {out:?}");
 	}
 
 	/// `nohup` with no operand mirrors coreutils: a `missing operand` diagnostic

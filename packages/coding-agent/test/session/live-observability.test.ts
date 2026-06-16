@@ -254,6 +254,45 @@ describe("live session observability", () => {
 		}
 	});
 
+	it("injects the drag-select overlay on the mirror page but never the photo page", async () => {
+		const agentDir = await makeTempDir();
+		const now = new Date().toISOString();
+		const metadata = await writeFixtureRun(agentDir, {
+			runId: "overlay-run",
+			pid: process.pid,
+			cwd: "/tmp/overlay",
+			agentId: "0-Main",
+			sessionId: "session-overlay",
+			sessionFile: null,
+			startedAt: now,
+			updatedAt: now,
+			status: "running",
+			mode: "interactive",
+			model: "provider/model",
+			eventStreamPath: "",
+			terminalSnapshotPath: "",
+		});
+		const recorder = new TerminalSnapshotRecorder({ path: metadata.terminalSnapshotPath, cols: 20, rows: 3 });
+		recorder.write("row one\r\nrow two\r\nrow three");
+		await Bun.sleep(60);
+		await recorder.persist();
+		recorder.dispose();
+
+		const server = startSessionsServer({ agentDir });
+		try {
+			const page = await fetch(`${server.url}/sessions?run=${metadata.runId}`).then(r => r.text());
+			const photo = await fetch(`${server.url}/sessions?run=${metadata.runId}&mode=photo`).then(r => r.text());
+			// The mirror page carries the selection overlay (style + the drag script).
+			expect(page).toContain("omp-sel-box");
+			expect(page).toContain("Selection: rows ");
+			// The photo page must stay overlay-free so region screenshots crop clean.
+			expect(photo).not.toContain("omp-sel-box");
+			expect(photo).not.toContain("Selection: rows ");
+		} finally {
+			server.stop();
+		}
+	});
+
 	it("streams terminal snapshots over server-sent events", async () => {
 		const agentDir = await makeTempDir();
 		const now = new Date().toISOString();

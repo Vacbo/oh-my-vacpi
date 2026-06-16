@@ -22,10 +22,12 @@ import {
 	type ToolChoice,
 	type ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
+import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
+import type { HarmonyAuditEvent } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { logger } from "@oh-my-pi/pi-utils";
 import { abortReasonText, agentLoop, agentLoopContinue } from "./agent-loop";
 import type { AppendOnlyContextManager } from "./append-only-context";
-import type { HarmonyAuditEvent } from "./harmony-leak";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -98,7 +100,7 @@ export interface AgentOptions {
 	 * Optional transform applied after provider context assembly and before
 	 * telemetry capture/provider send.
 	 */
-	transformProviderContext?: (context: Context) => Context;
+	transformProviderContext?: (context: Context, model: Model) => Context;
 
 	/**
 	 * Steering mode: "all" = send all steering messages at once, "one-at-a-time" = one per turn
@@ -219,6 +221,15 @@ export interface AgentOptions {
 
 	/** Enable intent tracing schema injection/stripping in the harness. */
 	intentTracing?: boolean;
+	/** Owned tool-calling dialect. Undefined keeps provider-native tool calling. */
+	dialect?: Dialect;
+	/**
+	 * When owned tool calling is active and the model fabricates a tool result
+	 * mid-turn: `true` (default) aborts the provider request immediately; `false`
+	 * drains the request and discards the fabricated continuation. Forwarded to
+	 * the loop's {@link AgentLoopConfig.abortOnFabricatedToolResult}.
+	 */
+	abortOnFabricatedToolResult?: boolean;
 	/** Dynamic tool choice override, resolved per LLM call. */
 	getToolChoice?: () => ToolChoice | undefined;
 
@@ -285,7 +296,7 @@ export class Agent {
 	#abortController?: AbortController;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
-	#transformProviderContext?: (context: Context) => Context;
+	#transformProviderContext?: (context: Context, model: Model) => Context;
 	#steeringQueue: AgentMessage[] = [];
 	#followUpQueue: AgentMessage[] = [];
 	#steeringMode: "all" | "one-at-a-time";
@@ -315,6 +326,8 @@ export class Agent {
 	#preferWebsockets?: boolean;
 	#transformToolCallArguments?: (args: Record<string, unknown>, toolName: string) => Record<string, unknown>;
 	#intentTracing: boolean;
+	#dialect?: Dialect;
+	#abortOnFabricatedToolResult?: boolean;
 	#getToolChoice?: () => ToolChoice | undefined;
 	#onPayload?: SimpleStreamOptions["onPayload"];
 	#onResponse?: SimpleStreamOptions["onResponse"];
@@ -322,6 +335,7 @@ export class Agent {
 	#onAssistantMessageEvent?: (message: AssistantMessage, event: AssistantMessageEvent) => void;
 	#onHarmonyLeak?: (event: HarmonyAuditEvent) => void | Promise<void>;
 	#onBeforeYield?: () => Promise<void> | void;
+	#onTurnEnd?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<void> | void;
 	#asideMessageProvider?: () => AsideMessage[] | Promise<AsideMessage[]>;
 	#telemetry?: AgentLoopConfig["telemetry"];
 	#appendOnlyContext?: AppendOnlyContextManager;
@@ -377,6 +391,8 @@ export class Agent {
 		this.#preferWebsockets = opts.preferWebsockets;
 		this.#transformToolCallArguments = opts.transformToolCallArguments;
 		this.#intentTracing = opts.intentTracing === true;
+		this.#dialect = opts.dialect;
+		this.#abortOnFabricatedToolResult = opts.abortOnFabricatedToolResult;
 		this.#getToolChoice = opts.getToolChoice;
 		this.#onAssistantMessageEvent = opts.onAssistantMessageEvent;
 		this.#onHarmonyLeak = opts.onHarmonyLeak;
@@ -624,6 +640,9 @@ export class Agent {
 	setOnBeforeYield(fn: (() => Promise<void> | void) | undefined): void {
 		this.#onBeforeYield = fn;
 	}
+	setOnTurnEnd(fn: ((messages: AgentMessage[], signal?: AbortSignal) => Promise<void> | void) | undefined): void {
+		this.#onTurnEnd = fn;
+	}
 
 	/**
 	 * Provide a source of non-interrupting "aside" messages (e.g. background-job
@@ -656,8 +675,8 @@ export class Agent {
 	}
 
 	// State mutators
-	setSystemPrompt(v: string[]) {
-		this.#state.systemPrompt = v;
+	setSystemPrompt(v: string[] | string) {
+		this.#state.systemPrompt = typeof v === "string" ? [v] : v;
 	}
 
 	setModel(m: Model) {
@@ -706,6 +725,11 @@ export class Agent {
 		this.#state.messages = ms.slice();
 	}
 
+	replaceQueues(steering: AgentMessage[], followUp: AgentMessage[]) {
+		this.#steeringQueue = steering.slice();
+		this.#followUpQueue = followUp.slice();
+	}
+
 	appendMessage(m: AgentMessage) {
 		this.#state.messages.push(m);
 	}
@@ -749,6 +773,24 @@ export class Agent {
 
 	hasQueuedMessages(): boolean {
 		return this.#steeringQueue.length > 0 || this.#followUpQueue.length > 0;
+	}
+
+	/** Non-consuming view of the pending steering queue (insertion order, newest
+	 *  last). The session layer derives its queued-message display/count from
+	 *  this live view instead of a mirror, so the agent-core queue stays the
+	 *  single source of truth. */
+	peekSteeringQueue(): readonly AgentMessage[] {
+		return this.#steeringQueue;
+	}
+
+	/** Non-consuming view of the pending follow-up queue. See
+	 *  {@link peekSteeringQueue}. */
+	peekFollowUpQueue(): readonly AgentMessage[] {
+		return this.#followUpQueue;
+	}
+
+	get isAborting(): boolean {
+		return this.#abortController?.signal.aborted === true && this.#state.isStreaming;
 	}
 
 	#dequeueSteeringMessages(): AgentMessage[] {
@@ -950,8 +992,13 @@ export class Agent {
 					}
 				: undefined;
 
-		const getToolChoice = () =>
-			this.#getToolChoice?.() ?? refreshToolChoiceForActiveTools(options?.toolChoice, this.#state.tools);
+		const getToolChoice = () => {
+			const queuedToolChoice = this.#getToolChoice?.();
+			if (queuedToolChoice !== undefined) {
+				return refreshToolChoiceForActiveTools(queuedToolChoice, this.#state.tools);
+			}
+			return refreshToolChoiceForActiveTools(options?.toolChoice, this.#state.tools);
+		};
 
 		const config: AgentLoopConfig = {
 			model,
@@ -994,11 +1041,14 @@ export class Agent {
 			cursorOnToolResult,
 			transformToolCallArguments: this.#transformToolCallArguments,
 			intentTracing: this.#intentTracing,
+			dialect: this.#dialect,
+			abortOnFabricatedToolResult: this.#abortOnFabricatedToolResult,
 			appendOnlyContext: this.#appendOnlyContext,
 			beforeToolCall: this.beforeToolCall ? (ctx, signal) => this.beforeToolCall?.(ctx, signal) : undefined,
 			afterToolCall: this.afterToolCall ? (ctx, signal) => this.afterToolCall?.(ctx, signal) : undefined,
 			onAssistantMessageEvent: this.#onAssistantMessageEvent,
 			onHarmonyLeak: this.#onHarmonyLeak,
+			onTurnEnd: (messages, signal) => this.#onTurnEnd?.(messages, signal),
 			getToolChoice,
 			getReasoning: () => this.#state.thinkingLevel,
 			getDisableReasoning: () => this.#state.disableReasoning,
@@ -1009,6 +1059,7 @@ export class Agent {
 				}
 				return this.#dequeueSteeringMessages();
 			},
+			hasSteeringMessages: () => this.#steeringQueue.length > 0,
 			getFollowUpMessages: async () => this.#dequeueFollowUpMessages(),
 			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],
 			onBeforeYield: () => this.#onBeforeYield?.(),
@@ -1152,11 +1203,15 @@ export class Agent {
 				const result = listener(e) as unknown;
 				if (isPromise(result)) {
 					result.catch(err => {
-						console.error("Agent listener rejected:", err instanceof Error ? err.message : err);
+						logger.warn("Agent listener rejected", {
+							error: err instanceof Error ? err.message : String(err),
+						});
 					});
 				}
 			} catch (err) {
-				console.error("Agent listener threw:", err instanceof Error ? err.message : err);
+				logger.warn("Agent listener threw", {
+					error: err instanceof Error ? err.message : String(err),
+				});
 			}
 		}
 	}

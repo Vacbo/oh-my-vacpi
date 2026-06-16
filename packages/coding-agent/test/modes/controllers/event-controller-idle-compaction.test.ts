@@ -47,6 +47,10 @@ function createIdleContext() {
 			runIdleCompaction,
 			agent: { state: { messages: [createAssistantMessage()] } },
 		},
+		get viewSession() {
+			return this.session;
+		},
+		clearTransientSessionUi: () => {},
 	};
 	const controller = new EventController(context as unknown as InteractiveModeContext);
 	return { context, controller, runIdleCompaction };

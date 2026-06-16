@@ -387,7 +387,8 @@ describe("tool live-region scrollback", () => {
 				.map(row => Bun.stripANSI(row).trimEnd())
 				.join("\n");
 			expect(bufferText).not.toContain("pending [1/1]");
-			expect(bufferText).toContain("const line9 = 9;");
+			expect(bufferText).toContain("… 10 earlier lines");
+			expect(bufferText).toContain("const line10 = 10;");
 			expect(bufferText).toContain("const line19 = 19;");
 		} finally {
 			component.stopAnimation();
@@ -712,8 +713,8 @@ describe("tool live-region scrollback", () => {
 			const viewportText = stripRows(term.getViewport());
 
 			expect(viewportText).not.toContain("CTX-0");
-			expect(scrollText).toContain("CTX-0");
-			expect(scrollText).toContain("CTX-20");
+			expect(scrollText).toContain("… 30 earlier lines");
+			expect(scrollText).toContain("CTX-30");
 			expect(viewportText).toContain("CTX-39");
 		} finally {
 			component.stopAnimation();
@@ -913,7 +914,7 @@ describe("tool live-region scrollback", () => {
 		}
 	});
 
-	it("keeps a re-layouting live block's changed head out of scrollback", async () => {
+	it("allows a re-layouting live block's durable head to reach scrollback once promoted", async () => {
 		if (process.platform === "win32") return;
 
 		const term = new VirtualTerminal(120, 12);
@@ -935,8 +936,8 @@ describe("tool live-region scrollback", () => {
 			const viewportText = stripRows(term.getViewport());
 
 			expect(viewportText).not.toContain("NEW-0");
-			expect(scrollText).not.toContain("NEW-0");
-			expect(scrollText).not.toContain("NEW-20");
+			expect(scrollText).toContain("NEW-0");
+			expect(scrollText).toContain("NEW-20");
 			expect(viewportText).toContain("NEW-39");
 		} finally {
 			tui.stop();
