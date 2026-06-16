@@ -2383,6 +2383,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"restart.toolEnabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "Restart Tool",
+			description:
+				"Let the model restart omp in place to adopt a freshly rebuilt build and resume this session (top-level interactive sessions only)",
+		},
+	},
+
 	// Fetching and browser
 	"fetch.enabled": {
 		type: "boolean",

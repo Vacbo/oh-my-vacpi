@@ -1,5 +1,5 @@
 /**
- * Self-relaunch primitives for the `/restart` command.
+ * Self-relaunch primitives for the `/restart` command and the `restart` tool.
  *
  * `selfInvocation` reconstructs how this process was started: a script entry
  * (`bun src/cli.ts`, `bun dist/cli.js`) relaunches through the same runtime
@@ -11,12 +11,24 @@
 import { processExec } from "@oh-my-pi/pi-natives";
 import { isCompiledBinary, logger } from "@oh-my-pi/pi-utils";
 
-/** Argv tail that resumes the given session file, or none for unpersisted sessions. */
-export function buildRestartArgs(sessionFile: string | undefined): string[] {
+/** Argv tail that resumes the given session file, or none for unpersisted sessions.
+ *  A `followUpMessage` rides along as a positional argument: `runInteractiveMode`
+ *  auto-submits positionals after resume (`initialMessages`), which is how the
+ *  restart tool's confirmation reaches the model in the relaunched process. */
+export function buildRestartArgs(sessionFile: string | undefined, followUpMessage?: string): string[] {
 	// Resume by exact file path: immune to cwd moves and --session-dir
 	// resolution, and `createSessionManager` opens path-like arguments
 	// directly without directory scanning.
-	return sessionFile ? ["--resume", sessionFile] : [];
+	if (!sessionFile) {
+		// No session to resume: drop the follow-up too. A fresh session must
+		// not receive a stray auto-submitted prompt.
+		return [];
+	}
+	const args = ["--resume", sessionFile];
+	if (followUpMessage) {
+		args.push(followUpMessage);
+	}
+	return args;
 }
 
 export function selfInvocation(
@@ -33,6 +45,57 @@ export function selfInvocation(
 		return [execPath, entry];
 	}
 	return [execPath];
+}
+
+/** The filesystem artifact a relaunch would load: the entry script when
+ *  running from source (`bun src/cli.ts`), the compiled binary otherwise. */
+export function relaunchArtifact(): string {
+	const invocation = selfInvocation();
+	return invocation[invocation.length - 1];
+}
+
+export interface RelaunchPreflight {
+	ok: boolean;
+	/** Trimmed `--version` stdout when the probe succeeded. */
+	version?: string;
+	/** Failure detail: exit code plus stderr tail, timeout note, or spawn error. */
+	detail?: string;
+}
+
+/**
+ * Boot-probe the exact artifact {@link relaunchSelf} would exec into by
+ * spawning `<selfInvocation> --version` and requiring a clean exit. Catches
+ * builds that cannot load at all (syntax errors, broken import graphs) before
+ * the running process is irreversibly replaced. Does not catch state-dependent
+ * failures (e.g. a session-resume crash); those remain the restart's residual
+ * risk and are documented in the restart tool description.
+ */
+export async function preflightRelaunch(timeoutMs = 15_000): Promise<RelaunchPreflight> {
+	const argv = [...selfInvocation(), "--version"];
+	let timedOut = false;
+	try {
+		const child = Bun.spawn({ cmd: argv, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill();
+		}, timeoutMs);
+		const [exitCode, stdout, stderr] = await Promise.all([
+			child.exited,
+			new Response(child.stdout as ReadableStream<Uint8Array>).text(),
+			new Response(child.stderr as ReadableStream<Uint8Array>).text(),
+		]);
+		clearTimeout(timer);
+		if (exitCode === 0) {
+			return { ok: true, version: stdout.trim() };
+		}
+		if (timedOut) {
+			return { ok: false, detail: `boot probe timed out after ${timeoutMs}ms` };
+		}
+		const stderrTail = stderr.trim().slice(-500);
+		return { ok: false, detail: `exit ${exitCode}${stderrTail ? `: ${stderrTail}` : ""}` };
+	} catch (err) {
+		return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+	}
 }
 
 /**

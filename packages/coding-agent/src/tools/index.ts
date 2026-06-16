@@ -57,6 +57,7 @@ import { ReadTool } from "./read";
 import { RenderMermaidTool } from "./render-mermaid";
 import { createReportToolIssueTool, isAutoQaEnabled } from "./report-tool-issue";
 import { ResolveTool } from "./resolve";
+import { RestartTool } from "./restart";
 import { reportFindingTool } from "./review";
 import { SearchTool } from "./search";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
@@ -96,6 +97,7 @@ export * from "./read";
 export * from "./render-mermaid";
 export * from "./report-tool-issue";
 export * from "./resolve";
+export * from "./restart";
 export * from "./review";
 export * from "./search";
 export * from "./search-tool-bm25";
@@ -342,6 +344,12 @@ export interface ToolSession {
 	peekStandingResolveHandler?(): ((input: unknown) => Promise<unknown> | unknown) | undefined;
 	/** Register or clear the standing resolve handler. Passing `null` clears it. */
 	setStandingResolveHandler?(handler: ((input: unknown) => Promise<unknown> | unknown) | null): void;
+	/** Request an in-place process restart that resumes this session (fork:
+	 *  restart tool). The host mode aborts the active run once the calling tool's
+	 *  result is collected, re-execs through the `/restart` rails, and
+	 *  auto-submits `confirmation` in the relaunched session. Returns false when
+	 *  no host registered a restart handler (print/ACP/subagent sessions). */
+	requestRestart?(opts: { confirmation: string }): boolean;
 	/** Get active checkpoint state if any. */
 	getCheckpointState?: () => CheckpointState | undefined;
 	/** Set or clear active checkpoint state. */
@@ -482,6 +490,7 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	tui_drive: s => new TuiDriveTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
+	restart: RestartTool.createIf,
 	task: s => TaskTool.create(s),
 	job: s => new JobTool(s),
 	irc: IrcTool.createIf,

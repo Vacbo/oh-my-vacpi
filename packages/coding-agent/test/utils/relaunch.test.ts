@@ -42,6 +42,14 @@ describe("buildRestartArgs", () => {
 			"/home/u/.omp/sessions/abc/rollout.jsonl",
 		]);
 	});
+	it("appends a follow-up message only when resuming a persisted session", () => {
+		expect(buildRestartArgs("/home/u/.omp/sessions/abc/rollout.jsonl", "Restart completed")).toEqual([
+			"--resume",
+			"/home/u/.omp/sessions/abc/rollout.jsonl",
+			"Restart completed",
+		]);
+		expect(buildRestartArgs(undefined, "Restart completed")).toEqual([]);
+	});
 
 	it("relaunches fresh when the session is not persisted", () => {
 		expect(buildRestartArgs(undefined)).toEqual([]);
