@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type {
@@ -10,10 +11,18 @@ import type {
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { encodeKey, type KeyId } from "@oh-my-pi/pi-tui";
-import { getAgentDir, prompt } from "@oh-my-pi/pi-utils";
+import { $which, getAgentDir, isEnoent, prompt } from "@oh-my-pi/pi-utils";
 import * as z from "zod/v4";
 import tuiDriveDescription from "../prompts/tools/tui-drive.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
+import {
+	type AsciicastFrame,
+	AsciicastRecorder,
+	parseAsciicast,
+	renderAsciicastFrame,
+	sampleAsciicastFrames,
+	summarizeAsciicast,
+} from "../session/asciicast";
 import { diffRenderedText } from "../session/cmux-capture";
 import { inspectLiveSession, listLiveSessions } from "../session/live-session-registry";
 import { readTerminalSnapshot, TerminalSnapshotRecorder } from "../session/terminal-snapshot";
@@ -60,6 +69,8 @@ interface DriveSession {
 	startedAt: number;
 	pty: PtySession;
 	recorder: TerminalSnapshotRecorder;
+	/** asciicast v2 recorder; set when start used record:true. */
+	cast?: AsciicastRecorder;
 	lastOutputAt: number;
 	/** Settles when the PTY command exits (resolves even on PTY errors). */
 	done: Promise<PtyRunResult>;
@@ -82,6 +93,7 @@ export function disposeAllTuiDriveSessions(): void {
 			}
 		}
 		session.recorder.dispose();
+		session.cast?.dispose();
 	}
 	driveSessions.clear();
 }
@@ -108,6 +120,8 @@ function startDriveSession(options: {
 	env?: Record<string, string>;
 	lifetimeMs: number;
 	shell?: string;
+	record?: boolean;
+	castPath?: string;
 }): DriveSession {
 	if (driveSessions.size >= MAX_DRIVE_SESSIONS) {
 		throw new ToolError(
@@ -143,6 +157,14 @@ function startDriveSession(options: {
 		lastOutputAt: Date.now(),
 		done: Promise.resolve({ exitCode: undefined, cancelled: false, timedOut: false }),
 	};
+	if (options.record) {
+		session.cast = new AsciicastRecorder({
+			path: options.castPath ?? path.join(os.tmpdir(), `omp-tui-drive-${id}.cast`),
+			cols: options.cols,
+			rows: options.rows,
+			command: options.command,
+		});
+	}
 	session.done = pty
 		.start(
 			{
@@ -160,6 +182,7 @@ function startDriveSession(options: {
 			(err, chunk) => {
 				if (err || !chunk) return;
 				recorder.write(chunk);
+				session.cast?.write(chunk);
 				session.lastOutputAt = Date.now();
 			},
 		)
@@ -262,7 +285,7 @@ async function resolveOmpRunId(session: DriveSession): Promise<string> {
 
 const tuiDriveSchema = z.object({
 	action: z
-		.enum(["start", "input", "wait", "screen", "scrollback", "screenshot", "diff", "resize", "kill", "list"])
+		.enum(["start", "input", "wait", "screen", "scrollback", "screenshot", "diff", "resize", "kill", "list", "cast"])
 		.default("screen")
 		.describe("Drive action. Defaults to reading the current screen."),
 	session: z.string().optional().describe("Drive session id from `start`/`list`. Defaults to the only live session."),
@@ -302,6 +325,21 @@ const tuiDriveSchema = z.object({
 		.positive()
 		.optional()
 		.describe(`For scrollback: last N logical lines to return (default ${DEFAULT_SCROLLBACK_LINES}).`),
+	record: z.boolean().optional().describe("For start: record the PTY session to an asciicast v2 .cast file."),
+	castPath: z
+		.string()
+		.optional()
+		.describe(
+			"For start: .cast destination (parent dir auto-created; defaults to a temp file). For cast: read frames from this .cast file directly (e.g. after kill) instead of the session's recording.",
+		),
+	at: z.number().optional().describe("For cast: reconstruct the screen at this time (seconds) into the recording."),
+	frames: z
+		.number()
+		.int()
+		.positive()
+		.optional()
+		.describe("For cast: sample this many frames evenly; the last is the final screen."),
+	render: z.boolean().optional().describe("For cast: also render the recording to a GIF via the agg binary."),
 });
 
 /** Input schema for the tui_drive tool. */
@@ -313,9 +351,11 @@ export interface TuiDriveDetails {
 	session?: string;
 	runId?: string;
 	screenshotPath?: string;
+	castPath?: string;
+	gifPath?: string;
 }
 
-const EXEC_ACTIONS: ReadonlySet<string> = new Set(["start", "input", "resize", "kill", "screenshot"]);
+const EXEC_ACTIONS: ReadonlySet<string> = new Set(["start", "input", "resize", "kill", "screenshot", "cast"]);
 
 export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDetails> {
 	readonly name = "tui_drive";
@@ -364,6 +404,8 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 				return await this.#kill(params);
 			case "list":
 				return this.#list(params);
+			case "cast":
+				return await this.#cast(params);
 		}
 	}
 
@@ -411,8 +453,14 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 		params: TuiDriveParams,
 		session: DriveSession,
 		payload: Record<string, unknown>,
+		extra?: { castPath?: string; gifPath?: string },
 	): AgentToolResult<TuiDriveDetails> {
-		return toolResult<TuiDriveDetails>({ action: params.action, session: session.id, runId: session.ompRunId })
+		return toolResult<TuiDriveDetails>({
+			action: params.action,
+			session: session.id,
+			runId: session.ompRunId,
+			...extra,
+		})
 			.text(JSON.stringify(payload, null, 2))
 			.done();
 	}
@@ -420,6 +468,9 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 	async #start(params: TuiDriveParams): Promise<AgentToolResult<TuiDriveDetails>> {
 		if (!params.command) throw new ToolError('Action "start" requires a command.');
 		const lifetimeMs = Math.min(Math.max(params.timeoutMs ?? DEFAULT_LIFETIME_MS, MIN_LIFETIME_MS), MAX_LIFETIME_MS);
+		if (params.record && params.castPath) {
+			await fs.mkdir(path.dirname(params.castPath), { recursive: true });
+		}
 		const session = startDriveSession({
 			command: params.command,
 			cwd: params.cwd ?? this.session.cwd,
@@ -428,15 +479,18 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 			env: params.env,
 			lifetimeMs,
 			shell: this.session.settings.getShellConfig().shell,
+			record: params.record,
+			castPath: params.castPath,
 		});
 		await waitForIdle(session, this.#debounce(params), 5_000);
 		const payload = {
 			command: session.command,
 			cwd: session.cwd,
 			lifetimeMs,
+			...(session.cast ? { castPath: session.cast.path } : {}),
 			...(await this.#screenPayload(session)),
 		};
-		return this.#result(params, session, payload);
+		return this.#result(params, session, payload, session.cast ? { castPath: session.cast.path } : undefined);
 	}
 
 	async #input(params: TuiDriveParams): Promise<AgentToolResult<TuiDriveDetails>> {
@@ -581,6 +635,7 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 		if (!params.cols || !params.rows) throw new ToolError('Action "resize" requires cols and rows.');
 		session.pty.resize(params.cols, params.rows);
 		session.recorder.resize(params.cols, params.rows);
+		session.cast?.resize(params.cols, params.rows);
 		session.cols = params.cols;
 		session.rows = params.rows;
 		session.lastOutputAt = Date.now();
@@ -590,11 +645,14 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 
 	async #kill(params: TuiDriveParams): Promise<AgentToolResult<TuiDriveDetails>> {
 		const session = this.#resolve(params);
+		const castPath = session.cast?.path;
+		const extra = castPath ? { castPath } : undefined;
 		if (session.exit) {
+			await session.cast?.finalize();
 			driveSessions.delete(session.id);
 			session.recorder.dispose();
-			const payload = { session: session.id, removed: true, exit: session.exit };
-			return this.#result(params, session, payload);
+			const payload = { session: session.id, removed: true, exit: session.exit, ...(castPath ? { castPath } : {}) };
+			return this.#result(params, session, payload, extra);
 		}
 		try {
 			session.pty.kill();
@@ -602,7 +660,86 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 			// already exiting
 		}
 		await session.done;
-		return this.#result(params, session, await this.#screenPayload(session));
+		await session.cast?.finalize();
+		const payload = { ...(await this.#screenPayload(session)), ...(castPath ? { castPath } : {}) };
+		return this.#result(params, session, payload, extra);
+	}
+
+	async #cast(params: TuiDriveParams): Promise<AgentToolResult<TuiDriveDetails>> {
+		let session: DriveSession | undefined;
+		let castFilePath: string;
+		if (params.castPath) {
+			castFilePath = params.castPath;
+		} else {
+			session = this.#resolve(params);
+			if (!session.cast) {
+				throw new ToolError(
+					"This drive session was not started with record:true. Pass castPath to read a .cast file directly.",
+				);
+			}
+			await session.cast.flush();
+			castFilePath = session.cast.path;
+		}
+		let castText: string;
+		try {
+			castText = await Bun.file(castFilePath).text();
+		} catch (error) {
+			if (isEnoent(error)) throw new ToolError(`No recording found at ${castFilePath}.`);
+			throw error;
+		}
+		const cast = parseAsciicast(castText);
+		const summary = summarizeAsciicast(cast);
+		let frames: AsciicastFrame[];
+		if (params.at !== undefined) {
+			frames = [{ atSeconds: params.at, text: await renderAsciicastFrame(cast, params.at) }];
+		} else if (params.frames !== undefined) {
+			frames = await sampleAsciicastFrames(cast, params.frames);
+		} else {
+			frames = await sampleAsciicastFrames(cast, 1);
+		}
+		const boundedFrames = frames.map(frame => ({
+			atSeconds: frame.atSeconds,
+			text:
+				frame.text.length > MAX_SNAPSHOT_TEXT
+					? `${frame.text.slice(0, MAX_SNAPSHOT_TEXT)}\n… (truncated)`
+					: frame.text,
+		}));
+		const payload: Record<string, unknown> = {
+			...(session ? { session: session.id } : {}),
+			castPath: castFilePath,
+			summary: {
+				width: summary.width,
+				height: summary.height,
+				durationSeconds: summary.durationSeconds,
+				eventCount: summary.eventCount,
+				outputBytes: summary.outputBytes,
+			},
+			frames: boundedFrames,
+		};
+		const details: TuiDriveDetails = { action: params.action, castPath: castFilePath };
+		if (session) {
+			details.session = session.id;
+			if (session.ompRunId) details.runId = session.ompRunId;
+		}
+		if (params.render) {
+			const agg = $which("agg");
+			if (!agg) {
+				throw new ToolError(
+					"Rendering a recording to GIF requires agg (asciinema's gif generator), which is not installed. Install it (e.g. `brew install agg`, `cargo install --git https://github.com/asciinema/agg`, or see https://docs.asciinema.org/manual/agg/) and retry.",
+				);
+			}
+			const gifPath = `${castFilePath.replace(/\.cast$/, "")}.gif`;
+			const r = await Bun.$`${agg} ${castFilePath} ${gifPath}`.quiet().nothrow();
+			if (r.exitCode !== 0 || !(await Bun.file(gifPath).exists())) {
+				const tail = (r.stderr.toString().trim() || r.stdout.toString().trim()).slice(-2000);
+				throw new ToolError(`agg failed to render ${gifPath} (exit ${r.exitCode}): ${tail || "no output"}`);
+			}
+			payload.gifPath = gifPath;
+			details.gifPath = gifPath;
+		}
+		return toolResult<TuiDriveDetails>(details)
+			.text(JSON.stringify(payload, null, 2))
+			.done();
 	}
 
 	#list(params: TuiDriveParams): AgentToolResult<TuiDriveDetails> {
