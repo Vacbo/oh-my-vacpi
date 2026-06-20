@@ -1,19 +1,19 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
-import { z } from "zod/v4";
+import { type } from "arktype";
 import { formatCurrentTime, formatMemories } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";
 
-const tagSchema = z.string().min(1).describe("memory tag");
+const tagSchema = type("string >= 1").describe("memory tag");
 
-const memoryRecallSchema = z.object({
-	query: z.string().describe("natural language search query"),
-	tags: z.array(tagSchema).min(1).describe("optional tag filter").optional(),
-	tagsMatch: z.enum(["any", "all"]).describe("match any tag or require all tags").optional(),
+const memoryRecallSchema = type({
+	query: type("string").describe("natural language search query"),
+	"tags?": tagSchema.array().atLeastLength(1).describe("optional tag filter"),
+	"tagsMatch?": type("'any' | 'all'").describe("match any tag or require all tags"),
 });
 
-export type MemoryRecallParams = z.infer<typeof memoryRecallSchema>;
+export type MemoryRecallParams = typeof memoryRecallSchema.infer;
 
 function mergeTags(baseTags: string[] | undefined, extraTags: string[] | undefined): string[] | undefined {
 	if (!baseTags?.length) return extraTags;

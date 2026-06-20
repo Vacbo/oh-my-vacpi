@@ -279,6 +279,20 @@ CREATE TABLE IF NOT EXISTS slash_command_usage (
 			{ cause: lastError },
 		);
 	}
+	/** @internal Reset all singletons and close their databases — test-only. */
+	static resetInstance(): void {
+		for (const storage of instances.values()) storage.#close();
+		instances.clear();
+	}
+
+	#close(): void {
+		this.#listSettingsStmt.finalize();
+		this.#upsertModelUsageStmt.finalize();
+		this.#listModelUsageStmt.finalize();
+		// SqliteAuthCredentialStore.close() finalizes its own statements and
+		// closes the shared #db handle — must run after our statements finalize.
+		this.#authStore.close();
+	}
 
 	/**
 	 * Reads legacy settings persisted in the agent.db `settings` table.

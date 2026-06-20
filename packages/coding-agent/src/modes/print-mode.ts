@@ -32,6 +32,8 @@ export interface PrintModeOptions {
 	initialImages?: ImageContent[];
 	/** Headless goal: seed before the first turn and auto-continue until a terminal state */
 	goal?: PrintGoalOptions;
+	/** If true, include thinking blocks in text output */
+	printThoughts?: boolean;
 }
 
 /**
@@ -39,7 +41,7 @@ export interface PrintModeOptions {
  * Sends prompts to the agent and outputs the result.
  */
 export async function runPrintMode(session: AgentSession, options: PrintModeOptions): Promise<number> {
-	const { mode, messages = [], initialMessage, initialImages, goal } = options;
+	const { mode, messages = [], initialMessage, initialImages, goal, printThoughts } = options;
 
 	if (goal && !session.settings.get("goal.enabled")) {
 		process.stderr.write("--goal requires the goal.enabled setting\n");
@@ -134,6 +136,8 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 			for (const content of assistantMsg.content) {
 				if (content.type === "text") {
 					process.stdout.write(`${sanitizeText(content.text)}\n`);
+				} else if (printThoughts && content.type === "thinking" && content.thinking.trim().length > 0) {
+					process.stdout.write(`${sanitizeText(content.thinking)}\n`);
 				}
 			}
 		}

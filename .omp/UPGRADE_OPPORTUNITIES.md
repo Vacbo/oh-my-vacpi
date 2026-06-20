@@ -41,6 +41,25 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-20 — Merged upstream v16.1.7: ArkType/tooling refactors adopted, fork update path preserved   `[done]` `[high]`
+
+**Merge**: fork `16.0.1` + local `feat(coding-agent): tui temporal recording (asciinema + agg)` → upstream `v16.1.7`.
+
+**Divergence calls**:
+- **Preserved the fork-owned `omp update` assistant flow** and discarded upstream's legacy npm/Homebrew/mise/binary updater implementation for this fork. The update command still resolves `OMP_VACPI_REPO_DIR` or `~/Dev/oh-my-vacpi`, pins the project dir there, and launches a fresh fork-update session with the static `fork-update.md` prompt. Upstream's Windows binary-backup cleanup is intentionally not re-homed because the fork no longer self-replaces from upstream packages.
+- **Adopted upstream's ArkType and OpenAI-family refactors** instead of resurrecting old Zod/inline-provider code. Fork behavior was re-homed into the new architecture: `max` effort remains in schema/model-thinking paths, `getEnvApiKeyForModel` stays on OpenAI completions for model-scoped env lookup, and the Fireworks Fire Pass router exemption now sits inside upstream's split Kimi clamp block.
+- **Kept the fork's six-level thinking ladder** (`minimal` → `low` → `medium` → `high` → `xhigh` → `max`) rather than upstream's relabel-only `xhigh`→`max` simplification. This preserves existing fork configs and the catalog Max effort work from the v15.10.12/v16.0.1 merges.
+- **Kept jj status-line tracking outside upstream's git-enabled gate**. The fork's jj head label updates before upstream's git segment visibility check, so pure-jj or git-disabled sessions still show the jj bookmark/change label.
+- **Preserved the fork's plugin-discovery spy isolation tests** over upstream's new `os.homedir`/XDG test isolation approach. The fork approach is already documented below as fixing order-dependent `DirResolver` memoization and still routes through exported pi-utils directory accessors, so it remains the stronger contract here.
+- **Adopted upstream's dependency removals** for `beautiful-mermaid`, `markit-ai`, direct `jszip`, `exifr`, and `music-metadata`; the fork's old `beautiful-mermaid` patch file is gone. Upstream's vendored Mermaid ASCII renderer and document engine are now the maintained path.
+
+**Residual levers**:
+- If upstream grows a source-checkout-aware self-update mode, re-evaluate whether the fork-specific update assistant can shrink to a thin wrapper instead of owning the full `update` command.
+- The plugin-discovery spy-isolation choice should be revisited if upstream changes `packages/utils/src/dirs.ts` so directory access no longer flows through the exported accessors. Until then, keep fork tests in their own style and do not port them to environment mutation.
+- The `max` ladder remains a standing merge hotspot. If upstream adopts a true sixth effort tier, delete the fork-only schema/model-thinking overlays and keep only compatibility migration for old config names.
+
+---
+
 ## 2026-06-16 — Merged upstream v16.0.1: dialect/extension cutover with fork tool names preserved   `[done]` `[high]`
 
 **Merge**: fork `15.11.0` + local `feat(coding-agent): add restart tool` → upstream `v16.0.1`.

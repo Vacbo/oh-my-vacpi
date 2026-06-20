@@ -38,6 +38,8 @@ export function formatSize(bytes: number): string {
 	return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
+export * as zod from "zod/v4";
+export { z } from "zod/v4";
 export * from "./config/keybindings";
 export * from "./config/model-registry";
 // Prompt templates
