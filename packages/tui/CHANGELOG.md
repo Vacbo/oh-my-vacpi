@@ -23,6 +23,22 @@
 
 - Removed the fork's opt-in eager native-scrollback rebuild (`tui.rebuildScrollbackDuringStreaming`): upstream 15.10.10's append-only commit-ledger renderer makes committed scrollback immutable by design and deleted the `TUI.setEagerNativeScrollbackRebuild()` API the fork hook drove, solving the same history-cleanliness problem without the mouse-scroll yank tradeoff.
 
+## [16.1.10] - 2026-06-21
+
+### Fixed
+
+- Fixed streaming output being lost from native scrollback below a commit-unstable "barrier" block (a provisional/collapsed tool preview, a displaceable `job` poll, or a reflowing-markdown reply) once the content under it overflowed the viewport. The engine committed native scrollback only up to the barrier's seam, so rows that scrolled above the window under the barrier were committed nowhere and repainted nowhere — they vanished, and a later shift/finalize/removal of the barrier silently dropped the rows beneath it. The append-only commit floor is now `windowTop` in every non-frozen paint path (ordinary update, shrink re-slice, full paint), so whatever scrolls above the window always reaches history; the seam boundaries now only classify which committed rows stay byte-stable-audited vs. durable-exempt. The committed-prefix audit is range-aware: it audits the forced-overflow suffix in full (re-anchoring — duplication, never loss — when a barrier finalizes), exempts the durable middle (a streaming table re-aligning its columns) from re-anchor spray, and runs a full hard scan of rows a frame newly marks permanent so a single-row finalize edit far above the commit boundary still re-anchors instead of being dropped.
+
+## [16.1.8] - 2026-06-20
+
+### Added
+
+- Added an optional synchronous dynamic description hook for slash-command autocomplete items.
+
+### Fixed
+
+- Fixed Markdown component to strip inline `<span>` and `<text>` tags while preserving their contents and unescaping nested HTML entities (`&lt;`, `&gt;`, `&quot;`, `&apos;`, `&amp;`), preventing raw LLM block/inline formatting residues from leaking into rendered TUI output.
+
 ## [16.1.7] - 2026-06-20
 
 ### Fixed

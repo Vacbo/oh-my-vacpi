@@ -9,6 +9,38 @@
 - Added `envClear` to `PtyStartOptions`: when true, the PTY child starts from an empty environment and `env` defines it exactly, instead of the default merge over the parent's environment. Lets callers actually *remove* inherited variables (the coding agent's `tui_drive` uses it to scrub terminal-identity vars like `CMUX_SURFACE_ID` from driven children).
 - Added `processExec(argv)`: POSIX `execvp` process-image replacement (never returns on success; errors return control). Backs the coding agent's `/restart` command so a restart keeps the pid, controlling terminal, and foreground process-group state without leaving a dormant parent behind. Reports unsupported on Windows, where callers fall back to spawn-and-wait.
 
+## [16.1.15] - 2026-06-22
+
+### Added
+
+- Added `Shell.liveBackgroundJobCount()` reporting the number of live external background jobs (`&`/`nohup` children) on a persistent session, reaping completed jobs first via a silent `poll()`. Lets the host retain a shell whose background process is still running instead of dropping it (which would SIGKILL the child via kill-on-drop).
+
+### Fixed
+
+- Fixed `pi_natives` failing to load in Bun worker threads on macOS x64 when the host built only the `modern` (AVX2) variant. The runtime detector's `child_process.spawnSync("sysctl", …)` returned null from the worker even though the build-time detector succeeded in the parent, so `loadNative()` resolved `variant=baseline` and searched a file list that excluded the on-disk `pi_natives.darwin-x64-modern.node`. Resolution now prefers `Bun.spawnSync`, tries `/usr/sbin/sysctl` before bare `sysctl`, and caches the first context's verdict via a private env key so child workers and subprocesses inherit it instead of re-detecting ([#3238](https://github.com/can1357/oh-my-pi/issues/3238)).
+
+## [16.1.14] - 2026-06-22
+
+### Fixed
+
+- Enabled full Julia syntax highlighting support in highlightCode
+
+## [16.1.12] - 2026-06-21
+
+### Added
+
+- Added Julia syntax highlighting to `highlightCode`/`supportsLanguage` via a vendored `Julia.sublime-syntax` folded into syntect's default set (`jl`/`julia` aliases); syntect ships no Julia grammar.
+
+## [16.1.8] - 2026-06-20
+
+### Breaking Changes
+
+- Changed renderSnapcompactPng to return a promise instead of a string value
+
+### Fixed
+
+- Fixed directory `grep` continuing to walk large trees after the requested content match budget had already been satisfied, which could make broad coding-agent searches time out before returning the first page of matches ([#2738](https://github.com/can1357/oh-my-pi/issues/2738)).
+
 ## [16.0.11] - 2026-06-19
 
 ### Fixed

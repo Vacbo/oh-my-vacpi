@@ -170,6 +170,7 @@ export type SymbolKey =
 	| "lang.cpp"
 	| "lang.csharp"
 	| "lang.ruby"
+	| "lang.julia"
 	| "lang.php"
 	| "lang.swift"
 	| "lang.kotlin"
@@ -371,6 +372,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"lang.cpp": "➕",
 	"lang.csharp": "♯",
 	"lang.ruby": "💎",
+	"lang.julia": "Ⓙ",
 	"lang.php": "🐘",
 	"lang.swift": "🕊",
 	"lang.kotlin": "🅺",
@@ -677,6 +679,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	"lang.cpp": "\u{E61D}",
 	"lang.csharp": "\u{E7BC}",
 	"lang.ruby": "\u{E791}",
+	"lang.julia": "\u{E624}",
 	"lang.php": "\u{E608}",
 	"lang.swift": "\u{E755}",
 	"lang.kotlin": "\u{E634}",
@@ -875,6 +878,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"lang.cpp": "cpp",
 	"lang.csharp": "cs",
 	"lang.ruby": "rb",
+	"lang.julia": "jl",
 	"lang.php": "php",
 	"lang.swift": "swift",
 	"lang.kotlin": "kt",
@@ -1340,6 +1344,8 @@ const langMap: Record<string, SymbolKey> = {
 	cs: "lang.csharp",
 	ruby: "lang.ruby",
 	rb: "lang.ruby",
+	julia: "lang.julia",
+	jl: "lang.julia",
 	php: "lang.php",
 	swift: "lang.swift",
 	kotlin: "lang.kotlin",
@@ -1409,6 +1415,20 @@ const langMap: Record<string, SymbolKey> = {
 	dylib: "lang.binary",
 	wasm: "lang.binary",
 	bin: "lang.binary",
+};
+
+/**
+ * Brand colors for language icons, keyed by the resolved `lang.*` SymbolKey.
+ * Used by {@link Theme.getLangIconStyled} so eval-kernel cell headers tint each
+ * language with its recognizable hue (JS yellow, Ruby red, Julia purple, Python
+ * blue) instead of a flat muted gray. Applied as truecolor/256 per the active
+ * color mode; languages without an entry fall back to the muted theme color.
+ */
+const LANG_BRAND_COLORS: Partial<Record<SymbolKey, string>> = {
+	"lang.javascript": "#f7df1e",
+	"lang.python": "#3776ab",
+	"lang.ruby": "#cc342d",
+	"lang.julia": "#9558b2",
 };
 
 /**
@@ -1880,6 +1900,21 @@ export class Theme {
 		const normalized = lang.toLowerCase();
 		const key = langMap[normalized];
 		return key ? this.#symbols[key] : this.#symbols["lang.default"];
+	}
+
+	/**
+	 * Language icon tinted with the language's brand color (see
+	 * {@link LANG_BRAND_COLORS}). Falls back to the muted theme color for
+	 * languages without a brand entry, and returns the bare (possibly empty)
+	 * icon when the active symbol preset has none.
+	 */
+	getLangIconStyled(lang: string | undefined): string {
+		const icon = this.getLangIcon(lang);
+		if (!icon) return icon;
+		const key = lang ? langMap[lang.toLowerCase()] : undefined;
+		const hex = key ? LANG_BRAND_COLORS[key] : undefined;
+		if (!hex) return this.fg("muted", icon);
+		return `${colorToAnsi(hex, this.mode)}${icon}\x1b[39m`;
 	}
 }
 

@@ -41,6 +41,25 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-24 — Merged upstream v16.1.16: eval/tooling changes adopted, fork levers retained   `[done]` `[high]`
+
+**Merge**: fork `16.1.7` → upstream `v16.1.16`.
+
+**Divergence calls**:
+- **Preserved fork model-facing tool names where they are part of local behavior**, especially `todo_write`, while adopting upstream's flattened todo schema (`{ op, list }` instead of `{ ops: [...] }`). The eager-todo prompt and tests were re-homed to the flat shape instead of adding a compatibility shim for the removed wrapper.
+- **Kept fork-specific deferred MCP placeholders for explicit `mcp__...` tool names** in UI sessions. Upstream's empty race-window refresh would wipe pending placeholders before discovery completed; this fork gates that refresh during deferred discovery and lets the real discovery callback replace placeholders later.
+- **Kept the Fireworks Fire Pass API-key routing path** by preserving `getEnvApiKeyForModel(model.provider, model.id)` in `packages/ai/src/stream.ts`, while adopting upstream's non-null `requestOptions` flow.
+- **Kept the six-level fork thinking metadata where it is exposed**, including `Effort.Max`/`ThinkingLevel.Max`, but did not bake unsupported `xhigh` keys into Bedrock Opus 4.6 `effortMap`; runtime legacy-XHigh promotion already maps `xhigh` requests to `max`.
+- **Adopted upstream's single-cell eval tool architecture** and updated fork tests to the new `{ language, code, title?, timeout?, reset? }` contract instead of preserving legacy multi-cell call shapes.
+- **Synthesized session/MCP cleanup paths**: startup failure now disposes upstream Ruby/Julia eval kernels and the fork live-session registration; MCP connect failures keep the fork's classified error state and upstream's status notifications.
+
+**Residual levers**:
+- If upstream restores a batch todo operation or adopts `todo_write`, delete the fork-only prompt/test translation and converge on upstream naming.
+- Deferred MCP placeholders remain a merge hotspot around `createAgentSession` and `refreshMCPTools`; re-check `sdk-mcp-defer.test.ts` whenever upstream changes deferred MCP startup.
+- The `max` ladder remains split between exposed metadata and selector aliases. If upstream ships a true sixth tier, re-evaluate the fork alias behavior and generated catalog expectations together.
+
+---
+
 ## 2026-06-20 — Merged upstream v16.1.7: ArkType/tooling refactors adopted, fork update path preserved   `[done]` `[high]`
 
 **Merge**: fork `16.0.1` + local `feat(coding-agent): tui temporal recording (asciinema + agg)` → upstream `v16.1.7`.

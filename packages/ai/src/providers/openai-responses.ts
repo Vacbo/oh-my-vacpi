@@ -436,7 +436,8 @@ const streamOpenAIResponsesOnce = (
 					? buildOpenAIResponsesChainedParams(params, trailingScaffoldingItems, chainState)
 					: { params };
 			sentPreviousResponseId = chained.previousResponseId;
-			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs();
+			const idleTimeoutMs =
+				options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
 			const firstEventTimeoutMs =
 				options?.streamFirstEventTimeoutMs ?? getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs);
 			const requestTimeoutMs =
@@ -861,15 +862,6 @@ export function buildParams(
 			if (toolChoice !== undefined && params.tools.length > 0) {
 				params.tool_choice = toolChoice;
 			}
-		}
-		// The apply_patch spec §1 marks only `apply_patch` itself as
-		// `supports_parallel_tool_calls = false`. OpenAI's Responses API
-		// exposes `parallel_tool_calls` as a request-scoped flag, not a
-		// per-tool one, so when a custom grammar tool is in the list we
-		// disable parallelism for the whole turn. Slightly coarser than
-		// the spec requires — but the platform API offers no finer knob.
-		if (params.tools.some(t => (t as { type?: string }).type === "custom")) {
-			params.parallel_tool_calls = false;
 		}
 	}
 

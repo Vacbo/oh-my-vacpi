@@ -328,6 +328,8 @@ export async function loadSystemPromptFiles(options: LoadContextFilesOptions = {
 	return userLevel?.content ?? null;
 }
 
+export const DEFAULT_SYSTEM_PROMPT_TOOL_NAMES = ["read", "bash", "eval", "edit", "write"] as const;
+
 export interface SystemPromptToolMetadata {
 	label: string;
 	description: string;
@@ -420,6 +422,8 @@ export interface BuildSystemPromptOptions {
 	model?: string;
 	/** Personality preset rendered into the default system prompt. "none" omits the block. Default: "default" */
 	personality?: Personality;
+	/** Whether to include the workspace directory tree in the system prompt. Default: false */
+	includeWorkspaceTree?: boolean;
 }
 
 /** Result of building provider-facing system prompt messages. */
@@ -460,6 +464,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		memoryRootEnabled = false,
 		model,
 		personality = "default",
+		includeWorkspaceTree = false,
 	} = options;
 	const inlineToolDescriptors = providedInlineToolDescriptors ?? false;
 	const resolvedCwd = cwd ?? getProjectDir();
@@ -524,9 +529,17 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const workspaceTreePromise =
 		providedWorkspaceTree !== undefined
 			? Promise.resolve(providedWorkspaceTree)
-			: logger.time("buildWorkspaceTree", () =>
-					buildWorkspaceTree(resolvedCwd, { timeoutMs: SYSTEM_PROMPT_PREP_TIMEOUT_MS }),
-				);
+			: includeWorkspaceTree
+				? logger.time("buildWorkspaceTree", () =>
+						buildWorkspaceTree(resolvedCwd, { timeoutMs: SYSTEM_PROMPT_PREP_TIMEOUT_MS }),
+					)
+				: Promise.resolve({
+						rootPath: resolvedCwd,
+						rendered: "",
+						truncated: false,
+						totalLines: 0,
+						agentsMdFiles: [],
+					});
 	const skillsPromise: Promise<Skill[]> =
 		providedSkills !== undefined
 			? Promise.resolve(providedSkills)
@@ -590,18 +603,11 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const dateTime = date;
 	const promptCwd = shortenPath(resolvedCwd.replace(/\\/g, "/"));
 
-	// Build tool metadata for system prompt rendering
-	// Priority: explicit list > tools map > defaults
-	// Default includes both bash and python; actual availability determined by settings in createTools
+	// Build tool metadata for system prompt rendering.
+	// Priority: explicit list > tools map > conservative SDK fallback.
 	let toolNames = providedToolNames;
 	if (!toolNames) {
-		if (tools) {
-			// Tools map provided
-			toolNames = Array.from(tools.keys());
-		} else {
-			// Use defaults
-			toolNames = ["read", "bash", "eval", "edit", "write"]; // TODO: Why?
-		}
+		toolNames = tools ? Array.from(tools.keys()) : [...DEFAULT_SYSTEM_PROMPT_TOOL_NAMES];
 	}
 
 	// Build tool descriptions for system prompt rendering.
@@ -633,7 +639,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// - drop skills with frontmatter `hide: true` (still loadable via skill:// and /skill:<name>);
 	// - under skills.discoveryMode === "search", collapse unpinned skills into the BM25
 	//   corpus and surface only a roster line (rendered when discoverableSkillCount > 0).
-	const hasRead = tools?.has("read");
+	const hasRead = toolNames.includes("read");
 	const skillPartition = hasRead
 		? partitionSkillsForPrompt(skills, skillsSettings, toolNames.includes(TOOL_DISCOVERY_SEARCH_TOOL_NAME))
 		: { listed: [], discoverable: [] };
@@ -686,6 +692,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		secretsEnabled,
 		hasMemoryRoot: memoryRootEnabled,
 		hasObsidian: hasObsidian(),
+		includeWorkspaceTree,
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];

@@ -77,7 +77,7 @@ describe("generated model policies", () => {
 		expect(models[1]?.thinking).toEqual({
 			mode: "anthropic-adaptive",
 			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.Max],
-			effortMap: { minimal: "low", xhigh: "max", max: "max" },
+			effortMap: { minimal: "low", max: "max" },
 		});
 		expect(models[1]?.cost.cacheRead).toBe(0.5);
 		expect(models[1]?.cost.cacheWrite).toBe(6.25);

@@ -217,34 +217,28 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(session.formatSessionAsText()).not.toContain("<user-request>");
 	});
 
-	it("anchors the reminder with a copy-pasteable ops-wrapper JSON shape", async () => {
+	it("anchors the reminder with a copy-pasteable flat init example", async () => {
 		await session.prompt("list all work trees");
 
 		const reminderText = observedCalls[0]?.messageTexts[0] ?? "";
-		const match = reminderText.match(/`(\{"ops":\[[^`]+\})`/);
-		expect(match, 'eager-todo reminder must inline a literal `{"ops":[...]}` example').not.toBeNull();
+		const match = reminderText.match(/`(\{"op":"init"[^`]+\})`/);
+		expect(match, 'eager-todo reminder must inline a literal `{"op":"init",...}` example').not.toBeNull();
 		const parsed = JSON.parse(match![1] as string) as {
-			ops: { op: string; list: { phase: string; items: string[] }[] }[];
+			op: string;
+			list: { phase: string; items: string[] }[];
 		};
-		expect(parsed.ops[0]?.op).toBe("init");
-		expect(parsed.ops[0]?.list[0]?.phase).toBeTypeOf("string");
-		expect(parsed.ops[0]?.list[0]?.items.length).toBeGreaterThan(0);
-		// Regression: the anchored example must be a flat ops array, never a double-wrapped {"ops":{"ops":...}}.
-		expect(Array.isArray(parsed.ops)).toBe(true);
-		expect(parsed.ops[0]).not.toHaveProperty("ops");
-		// The reminder must name the double-wrap failure so the model avoids it under forced tool_choice.
-		expect(reminderText.toLowerCase()).toContain("received object");
+		expect(parsed.op).toBe("init");
+		expect(parsed.list[0]?.phase).toBeTypeOf("string");
+		expect(parsed.list[0]?.items.length).toBeGreaterThan(0);
+		// Regression: the anchored example must be the flat single-op shape, never the legacy {"ops":[...]} wrapper.
+		expect(parsed).not.toHaveProperty("ops");
 	});
 
 	it("initializes todos once, then continues within the same user turn", async () => {
 		scriptedResponses = [
 			createToolCallAssistantMessage("todo_write", {
-				ops: [
-					{
-						op: "init",
-						list: [{ phase: "List worktrees", items: ["List all git worktrees in the current repository"] }],
-					},
-				],
+				op: "init",
+				list: [{ phase: "List worktrees", items: ["List all git worktrees in the current repository"] }],
 			}),
 			createAssistantMessage("real user turn handled"),
 		];

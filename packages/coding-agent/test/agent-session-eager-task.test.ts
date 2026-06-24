@@ -290,8 +290,8 @@ describe("AgentSession eager task prelude", () => {
 		await session.prompt("refactor the parser across modules");
 
 		expect(observedCalls).toHaveLength(1);
-		// eager-todo still forces the todo tool choice on the first turn
-		expect(observedCalls[0]?.toolChoice).toBe("todo");
+		// eager-todo still forces the fork's todo_write tool choice on the first turn
+		expect(observedCalls[0]?.toolChoice).toBe("todo_write");
 		// both hidden preludes precede the user message: todo first, then task
 		expect(observedCalls[0]?.messageRoles).toEqual(["developer", "developer", "user"]);
 		const texts = observedCalls[0]?.messageTexts ?? [];

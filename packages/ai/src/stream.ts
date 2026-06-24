@@ -15,6 +15,7 @@ import { ProviderHttpError } from "./errors";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import type { CursorOptions } from "./providers/cursor";
+import type { DevinOptions } from "./providers/devin";
 import { isGitLabDuoModel, streamGitLabDuo } from "./providers/gitlab-duo";
 import type { GoogleOptions } from "./providers/google";
 import { getVertexAccessToken } from "./providers/google-auth";
@@ -37,6 +38,7 @@ import {
 	streamAzureOpenAIResponses,
 	streamBedrock,
 	streamCursor,
+	streamDevin,
 	streamGoogle,
 	streamGoogleGeminiCli,
 	streamGoogleVertex,
@@ -46,7 +48,7 @@ import {
 	streamOpenAIResponses,
 } from "./providers/register-builtins";
 import { isSyntheticModel, streamSynthetic } from "./providers/synthetic";
-import { isUsageLimitError } from "./rate-limit-utils";
+import { isUsageLimitOutcome } from "./rate-limit-utils";
 import { PROVIDER_REGISTRY } from "./registry";
 import type {
 	Api,
@@ -62,6 +64,7 @@ import type {
 	ToolChoice,
 } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
+import { wrapFetchForProxy } from "./utils/proxy";
 import { withRequestDebugFetch } from "./utils/request-debug";
 import { withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
 
@@ -165,7 +168,6 @@ export const FIREWORKS_PASS_MODEL_IDS = new Set([
 const LEGACY_ENV_KEYS: Record<string, KeyResolver> = {
 	// Non-provider / search-tool keys and API-name keys not modeled as registry provider defs.
 	"azure-openai-responses": "AZURE_OPENAI_API_KEY",
-	"llama.cpp": "LLAMA_CPP_API_KEY",
 	exa: "EXA_API_KEY",
 	jina: "JINA_API_KEY",
 	brave: "BRAVE_API_KEY",
@@ -248,9 +250,12 @@ function streamDispatch<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	const requestOptions = withRequestDebugFetch(options as StreamOptions | undefined) as
-		| OptionsForApi<TApi>
-		| undefined;
+	const baseOptions = (options || {}) as StreamOptions;
+	const debugOptions = withRequestDebugFetch(baseOptions);
+	const requestOptions = {
+		...debugOptions,
+		fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
+	} as OptionsForApi<TApi>;
 
 	// Check custom API registry first (extension-provided APIs like "vertex-claude-api")
 	const customApiProvider = getCustomApi(model.api);
@@ -259,12 +264,12 @@ function streamDispatch<TApi extends Api>(
 	}
 
 	if (isGitLabDuoModel(model)) {
-		const apiKey = (requestOptions as StreamOptions | undefined)?.apiKey || getEnvApiKey(model.provider);
+		const apiKey = requestOptions.apiKey || getEnvApiKey(model.provider);
 		if (!apiKey) {
 			throw new Error(`No API key for provider: ${model.provider}`);
 		}
 		return streamGitLabDuo(model, context, {
-			...(requestOptions as SimpleStreamOptions | undefined),
+			...(requestOptions as SimpleStreamOptions),
 			apiKey,
 		});
 	}
@@ -274,14 +279,10 @@ function streamDispatch<TApi extends Api>(
 		return streamGoogleVertex(model as Model<"google-vertex">, context, requestOptions as GoogleVertexOptions);
 	} else if (model.api === "bedrock-converse-stream") {
 		// Bedrock doesn't have any API keys instead it sources credentials from standard AWS env variables or from given AWS profile.
-		return streamBedrock(
-			model as Model<"bedrock-converse-stream">,
-			context,
-			(requestOptions || {}) as BedrockOptions,
-		);
+		return streamBedrock(model as Model<"bedrock-converse-stream">, context, requestOptions as BedrockOptions);
 	}
 
-	const apiKey = requestOptions?.apiKey || getEnvApiKeyForModel(model.provider, model.id);
+	const apiKey = requestOptions.apiKey || getEnvApiKeyForModel(model.provider, model.id);
 	if (!apiKey) {
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}
@@ -289,7 +290,7 @@ function streamDispatch<TApi extends Api>(
 		? {
 				...requestOptions,
 				apiKey: "vertex-adc",
-				fetch: createVertexAuthenticatedFetch(requestOptions as StreamOptions | undefined),
+				fetch: createVertexAuthenticatedFetch(requestOptions),
 			}
 		: { ...requestOptions, apiKey };
 
@@ -306,22 +307,46 @@ function streamDispatch<TApi extends Api>(
 		case "openrouter": {
 			const useResponses = $env.PI_OPENROUTER_RESPONSES !== "0";
 			if (useResponses) {
-				return streamOpenAIResponses(model as Model<"openai-responses">, context, providerOptions as any);
+				return streamOpenAIResponses(
+					model as Model<"openai-responses">,
+					context,
+					providerOptions as OptionsForApi<"openai-responses">,
+				);
 			}
-			return streamOpenAICompletions(model as Model<"openai-completions">, context, providerOptions as any);
+			return streamOpenAICompletions(
+				model as Model<"openai-completions">,
+				context,
+				providerOptions as OptionsForApi<"openai-completions">,
+			);
 		}
 
 		case "openai-completions":
-			return streamOpenAICompletions(model as Model<"openai-completions">, context, providerOptions as any);
+			return streamOpenAICompletions(
+				model as Model<"openai-completions">,
+				context,
+				providerOptions as OptionsForApi<"openai-completions">,
+			);
 
 		case "openai-responses":
-			return streamOpenAIResponses(model as Model<"openai-responses">, context, providerOptions as any);
+			return streamOpenAIResponses(
+				model as Model<"openai-responses">,
+				context,
+				providerOptions as OptionsForApi<"openai-responses">,
+			);
 
 		case "azure-openai-responses":
-			return streamAzureOpenAIResponses(model as Model<"azure-openai-responses">, context, providerOptions as any);
+			return streamAzureOpenAIResponses(
+				model as Model<"azure-openai-responses">,
+				context,
+				providerOptions as OptionsForApi<"azure-openai-responses">,
+			);
 
 		case "openai-codex-responses":
-			return streamOpenAICodexResponses(model as Model<"openai-codex-responses">, context, providerOptions as any);
+			return streamOpenAICodexResponses(
+				model as Model<"openai-codex-responses">,
+				context,
+				providerOptions as OptionsForApi<"openai-codex-responses">,
+			);
 
 		case "google-generative-ai":
 			return streamGoogle(model as Model<"google-generative-ai">, context, providerOptions);
@@ -338,6 +363,9 @@ function streamDispatch<TApi extends Api>(
 
 		case "cursor-agent":
 			return streamCursor(model as Model<"cursor-agent">, context, providerOptions as CursorOptions);
+
+		case "devin-agent":
+			return streamDevin(model as Model<"devin-agent">, context, providerOptions as DevinOptions);
 
 		default:
 			throw new Error(`Unhandled API: ${api}`);
@@ -368,13 +396,18 @@ function extractStatusFromAssistantError(message: AssistantMessage): number | un
 function isRetryableUpstreamError(error: unknown, status: number | undefined, message: string | undefined): boolean {
 	// 401 means the credential is bad. Usage-limit phrasing (Codex's
 	// "You have hit your ChatGPT usage limit", Anthropic's "usage_limit_reached",
-	// Google's "resource_exhausted") means this account is parked but a
-	// sibling credential can usually pick the request up. Both are
-	// rotatable via `onAuthError` — the auth-gateway maps the former to
-	// `invalidateCredentialMatching` and the latter to `markUsageLimitReached`.
+	// Google's "resource_exhausted", OpenAI's "insufficient_quota") and 429s
+	// without transient rate-limit wording mean this account is parked but a
+	// sibling credential can usually pick the request up. Both are rotatable
+	// via `onAuthError` — the auth-gateway maps the former to
+	// `invalidateCredentialMatching` and the latter to
+	// `markUsageLimitReached`. Transient 429s ("Too many requests",
+	// per-minute caps) classify as RATE_LIMIT_EXCEEDED in
+	// `parseRateLimitReason` and stay in the provider's own backoff layer
+	// instead of burning siblings.
 	if (status === 401) return true;
 	void error;
-	return !!message && isUsageLimitError(message);
+	return isUsageLimitOutcome(status, message);
 }
 
 function createAssistantAuthError(message: AssistantMessage): Error {
@@ -394,7 +427,12 @@ export function streamSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	const requestOptions = withRequestDebugFetch(options);
+	const baseOptions = (options || {}) as SimpleStreamOptions;
+	const debugOptions = withRequestDebugFetch(baseOptions);
+	const requestOptions = {
+		...debugOptions,
+		fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
+	} as SimpleStreamOptions;
 	const apiKeyResolver = isApiKeyResolver(requestOptions?.apiKey) ? requestOptions.apiKey : undefined;
 	if (apiKeyResolver) {
 		const outer = new AssistantMessageEventStream();
@@ -696,6 +734,30 @@ function mapOpenAiToolChoice(choice?: ToolChoice): OpenAICompletionsOptions["too
 	return undefined;
 }
 
+type ReasoningEffortMapCompat = {
+	reasoningEffortMap?: Partial<Record<Effort, string>>;
+};
+
+function getCompatReasoningEffortMap<TApi extends Api>(
+	model: Model<TApi>,
+): Partial<Record<Effort, string>> | undefined {
+	const compat = model.compat;
+	if (compat === undefined || typeof compat !== "object" || !("reasoningEffortMap" in compat)) {
+		return undefined;
+	}
+	return (compat as ReasoningEffortMapCompat).reasoningEffortMap;
+}
+
+function resolveSupportedMappedReasoningEffort<TApi extends Api>(
+	model: Model<TApi>,
+	reasoning: Effort,
+): Effort | undefined {
+	const mapped = getCompatReasoningEffortMap(model)?.[reasoning];
+	if (!mapped) return undefined;
+	const mappedEffort = mapped as Effort;
+	return model.thinking?.efforts.includes(mappedEffort) ? mappedEffort : undefined;
+}
+
 function resolveOpenAiReasoningEffort<TApi extends Api>(
 	model: Model<TApi>,
 	options?: SimpleStreamOptions,
@@ -710,6 +772,11 @@ function resolveOpenAiReasoningEffort<TApi extends Api>(
 	// defeat the gate and surface a confusing "Compaction failed: Thinking effort
 	// high is not supported by..." to the user.
 	if (!model.thinking) return undefined;
+	if (model.thinking.efforts.includes(reasoning)) return reasoning;
+	const mappedReasoning = resolveSupportedMappedReasoningEffort(model, reasoning);
+	if (mappedReasoning) return mappedReasoning;
+	if (getCompatReasoningEffortMap(model)?.[reasoning] !== undefined) return reasoning;
+	if (model.thinking.effortMap?.[reasoning] !== undefined) return reasoning;
 	return requireSupportedEffort(model, reasoning);
 }
 
@@ -1109,6 +1176,18 @@ function mapOptionsForApi<TApi extends Api>(
 				...base,
 				execHandlers,
 				onToolResult,
+			});
+		}
+
+		case "devin-agent": {
+			const devinModel = model as Model<"devin-agent">;
+			const effort =
+				options?.reasoning && !options.disableReasoning
+					? requireSupportedEffort(devinModel, options.reasoning)
+					: undefined;
+			return castApi<"devin-agent">({
+				...base,
+				chatModelUid: resolveWireModelId(devinModel, effort),
 			});
 		}
 

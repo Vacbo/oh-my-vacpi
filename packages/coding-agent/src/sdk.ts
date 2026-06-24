@@ -46,7 +46,9 @@ import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { initializeWithSettings } from "./discovery";
+import { disposeAllJuliaKernelSessions, disposeJuliaKernelSessionsByOwner } from "./eval/jl/executor";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
+import { disposeAllRubyKernelSessions, disposeRubyKernelSessionsByOwner } from "./eval/rb/executor";
 import { defaultEvalSessionId } from "./eval/session-id";
 import {
 	type CustomCommandsLoadResult,
@@ -88,7 +90,7 @@ import {
 	type MCPToolsLoadResult,
 	parseMCPToolName,
 } from "./mcp";
-import { MCP_CONNECTING_EVENT_CHANNEL, type McpConnectingEvent } from "./mcp/startup-events";
+import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
@@ -98,6 +100,7 @@ import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
 	collectEnvSecrets,
 	deobfuscateSessionContext,
+	deobfuscateToolArguments,
 	loadSecrets,
 	obfuscateMessages,
 	obfuscateProviderContext,
@@ -478,7 +481,7 @@ export interface CreateAgentSessionOptions {
 
 	/** Enable LSP integration (tool, formatting, diagnostics, warmup). Default: true */
 	enableLsp?: boolean;
-	/** Skip Python kernel availability check and prelude warmup */
+	/** Skip subprocess-kernel availability checks and prelude warmup */
 	skipPythonPreflight?: boolean;
 	/** Tool names explicitly requested (enables disabled-by-default tools) */
 	toolNames?: string[];
@@ -805,6 +808,7 @@ export interface BuildSystemPromptOptions {
 	customPrompt?: string;
 	appendPrompt?: string;
 	inlineToolDescriptors?: boolean;
+	includeWorkspaceTree?: boolean;
 }
 
 /**
@@ -814,6 +818,7 @@ export interface BuildSystemPromptOptions {
  * as separate entries so providers can cache prompt prefixes without concatenating blocks.
  */
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
+	const toolMap = options.tools ? new Map(options.tools.map(tool => [tool.name, tool])) : undefined;
 	return await buildSystemPromptInternal({
 		cwd: options.cwd,
 		customPrompt: options.customPrompt,
@@ -821,6 +826,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		contextFiles: options.contextFiles,
 		appendSystemPrompt: options.appendPrompt,
 		inlineToolDescriptors: options.inlineToolDescriptors,
+		includeWorkspaceTree: options.includeWorkspaceTree,
+		toolNames: options.tools?.map(tool => tool.name),
+		tools: toolMap ? buildSystemPromptToolMetadata(toolMap) : undefined,
 	});
 }
 
@@ -869,12 +877,14 @@ function registerSshCleanup(): void {
 	postmortem.register("ssh-cleanup", cleanupSshResources);
 }
 
-let pythonCleanupRegistered = false;
+let evalCleanupRegistered = false;
 
-function registerPythonCleanup(): void {
-	if (pythonCleanupRegistered) return;
-	pythonCleanupRegistered = true;
+function registerEvalCleanup(): void {
+	if (evalCleanupRegistered) return;
+	evalCleanupRegistered = true;
 	postmortem.register("python-cleanup", disposeAllKernelSessions);
+	postmortem.register("ruby-cleanup", disposeAllRubyKernelSessions);
+	postmortem.register("julia-cleanup", disposeAllJuliaKernelSessions);
 }
 
 function customToolToDefinition(tool: CustomTool): ToolDefinition {
@@ -1083,7 +1093,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const eventBus = options.eventBus ?? new EventBus();
 
 	registerSshCleanup();
-	registerPythonCleanup();
+	registerEvalCleanup();
 
 	// Pin authStorage to modelRegistry.authStorage: ModelRegistry.getApiKey() routes refresh
 	// failures through that instance, so any divergent storage handed to the bridge / mcpManager
@@ -1126,9 +1136,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// startup does not perform a second recursive filesystem search. Subagents
 	// inherit the parent's resolved values via options.
 	const STARTUP_SCAN_DEADLINE_MS = 5000;
+	const includeWorkspaceTree = settings.get("includeWorkspaceTree") ?? false;
 	const workspaceTreePromise: Promise<WorkspaceTree> = options.workspaceTree
 		? Promise.resolve(options.workspaceTree)
-		: logger.time("buildWorkspaceTree", () => buildWorkspaceTree(cwd, { timeoutMs: STARTUP_SCAN_DEADLINE_MS }));
+		: includeWorkspaceTree
+			? logger.time("buildWorkspaceTree", () => buildWorkspaceTree(cwd, { timeoutMs: STARTUP_SCAN_DEADLINE_MS }))
+			: Promise.resolve({ rootPath: cwd, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] });
 	workspaceTreePromise.catch(() => {});
 
 	// Independent discoveries that depend only on cwd/agentDir — kicked off in parallel and awaited
@@ -1289,7 +1302,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const pickInitialThinkingLevel = (selectedModel: Model | undefined): ConfiguredThinkingLevel | undefined => {
 		let level = options.thinkingLevel;
 		if (level === undefined && hasExistingSession && hasThinkingEntry) {
-			level = parseThinkingLevel(existingSession.thinkingLevel);
+			level =
+				parseConfiguredThinkingLevel(existingSession.configuredThinkingLevel) ??
+				parseThinkingLevel(existingSession.thinkingLevel);
 		}
 		if (level === undefined && !hasThinkingEntry && restoredSessionThinkingLevel !== undefined) {
 			level = restoredSessionThinkingLevel;
@@ -1643,12 +1658,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			| ((liveSession: AgentSession, activation: DeferredMCPActivation) => void)
 			| undefined;
 		const startupQuiet = settings.get("startup.quiet");
-		const onMCPConnecting = (serverNames: string[]) => {
-			if (!options.hasUI || startupQuiet || serverNames.length === 0) return;
-			eventBus.emit(MCP_CONNECTING_EVENT_CHANNEL, { serverNames } satisfies McpConnectingEvent);
+		const onMCPStatus = (event: McpConnectionStatusEvent) => {
+			if (!options.hasUI || startupQuiet) return;
+			if (event.type === "connecting" && event.serverNames.length === 0) return;
+			eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, event);
 		};
 		const mcpDiscoverOptions = {
-			onConnecting: onMCPConnecting,
+			onStatus: onMCPStatus,
 			enableProjectConfig: settings.get("mcp.enableProjectConfig") ?? true,
 			// Always filter Exa - we have native integration
 			filterExa: true,
@@ -2036,18 +2052,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		);
 
 		// All built-in tools are active (conditional tools like git/ask return null from factory if disabled)
+		const builtInRegistryToolNames = new Set<string>();
 		const toolRegistry = new Map<string, Tool>();
 		for (const tool of builtinTools) {
 			toolRegistry.set(tool.name, tool);
+			builtInRegistryToolNames.add(tool.name);
 		}
 		if (!toolRegistry.has("goal") && settings.get("goal.enabled")) {
 			const goalTool = await logger.time("createTools:goal:session", HIDDEN_TOOLS.goal, toolSession);
 			if (goalTool) {
 				toolRegistry.set(goalTool.name, wrapToolWithMetaNotice(goalTool));
+				builtInRegistryToolNames.add(goalTool.name);
 			}
 		}
 		for (const tool of wrappedExtensionTools) {
 			toolRegistry.set(tool.name, tool);
+			builtInRegistryToolNames.delete(tool.name);
 		}
 		if (deferMCPDiscoveryForUI && mcpManager) {
 			for (const name of collectPendingMCPToolNames(options.toolNames, existingSession.selectedMCPToolNames)) {
@@ -2065,6 +2085,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 		if (model?.provider === "cursor") {
 			toolRegistry.delete("edit");
+			builtInRegistryToolNames.delete("edit");
 		}
 
 		// `resolve` is hidden but must stay in the registry whenever any code path can invoke it:
@@ -2077,10 +2098,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const needsResolveTool = hasDeferrableTools || planModeAvailable;
 		if (!needsResolveTool) {
 			toolRegistry.delete("resolve");
+			builtInRegistryToolNames.delete("resolve");
 		} else if (!toolRegistry.has("resolve")) {
 			const resolveTool = await logger.time("createTools:resolve:session", HIDDEN_TOOLS.resolve, toolSession);
 			if (resolveTool) {
 				toolRegistry.set(resolveTool.name, wrapToolWithMetaNotice(resolveTool));
+				builtInRegistryToolNames.add(resolveTool.name);
 			}
 		}
 
@@ -2098,6 +2121,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				searchTool.name,
 				new ExtensionToolWrapper(wrapToolWithMetaNotice(searchTool), extensionRunner) as Tool,
 			);
+			builtInRegistryToolNames.add(searchTool.name);
 		}
 		let mcpDiscoveryEnabled = effectiveDiscoveryMode !== "off"; // back-compat: true when any discovery active
 
@@ -2124,6 +2148,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const eagerTasks = settings.get("task.eager") !== "default";
 		const eagerTasksAlways = settings.get("task.eager") === "always";
 		const intentField = $flag("PI_INTENT_TRACING", settings.get("tools.intentTracing")) ? INTENT_FIELD : undefined;
+		const includeWorkspaceTree = settings.get("includeWorkspaceTree") ?? false;
 		const rebuildSystemPrompt = async (
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
@@ -2232,6 +2257,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				taskBatch: settings.get("task.batch"),
 				secretsEnabled,
 				workspaceTree: workspaceTreePromise,
+				includeWorkspaceTree,
 				memoryRootEnabled: memoryBackend.id === "local",
 				model: settings.get("includeModelInPrompt") ? getActiveModelString() : undefined,
 				personality: agentKind === "sub" ? "none" : settings.get("personality"),
@@ -2457,9 +2483,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				: undefined;
 		const transformProviderContext =
 			obfuscator || snapcompactInline
-				? (context: Context, transformModel: Model): Context => {
+				? async (context: Context, transformModel: Model): Promise<Context> => {
 						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
-						if (snapcompactInline) transformed = snapcompactInline.transform(transformed, transformModel);
+						if (snapcompactInline) transformed = await snapcompactInline.transform(transformed, transformModel);
 						return transformed;
 					}
 				: undefined;
@@ -2473,6 +2499,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
 			toolContextStore.setUIContext(uiContext, hasUI);
 		};
+
+		if (deferMCPDiscoveryForUI) {
+			for (const name of collectPendingMCPToolNames(options.toolNames, existingSession.selectedMCPToolNames)) {
+				if (!toolRegistry.has(name)) {
+					toolRegistry.set(
+						name,
+						new ExtensionToolWrapper(wrapToolWithMetaNotice(createPendingMCPTool(name)), extensionRunner) as Tool,
+					);
+				}
+				if (!initialToolNames.includes(name)) {
+					initialToolNames.push(name);
+				}
+			}
+		}
 
 		const initialTools = initialToolNames
 			.map(name => toolRegistry.get(name))
@@ -2519,7 +2559,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			presencePenalty: settings.get("presencePenalty") >= 0 ? settings.get("presencePenalty") : undefined,
 			repetitionPenalty: settings.get("repetitionPenalty") >= 0 ? settings.get("repetitionPenalty") : undefined,
 			serviceTier: initialServiceTier,
-			hideThinkingSummary: settings.get("hideThinkingBlock"),
+			hideThinkingSummary: settings.get("omitThinking"),
 			kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),
@@ -2559,7 +2599,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					result = { ...result, timeout: Math.min(result.timeout, maxTimeout) };
 				}
 				if (obfuscator?.hasSecrets()) {
-					result = obfuscator.deobfuscateObject(result);
+					result = deobfuscateToolArguments(obfuscator, result);
 				}
 				return result;
 			},
@@ -2657,6 +2697,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			skillsSettings: settings.getGroup("skills"),
 			modelRegistry,
 			toolRegistry,
+			builtInToolNames: builtInRegistryToolNames,
 			transformContext,
 			onPayload,
 			onResponse,
@@ -2717,7 +2758,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const originalDispose = session.dispose.bind(session);
 			session.dispose = async () => {
 				try {
-					// Reject new session work (Python/eval starts) the moment disposal
+					// Reject new session work (eval starts) the moment disposal
 					// begins — the lifecycle await below opens an async gap before
 					// AgentSession.dispose() would otherwise set its guards.
 					session.beginDispose();
@@ -2878,8 +2919,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// initial snapshot (already injected into the session at construction)
 			// and the callback above being wired. A server whose handshake settles
 			// in that gap would otherwise have its tools forever invisible to the
-			// session — `setOnToolsChanged` only fires on the *next* change.
-			void session.refreshMCPTools(mcpManager.getTools());
+			// session — `setOnToolsChanged` only fires on the *next* change. Deferred
+			// UI discovery starts with pending placeholders; refreshing with the
+			// manager's still-empty tool list here would wipe them before the caller
+			// can use the session.
+			if (!deferMCPDiscoveryForUI) {
+				void session.refreshMCPTools(mcpManager.getTools());
+			}
 			// Wire prompt refresh → rebuild MCP prompt slash commands
 			mcpManager.setOnPromptsChanged(serverName => {
 				const promptCommands = buildMCPPromptCommands(mcpManager);
@@ -2943,6 +2989,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					await asyncJobManager.dispose({ timeoutMs: 3_000 });
 				}
 				await disposeKernelSessionsByOwner(evalKernelOwnerId);
+				await disposeRubyKernelSessionsByOwner(evalKernelOwnerId);
+				await disposeJuliaKernelSessionsByOwner(evalKernelOwnerId);
 				await liveSession?.dispose("stopped");
 				if (ownsAuthStorage) authStorage.close();
 			}

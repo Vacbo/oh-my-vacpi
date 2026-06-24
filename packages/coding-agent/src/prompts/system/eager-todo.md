@@ -7,11 +7,10 @@ You MUST initialize the todo list with a single `init` op.
 You MUST cover the entire request from investigation through implementation and verification — not just the next immediate step.
 Task descriptions MUST be concise, specific 5-10 word labels.
 The `init` op only accepts phase names and task-label strings; do not invent task metadata fields.
-You MUST keep exactly one task `in_progress` and all later tasks `pending`.
 
-The call MUST match this exact arguments object: `ops` is the single top-level argument and its value is the array shown below (replace the placeholders). Do NOT nest another `ops` inside it.
-`{"ops":[{"op":"init","list":[{"phase":"<Phase name>","items":["<task 1>","<task 2>"]}]}]}`
-NEVER double-wrap the argument: a value like `{ "ops": { "ops": … } }` is rejected as `ops: expected array, received object`. The `ops` value is the array itself, not an object.
+The call's arguments MUST be the single `init` op object below (replace the placeholders):
+`{"op":"init","list":[{"phase":"<Phase name>","items":["<task 1>","<task 2>"]}]}`
+Pass `op` and `list` as the top-level keys — do NOT wrap them in an `ops` array.
 
 After `{{toolRefs.todo}}` succeeds, continue the request in the same turn.
 NEVER call `{{toolRefs.todo}}` again unless task state has materially changed.
