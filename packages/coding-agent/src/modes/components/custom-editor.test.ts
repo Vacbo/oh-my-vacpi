@@ -4,6 +4,7 @@ import { getEditorTheme, initTheme } from "../theme/theme";
 import {
 	CustomEditor,
 	extractBracketedImagePastePaths,
+	extractBracketedPastePaths,
 	SPACE_HOLD_MECHANICAL_RUN,
 	SPACE_HOLD_RELEASE_MS,
 	SPACE_REPEAT_MAX_GAP_MS,
@@ -73,7 +74,7 @@ describe("CustomEditor placeholder decoration", () => {
 	});
 });
 
-describe("CustomEditor bracketed image-path paste", () => {
+describe("CustomEditor bracketed path paste", () => {
 	it("leaves a pasted bare .png filename on the normal text path", () => {
 		expect(extractBracketedImagePastePaths(bracketedPaste("icon-photo-default.png"))).toBeUndefined();
 	});
@@ -85,6 +86,24 @@ describe("CustomEditor bracketed image-path paste", () => {
 		expect(extractBracketedImagePastePaths(bracketedPaste("C:\\Users\\me\\icon-photo-default.png"))).toEqual([
 			"C:\\Users\\me\\icon-photo-default.png",
 		]);
+	});
+
+	it("extracts explicit non-image paths without classifying them as image paths", () => {
+		expect(extractBracketedPastePaths(bracketedPaste("/tmp/report.csv"))).toEqual(["/tmp/report.csv"]);
+		expect(extractBracketedImagePastePaths(bracketedPaste("/tmp/report.csv"))).toBeUndefined();
+	});
+
+	it("inserts non-image path pastes as literal text instead of attaching them", () => {
+		const { editor } = makeEditor();
+		let imagePathCalls = 0;
+		editor.onPasteImagePath = () => {
+			imagePathCalls++;
+		};
+
+		editor.handleInput(bracketedPaste("/tmp/report.csv"));
+
+		expect(editor.getText()).toBe("/tmp/report.csv");
+		expect(imagePathCalls).toBe(0);
 	});
 });
 

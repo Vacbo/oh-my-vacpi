@@ -41,6 +41,22 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-25 — Merged upstream v16.1.19: fullscreen extensions adopted, fork pinning retained   `[done]` `[high]`
+
+**Merge**: fork `16.1.16` → upstream `v16.1.19`.
+
+**Divergence calls**:
+- **Adopted upstream's fullscreen/mouse Extension Control Center architecture** and re-homed fork skill pinning into it instead of resurrecting the deleted `Container`/manual layout path. The fork keeps `skills.pinnedSkills` toggling, inspector pin provenance, and the shared `TwoColumnBody` export used by the Tool Control Center.
+- **Kept fork array-aware settings text formatting** for text settings. Upstream's scalar `String(value ?? "")` fix prevents non-string crashes, but the fork's `formatSettingTextValue()` also preserves array settings such as `skills.pinnedSkills` for round-trip editing and suggestions.
+- **Synthesized `/project` command imports** so upstream usage-note sanitization and the fork's project-dir/capability/plugin-root refresh hooks coexist.
+- **Adopted upstream's generated OpenRouter GLM pricing conflict** for `models.json`. The fork's `glm-5.2` repricing had converged with upstream, and upstream alone updated `glm-5.1` cache-read pricing; taking the upstream region avoided duplicate generated keys.
+
+**Residual levers**:
+- `extension-dashboard.ts` remains a merge hotspot while `/tools` reuses exported internals from `/extensions`. If upstream grows a first-class shared dashboard body component, move the fork Tool Control Center onto that API and stop exporting implementation details from `extension-dashboard.ts`.
+- `formatSettingTextValue()` should remain the fork default for settings text rows unless upstream adds equivalent array-aware formatting and suggestion semantics.
+
+---
+
 ## 2026-06-24 — Merged upstream v16.1.16: eval/tooling changes adopted, fork levers retained   `[done]` `[high]`
 
 **Merge**: fork `16.1.7` → upstream `v16.1.16`.

@@ -192,14 +192,18 @@ function toPlainContent(
 	};
 }
 
-function convertMessage(message: Message, supportsImages: boolean): OllamaMessage {
+function convertMessage(
+	message: Message,
+	supportsImages: boolean,
+	developerRole: "system" | "user" = "user",
+): OllamaMessage {
 	if (message.role === "user") {
 		const converted = toPlainContent(message.content, supportsImages);
 		return { role: "user", ...converted };
 	}
 	if (message.role === "developer") {
 		const converted = toPlainContent(message.content, supportsImages);
-		return { role: "system", ...converted };
+		return { role: developerRole, ...converted };
 	}
 	if (message.role === "toolResult") {
 		const converted = toPlainContent(message.content, supportsImages);
@@ -240,23 +244,27 @@ function convertMessage(message: Message, supportsImages: boolean): OllamaMessag
 }
 
 function convertMessages(model: Model<"ollama-chat">, context: Context): OllamaMessage[] {
-	const messages: Message[] = [];
-	// Emit one developer message per ordered system prompt. The wire role is mapped to "system"
-	// by `convertMessage`, but keeping the prompts separate preserves prefix-cache stability:
-	// if only the trailing prompt changes between calls, the leading system messages keep
-	// their identical token prefix so KV-cache reuse covers them.
-	for (const systemPrompt of normalizeSystemPrompts(context.systemPrompt)) {
-		messages.push({
-			role: "developer",
-			content: systemPrompt,
-			timestamp: Date.now(),
-		});
-	}
-	messages.push(...context.messages);
+	const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
+	const systemMessages: Message[] = systemPrompts.map(systemPrompt => ({
+		role: "developer",
+		content: systemPrompt,
+		timestamp: Date.now(),
+	}));
+	const messages: Message[] = [...systemMessages, ...context.messages];
 	const isCloud = model.provider === "ollama-cloud";
 	const supportsImages = model.input.includes("image");
-	return transformMessages(messages, model).map(msg => {
-		const converted = convertMessage(msg, supportsImages);
+	return transformMessages(messages, model).map((msg, index) => {
+		// Real `systemPrompt` entries (always emitted first) stay on Ollama's
+		// `system` role. After the static prefix, a developer turn keeps `system`
+		// when it's an agent-owned control instruction (empty/unexpected-stop
+		// retries, checkpoint rewind warning, todo reminders — all carry
+		// `attribution: "agent"`), but a user-attributed developer turn (auto-learn
+		// capture nudge, advisor cards, file-mention companions) drops to `user`.
+		// That keeps the in-conversation byte prefix stable for prefix caches
+		// (llama.cpp, #3456) without demoting mandatory agent reminders.
+		const developerRole =
+			msg.role === "developer" && (index < systemPrompts.length || msg.attribution !== "user") ? "system" : "user";
+		const converted = convertMessage(msg, supportsImages, developerRole);
 		// Ollama cloud rejects requests when assistant history messages contain the `thinking`
 		// field — it's valid in model responses but not accepted as a history input. Strip it
 		// to prevent HTTP 400 errors. Local Ollama instances are unaffected.
@@ -282,6 +290,26 @@ function convertTools(tools: Tool[] | undefined): OllamaFunctionTool[] | undefin
 	}));
 }
 
+/**
+ * Ollama Cloud rejects `num_predict` above this value with HTTP 400
+ * (`max_tokens (...) exceeds model's maximum output tokens (65536)`).
+ * The cap currently applies uniformly to cloud-served models; the cloud-side
+ * limit was confirmed empirically against `deepseek-v4-pro`/`-flash` and is
+ * the same cap surfaced for every other Ollama Cloud model we've probed.
+ *
+ * Acts as a wire-level safety net so stale `models.db` rows (or custom
+ * `modelOverrides` re-enabling `num_predict`) cannot 400 the request — even
+ * when `model.omitMaxOutputTokens` was never applied. See #3392.
+ */
+const OLLAMA_CLOUD_NUM_PREDICT_CAP = 65_536;
+
+function resolveNumPredict(model: Model<"ollama-chat">, requested: number): number {
+	if (model.provider === "ollama-cloud") {
+		return Math.min(requested, OLLAMA_CLOUD_NUM_PREDICT_CAP);
+	}
+	return requested;
+}
+
 function createChatBody(model: Model<"ollama-chat">, context: Context, options: OllamaChatOptions | undefined) {
 	const think = mapReasoning(model, options?.reasoning, options?.disableReasoning);
 	const toolChoice = mapToolChoice(options?.toolChoice);
@@ -294,7 +322,7 @@ function createChatBody(model: Model<"ollama-chat">, context: Context, options: 
 		...(think !== undefined ? { think } : {}),
 		...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
 		...(options?.maxTokens !== undefined && !model.omitMaxOutputTokens
-			? { options: { num_predict: options.maxTokens } }
+			? { options: { num_predict: resolveNumPredict(model, options.maxTokens) } }
 			: {}),
 		stream: true,
 	};

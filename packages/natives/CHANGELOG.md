@@ -9,6 +9,12 @@
 - Added `envClear` to `PtyStartOptions`: when true, the PTY child starts from an empty environment and `env` defines it exactly, instead of the default merge over the parent's environment. Lets callers actually *remove* inherited variables (the coding agent's `tui_drive` uses it to scrub terminal-identity vars like `CMUX_SURFACE_ID` from driven children).
 - Added `processExec(argv)`: POSIX `execvp` process-image replacement (never returns on success; errors return control). Backs the coding agent's `/restart` command so a restart keeps the pid, controlling terminal, and foreground process-group state without leaving a dormant parent behind. Reports unsupported on Windows, where callers fall back to spawn-and-wait.
 
+## [16.1.17] - 2026-06-24
+
+### Added
+
+- Added `setHangulCompatJamoWidthOverride(value)` to override the Hangul Compatibility Jamo (U+3131..U+318E) display width at runtime via a process-global atomic, instead of relying solely on the compile-time `cfg!(target_os = "macos")` heuristic. The actual width is decided by the client terminal (not the host OS), so the TUI resolves it from the terminal identity and pushes the result here. Encoding: `0` = platform default (macOS narrow, otherwise UAX#11), `1` = narrow (1 cell), `2` = wide (2 cells), `3` = Unicode width (no correction). The leaf width helpers read this override, so no width/slice/truncate/wrap signatures change.
+
 ## [16.1.15] - 2026-06-22
 
 ### Added
@@ -119,6 +125,7 @@
 ### Fixed
 
 - Fixed `blockRangeAt` (and thus the edit tool's `replace block` / `insert after block` ops) failing on extensionless shell rc/profile files. `Path::extension` returns `None` for both bare (`zshrc`) and dotfile (`.zshrc`, `.bashrc`) forms, so language inference fell through to "unrecognized" and block resolution was permanently unresolvable on those files — an agent retrying the block op would loop on the same error. Known shell rc/profile basenames (`zshrc`/`zshenv`/`zprofile`/`zlogin`/`zlogout`/`bashrc`/`bash_profile`/`bash_login`/`bash_logout`/`bash_aliases`/`profile`/`kshrc`/`mkshrc`/`shrc`, with or without a leading dot) now resolve to the bash grammar.
+
 ## [15.11.0] - 2026-06-10
 
 ### Breaking Changes
@@ -129,6 +136,7 @@
 
 - Added dim-span ink toggles to `renderSnapcompactPng`: `U+000E`/`U+000F` in the input switch to a dim gray ink (palette index 9) and back without occupying a glyph cell, letting callers visually de-emphasize spans such as archived tool output
 - Added `renderSnapcompactPng(text, options)`: rasterizes pre-normalized text onto a square PNG in an eval-validated snapcompact shape. Options select the bundled font (`5x8` X.org BDF or `8x8` unscii-8, both public domain, shipped in `crates/pi-natives/src/fonts/`), the ink variant (`sent` six-hue sentence cycling or `bw` black), line repetition (each text line printed N times, copies on a pale highlight band), and a target cell size — cells differing from the font's natural cell render via Lanczos3 stretch into an anti-aliased RGB frame (e.g. the OpenAI-optimal 6x6 unscii shape); native-cell shapes encode as 4-bit indexed PNG. Replaces the JS rasterizer/PNG writer previously in `@oh-my-pi/pi-agent-core`.
+
 ## [15.10.12] - 2026-06-10
 
 ### Added

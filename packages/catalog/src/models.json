@@ -14839,6 +14839,44 @@
 				"requiresEffort": true
 			}
 		},
+		"glm-5.2-high": {
+			"id": "glm-5.2-high",
+			"name": "GLM 5.2",
+			"api": "cursor-agent",
+			"provider": "cursor",
+			"baseUrl": "https://api2.cursor.sh",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 200000,
+			"maxTokens": 64000
+		},
+		"glm-5.2-max": {
+			"id": "glm-5.2-max",
+			"name": "GLM 5.2 Max",
+			"api": "cursor-agent",
+			"provider": "cursor",
+			"baseUrl": "https://api2.cursor.sh",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 200000,
+			"maxTokens": 64000
+		},
 		"gpt-5-mini": {
 			"id": "gpt-5-mini",
 			"name": "GPT-5 Mini",
@@ -22027,36 +22065,6 @@
 				"requiresEffort": true
 			}
 		},
-		"gemini-3.1-flash-lite-preview": {
-			"id": "gemini-3.1-flash-lite-preview",
-			"name": "Gemini 3.1 Flash Lite Preview",
-			"api": "google-vertex",
-			"provider": "google-vertex",
-			"baseUrl": "https://{location}-aiplatform.googleapis.com",
-			"reasoning": true,
-			"input": [
-				"text",
-				"image"
-			],
-			"cost": {
-				"input": 0.25,
-				"output": 1.5,
-				"cacheRead": 0.025,
-				"cacheWrite": 0
-			},
-			"contextWindow": 1048576,
-			"maxTokens": 65536,
-			"thinking": {
-				"mode": "google-level",
-				"efforts": [
-					"minimal",
-					"low",
-					"medium",
-					"high"
-				],
-				"requiresEffort": true
-			}
-		},
 		"gemini-3.1-pro-preview": {
 			"id": "gemini-3.1-pro-preview",
 			"name": "Gemini 3.1 Pro Preview",
@@ -23792,6 +23800,35 @@
 				]
 			}
 		},
+		"Qwen/Qwen3.6-27B": {
+			"id": "Qwen/Qwen3.6-27B",
+			"name": "Qwen3.6 27B",
+			"api": "openai-completions",
+			"provider": "huggingface",
+			"baseUrl": "https://router.huggingface.co/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.47,
+				"output": 3.19,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 262144,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high"
+				]
+			}
+		},
 		"Qwen/Qwen3.6-35B-A3B": {
 			"id": "Qwen/Qwen3.6-35B-A3B",
 			"name": "Qwen3.6 35B-A3B",
@@ -23850,6 +23887,36 @@
 				]
 			}
 		},
+		"stepfun-ai/Step-3.7-Flash": {
+			"id": "stepfun-ai/Step-3.7-Flash",
+			"name": "Step 3.7 Flash",
+			"api": "openai-completions",
+			"provider": "huggingface",
+			"baseUrl": "https://router.huggingface.co/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.2,
+				"output": 1.15,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 262144,
+			"maxTokens": 256000,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
 		"XiaomiMiMo/MiMo-V2-Flash": {
 			"id": "XiaomiMiMo/MiMo-V2-Flash",
 			"name": "MiMo-V2-Flash",
@@ -23868,6 +23935,33 @@
 			},
 			"contextWindow": 262144,
 			"maxTokens": 4096,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"low",
+					"medium",
+					"high"
+				]
+			}
+		},
+		"XiaomiMiMo/MiMo-V2.5-Pro": {
+			"id": "XiaomiMiMo/MiMo-V2.5-Pro",
+			"name": "MiMo-V2.5-Pro",
+			"api": "openai-completions",
+			"provider": "huggingface",
+			"baseUrl": "https://router.huggingface.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 1,
+				"output": 3,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 131072,
 			"thinking": {
 				"mode": "effort",
 				"efforts": [
@@ -33422,6 +33516,25 @@
 			"contextWindow": 256000,
 			"maxTokens": 128000
 		},
+		"sakana/fugu-ultra": {
+			"id": "sakana/fugu-ultra",
+			"name": "Fugu Ultra",
+			"api": "openai-completions",
+			"provider": "kilo",
+			"baseUrl": "https://api.kilo.ai/api/gateway",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": null
+		},
 		"sao10k/l3-euryale-70b": {
 			"id": "sao10k/l3-euryale-70b",
 			"name": "Llama 3 Euryale 70B v2.1",
@@ -35308,9 +35421,9 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.6,
-				"output": 2.4,
-				"cacheRead": 0.12,
+				"input": 0.3,
+				"output": 1.2,
+				"cacheRead": 0.06,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1000000,
@@ -35574,9 +35687,9 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.6,
-				"output": 2.4,
-				"cacheRead": 0.12,
+				"input": 0.3,
+				"output": 1.2,
+				"cacheRead": 0.06,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1000000,
@@ -38565,6 +38678,44 @@
 					"xhigh"
 				]
 			}
+		},
+		"bytedance/doubao-seed-2.1-pro": {
+			"id": "bytedance/doubao-seed-2.1-pro",
+			"name": "bytedance/doubao-seed-2.1-pro",
+			"api": "openai-completions",
+			"provider": "nanogpt",
+			"baseUrl": "https://nano-gpt.com/api/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 256000,
+			"maxTokens": null
+		},
+		"bytedance/doubao-seed-2.1-turbo": {
+			"id": "bytedance/doubao-seed-2.1-turbo",
+			"name": "bytedance/doubao-seed-2.1-turbo",
+			"api": "openai-completions",
+			"provider": "nanogpt",
+			"baseUrl": "https://nano-gpt.com/api/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 256000,
+			"maxTokens": null
 		},
 		"chutesai/Mistral-Small-3.2-24B-Instruct-2506": {
 			"id": "chutesai/Mistral-Small-3.2-24B-Instruct-2506",
@@ -70080,7 +70231,7 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 262144,
-			"maxTokens": 262144,
+			"maxTokens": 81920,
 			"thinking": {
 				"mode": "effort",
 				"efforts": [
@@ -70580,6 +70731,35 @@
 			},
 			"contextWindow": 256000,
 			"maxTokens": 128000
+		},
+		"sakana/fugu-ultra": {
+			"id": "sakana/fugu-ultra",
+			"name": "Fugu Ultra",
+			"api": "openrouter",
+			"provider": "openrouter",
+			"baseUrl": "https://openrouter.ai/api/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 5,
+				"output": 30,
+				"cacheRead": 0.5,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 128000,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high"
+				]
+			}
 		},
 		"sao10k/l3-euryale-70b": {
 			"id": "sao10k/l3-euryale-70b",
@@ -71720,7 +71900,7 @@
 			"cost": {
 				"input": 0.98,
 				"output": 3.08,
-				"cacheRead": 0.49,
+				"cacheRead": 0.182,
 				"cacheWrite": 0
 			},
 			"contextWindow": 202752,
@@ -73931,14 +74111,14 @@
 			"baseUrl": "https://api.code.umans.ai",
 			"reasoning": true,
 			"thinking": {
-				"mode": "budget",
+				"mode": "anthropic-budget-effort",
 				"efforts": [
-					"minimal",
-					"low",
-					"medium",
 					"high",
 					"xhigh"
-				]
+				],
+				"effortMap": {
+					"xhigh": "max"
+				}
 			},
 			"input": [
 				"text"
@@ -76347,7 +76527,8 @@
 			"baseUrl": "https://api.venice.ai/api/v1",
 			"reasoning": true,
 			"input": [
-				"text"
+				"text",
+				"image"
 			],
 			"cost": {
 				"input": 2.7,
@@ -76860,9 +77041,9 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.85,
-				"output": 2.75,
-				"cacheRead": 0.3,
+				"input": 0.43,
+				"output": 1.75,
+				"cacheRead": 0.08,
 				"cacheWrite": 0
 			},
 			"contextWindow": 198000,
@@ -77426,6 +77607,46 @@
 				"requiresEffort": true
 			}
 		},
+		"alibaba/qwen3-vl-235b-a22b-instruct": {
+			"id": "alibaba/qwen3-vl-235b-a22b-instruct",
+			"name": "Qwen3 VL 235B A22B Instruct",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.39999999999999997,
+				"output": 1.5999999999999999,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 131072,
+			"maxTokens": 129024
+		},
+		"alibaba/qwen3-vl-instruct": {
+			"id": "alibaba/qwen3-vl-instruct",
+			"name": "Qwen3 VL 235B A22B Instruct",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.39999999999999997,
+				"output": 1.5999999999999999,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 131072,
+			"maxTokens": 129024
+		},
 		"alibaba/qwen3-vl-thinking": {
 			"id": "alibaba/qwen3-vl-thinking",
 			"name": "Qwen3 VL 235B A22B Thinking",
@@ -77636,6 +77857,95 @@
 					"xhigh"
 				]
 			}
+		},
+		"amazon/nova-2-lite": {
+			"id": "amazon/nova-2-lite",
+			"name": "Nova 2 Lite",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.3,
+				"output": 2.5,
+				"cacheRead": 0.075,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 1000000,
+			"thinking": {
+				"mode": "budget",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"amazon/nova-lite": {
+			"id": "amazon/nova-lite",
+			"name": "Nova Lite",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.06,
+				"output": 0.24,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 300000,
+			"maxTokens": 8192
+		},
+		"amazon/nova-micro": {
+			"id": "amazon/nova-micro",
+			"name": "Nova Micro",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.035,
+				"output": 0.14,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 128000,
+			"maxTokens": 8192
+		},
+		"amazon/nova-pro": {
+			"id": "amazon/nova-pro",
+			"name": "Nova Pro",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.7999999999999999,
+				"output": 3.1999999999999997,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 300000,
+			"maxTokens": 8192
 		},
 		"anthropic/claude-3-haiku": {
 			"id": "anthropic/claude-3-haiku",
@@ -78162,6 +78472,35 @@
 				"requiresEffort": true
 			}
 		},
+		"arcee-ai/trinity-mini": {
+			"id": "arcee-ai/trinity-mini",
+			"name": "Trinity Mini",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.045,
+				"output": 0.15,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 131072,
+			"maxTokens": 131072,
+			"thinking": {
+				"mode": "budget",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
 		"bytedance/seed-1.6": {
 			"id": "bytedance/seed-1.6",
 			"name": "Seed 1.6",
@@ -78170,7 +78509,8 @@
 			"provider": "vercel-ai-gateway",
 			"reasoning": true,
 			"input": [
-				"text"
+				"text",
+				"image"
 			],
 			"cost": {
 				"input": 0.25,
@@ -78180,6 +78520,36 @@
 			},
 			"contextWindow": 256000,
 			"maxTokens": 32000,
+			"thinking": {
+				"mode": "budget",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"bytedance/seed-1.8": {
+			"id": "bytedance/seed-1.8",
+			"name": "Bytedance Seed 1.8",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.25,
+				"output": 2,
+				"cacheRead": 0.049999999999999996,
+				"cacheWrite": 0
+			},
+			"contextWindow": 256000,
+			"maxTokens": 64000,
 			"thinking": {
 				"mode": "budget",
 				"efforts": [
@@ -78894,6 +79264,55 @@
 			"contextWindow": 32000,
 			"maxTokens": 16384
 		},
+		"interfaze/interfaze-beta": {
+			"id": "interfaze/interfaze-beta",
+			"name": "Interfaze Beta",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 1.5,
+				"output": 3.5,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 32000,
+			"thinking": {
+				"mode": "budget",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"kwaipilot/kat-coder-pro-v1": {
+			"id": "kwaipilot/kat-coder-pro-v1",
+			"name": "KAT-Coder-Pro V1",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.3,
+				"output": 1.2,
+				"cacheRead": 0.06,
+				"cacheWrite": 0
+			},
+			"contextWindow": 256000,
+			"maxTokens": 32000
+		},
 		"kwaipilot/kat-coder-pro-v2": {
 			"id": "kwaipilot/kat-coder-pro-v2",
 			"name": "KAT-Coder-Pro V2",
@@ -78950,6 +79369,36 @@
 			},
 			"contextWindow": 128000,
 			"maxTokens": 8192,
+			"thinking": {
+				"mode": "budget",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				],
+				"requiresEffort": true
+			}
+		},
+		"meituan/longcat-flash-thinking-2601": {
+			"id": "meituan/longcat-flash-thinking-2601",
+			"name": "LongCat Flash Thinking 2601",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 32768,
+			"maxTokens": 32768,
 			"thinking": {
 				"mode": "budget",
 				"efforts": [
@@ -79429,11 +79878,92 @@
 			"provider": "vercel-ai-gateway",
 			"reasoning": false,
 			"input": [
-				"text"
+				"text",
+				"image"
 			],
 			"cost": {
 				"input": 0.09999999999999999,
 				"output": 0.3,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 256000,
+			"maxTokens": 256000
+		},
+		"mistral/magistral-medium": {
+			"id": "mistral/magistral-medium",
+			"name": "Magistral Medium 2509",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 2,
+				"output": 5,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 128000,
+			"maxTokens": 64000,
+			"thinking": {
+				"mode": "budget",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"mistral/magistral-small": {
+			"id": "mistral/magistral-small",
+			"name": "Magistral Small 2509",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.5,
+				"output": 1.5,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 128000,
+			"maxTokens": 64000,
+			"thinking": {
+				"mode": "budget",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"mistral/ministral-14b": {
+			"id": "mistral/ministral-14b",
+			"name": "Ministral 14B",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.19999999999999998,
+				"output": 0.19999999999999998,
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
@@ -79477,6 +80007,26 @@
 			},
 			"contextWindow": 128000,
 			"maxTokens": 4000
+		},
+		"mistral/mistral-large-3": {
+			"id": "mistral/mistral-large-3",
+			"name": "Mistral Large 3",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.5,
+				"output": 1.5,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 256000,
+			"maxTokens": 256000
 		},
 		"mistral/mistral-medium": {
 			"id": "mistral/mistral-medium",
@@ -79844,6 +80394,35 @@
 				]
 			}
 		},
+		"nvidia/nemotron-3-nano-30b-a3b": {
+			"id": "nvidia/nemotron-3-nano-30b-a3b",
+			"name": "Nemotron 3 Nano 30B A3B",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.049999999999999996,
+				"output": 0.24,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 262144,
+			"maxTokens": 262144,
+			"thinking": {
+				"mode": "budget",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
 		"nvidia/nemotron-3-super-120b-a12b": {
 			"id": "nvidia/nemotron-3-super-120b-a12b",
 			"name": "Nemotron 3 Super",
@@ -79990,6 +80569,25 @@
 					"xhigh"
 				]
 			}
+		},
+		"openai/gpt-3.5-turbo": {
+			"id": "openai/gpt-3.5-turbo",
+			"name": "GPT-3.5 Turbo",
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"baseUrl": "https://ai-gateway.vercel.sh",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.5,
+				"output": 1.5,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 16385,
+			"maxTokens": 4096
 		},
 		"openai/gpt-4-turbo": {
 			"id": "openai/gpt-4-turbo",
@@ -84849,8 +85447,8 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.588,
-				"output": 2.646,
+				"input": 0.424593036,
+				"output": 1.910668662,
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
@@ -85046,6 +85644,96 @@
 				]
 			}
 		},
+		"bytedance/doubao-seed-2.1-pro": {
+			"id": "bytedance/doubao-seed-2.1-pro",
+			"name": "Doubao-Seed-2.1-pro",
+			"api": "openai-completions",
+			"provider": "zenmux",
+			"baseUrl": "https://zenmux.ai/api/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.422571632,
+				"output": 2.11285816,
+				"cacheRead": 0.08453343,
+				"cacheWrite": 0.001193975
+			},
+			"contextWindow": 256000,
+			"maxTokens": null,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"bytedance/doubao-seed-2.1-turbo": {
+			"id": "bytedance/doubao-seed-2.1-turbo",
+			"name": "Doubao-Seed-2.1-turbo",
+			"api": "openai-completions",
+			"provider": "zenmux",
+			"baseUrl": "https://zenmux.ai/api/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.422571632,
+				"output": 2.11285816,
+				"cacheRead": 0.08453343,
+				"cacheWrite": 0.00238795
+			},
+			"contextWindow": 256000,
+			"maxTokens": null,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"bytedance/doubao-seed-character": {
+			"id": "bytedance/doubao-seed-character",
+			"name": "Doubao-Seed-Character",
+			"api": "openai-completions",
+			"provider": "zenmux",
+			"baseUrl": "https://zenmux.ai/api/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.1179,
+				"output": 0.2947,
+				"cacheRead": 0.0236,
+				"cacheWrite": 0.0025
+			},
+			"contextWindow": 128000,
+			"maxTokens": null,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
 		"bytedance/doubao-seed-code": {
 			"id": "bytedance/doubao-seed-code",
 			"name": "Doubao-Seed-Code",
@@ -85062,6 +85750,36 @@
 				"output": 1.12,
 				"cacheRead": 0.034,
 				"cacheWrite": 0
+			},
+			"contextWindow": 256000,
+			"maxTokens": null,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"bytedance/doubao-seed-evolving": {
+			"id": "bytedance/doubao-seed-evolving",
+			"name": "Doubao-Seed-Evolving",
+			"api": "openai-completions",
+			"provider": "zenmux",
+			"baseUrl": "https://zenmux.ai/api/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.422571632,
+				"output": 2.11285816,
+				"cacheRead": 0.08453343,
+				"cacheWrite": 0.001193975
 			},
 			"contextWindow": 256000,
 			"maxTokens": null,
@@ -85832,9 +86550,9 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.3,
-				"output": 2.5,
-				"cacheRead": 0.06,
+				"input": 0.1318155,
+				"output": 1.0984625,
+				"cacheRead": 0.0263631,
 				"cacheWrite": 0
 			},
 			"contextWindow": 262144,
@@ -87807,10 +88525,10 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.25,
-				"output": 1.5,
-				"cacheRead": 0.025,
-				"cacheWrite": 0.3125
+				"input": 0.134717,
+				"output": 0.808302,
+				"cacheRead": 0.0134717,
+				"cacheWrite": 0.16839625
 			},
 			"contextWindow": 1000000,
 			"maxTokens": 65536,

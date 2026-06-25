@@ -790,7 +790,7 @@ export class SettingsSelectorComponent implements Component {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: currentValue as string,
+					currentValue: String(currentValue ?? ""),
 					values: [...def.values],
 					changed,
 				};
