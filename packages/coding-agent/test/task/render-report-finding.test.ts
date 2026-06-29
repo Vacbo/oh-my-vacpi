@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { taskToolRenderer } from "../../src/task/render";
+import { taskToolRenderer } from "../../src/task/renderer";
 import type { TaskToolDetails } from "../../src/task/types";
 
 describe("taskToolRenderer report_finding safety", () => {

@@ -41,6 +41,24 @@ git fetch --all --tags
 
 ---
 
+## 2026-06-28 — Merged upstream v16.2.5: upstream tool rename adopted, fork updater retained   `[done]` `[high]`
+
+**Merge**: fork `16.1.19` → upstream `v16.2.5`.
+
+**Divergence calls**:
+- **Kept the fork updater path** in `update-cli.ts` and `update-cli.test.ts`. Upstream's package/binary self-updater would violate the fork's jj-managed merge workflow, so `/update` remains the fork merge-agent launcher.
+- **Adopted upstream's `search`→`grep` and `find`→`glob` builtin rename** while preserving fork public shims and persisted-name normalization. Fork-only `todo_write` remains the model-facing todo tool name; displaceable todo UI paths now compare `todo_write` while keeping the internal `"todo"` displacement kind.
+- **Re-homed the fork brush job API onto upstream's relocated vendored crate** at `crates/vendor/brush-core`. The old `crates/brush-core-vendored` path stays deleted; `pi-shell` keeps `JobJoinHandle` and `abort_internal_tasks()` semantics at the live location.
+- **Kept fork-open provider API schemas and `Effort.Max`** while adopting upstream remote-compaction/provider-limit schema additions. A closed upstream API enum would reject fork/custom providers.
+- **Adopted upstream's todo-tree, idle-recap, remote-compaction, input, and TUI restructures** and reattached fork levers at their new hook points: `applyCwdChange()` for project-dir resets, array-aware setting formatting, slash-command frecency, jj status-line handling, legacy pi bundled registry generation, and terminal recording.
+
+**Residual levers**:
+- `todo_write` remains a merge hotspot anywhere upstream compares literal `"todo"` in UI/transcript paths. Keep model-facing name compatibility unless upstream accepts the fork name or a canonical alias layer.
+- `update-cli.ts` must continue to bypass upstream self-update code in this fork. Port only merge-agent-safe helper behavior.
+- Vendored `brush-core` fork hunks now live under `crates/vendor/brush-core`; future upstream crate relocations need re-home, not resurrection of deleted directories.
+
+---
+
 ## 2026-06-25 — Merged upstream v16.1.19: fullscreen extensions adopted, fork pinning retained   `[done]` `[high]`
 
 **Merge**: fork `16.1.16` → upstream `v16.1.19`.

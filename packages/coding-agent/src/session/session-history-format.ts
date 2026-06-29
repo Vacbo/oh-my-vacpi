@@ -40,6 +40,12 @@ export interface HistoryFormatOptions {
 	 * still collapse to a one-liner.
 	 */
 	expandPrimaryContext?: boolean;
+	/**
+	 * Append the full unified diff (from a tool result's `details.diff`) below
+	 * edit/apply_patch tool lines, instead of just the path. The advisor sets
+	 * this so it sees what changed without re-reading the file.
+	 */
+	expandEditDiffs?: boolean;
 }
 
 /** Max length of the primary-arg summary inside `→ tool(...)` lines. */
@@ -86,6 +92,14 @@ function lineCount(text: string): number {
 	return text.split("\n").length;
 }
 
+function primaryArgValue(value: unknown): string {
+	if (typeof value === "string" && value.length > 0) return value;
+	if (Array.isArray(value) && value.length > 0 && value.every(v => typeof v === "string")) {
+		return value.join(", ");
+	}
+	return "";
+}
+
 /** Pick the most informative scalar argument of a tool call. */
 function primaryArg(name: string, args: Record<string, unknown> | undefined): string {
 	if (!args || typeof args !== "object") return "";
@@ -97,12 +111,21 @@ function primaryArg(name: string, args: Record<string, unknown> | undefined): st
 		if (note) return oneLine(note);
 		if (severity) return oneLine(severity);
 	}
+	if (name === "grep") {
+		const pattern = primaryArgValue(args.pattern);
+		const paths = primaryArgValue(args.paths);
+		if (pattern && paths) return oneLine(`${pattern} @ ${paths}`);
+		if (pattern) return oneLine(pattern);
+		if (paths) return oneLine(paths);
+	}
+	if (name === "glob") {
+		const paths = primaryArgValue(args.paths);
+		if (paths) return oneLine(paths);
+	}
 	for (const key of PRIMARY_ARG_KEYS) {
 		const value = args[key];
-		if (typeof value === "string" && value.length > 0) return oneLine(value);
-		if (Array.isArray(value) && value.length > 0 && value.every(v => typeof v === "string")) {
-			return oneLine(value.join(", "));
-		}
+		const summary = primaryArgValue(value);
+		if (summary) return oneLine(summary);
 	}
 	// Fallback: first non-intent string arg, then a compact JSON of the args.
 	const rest: Record<string, unknown> = {};
@@ -122,12 +145,24 @@ function primaryArg(name: string, args: Record<string, unknown> | undefined): st
 	}
 }
 
+/**
+ * Wrap a diff body in a backtick fence sized to outlast the longest backtick
+ * run inside it, so a diff that touches markdown (triple backticks) can't break
+ * out of the fence. Info string `diff` for syntax highlighting.
+ */
+function fenceDiff(diff: string): string {
+	const longest = diff.match(/`+/g)?.reduce((m, run) => Math.max(m, run.length), 0) ?? 0;
+	const fence = "`".repeat(Math.max(3, longest + 1));
+	return `${fence}diff\n${diff}\n${fence}`;
+}
+
 /** One line per tool call: `→ read(src/foo.ts:50-80) ⇒ ok · 31 lines`. */
 function toolCallLine(
 	name: string,
 	args: Record<string, unknown> | undefined,
 	result: ToolResultMessage | undefined,
 	includeToolIntent?: boolean,
+	expandEditDiffs?: boolean,
 ): string {
 	const head = `→ ${name}(${primaryArg(name, args)})`;
 	let base: string;
@@ -142,6 +177,13 @@ function toolCallLine(
 			base = firstLine ? `${head} ⇒ error · ${count} — ${firstLine}` : `${head} ⇒ error · ${count}`;
 		} else {
 			base = `${head} ⇒ ok · ${count}`;
+		}
+	}
+
+	if (expandEditDiffs) {
+		const diff = (result?.details as { diff?: unknown } | undefined)?.diff;
+		if (typeof diff === "string" && diff.trim()) {
+			base = `${base}\n${fenceDiff(diff)}`;
 		}
 	}
 
@@ -263,7 +305,9 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 					} else if (block.type === "toolCall") {
 						const result = resultsByCallId.get(block.id);
 						if (result) consumed.add(block.id);
-						body.push(toolCallLine(block.name, block.arguments, result, opts?.includeToolIntent));
+						body.push(
+							toolCallLine(block.name, block.arguments, result, opts?.includeToolIntent, opts?.expandEditDiffs),
+						);
 					} else if (opts?.includeThinking && block.type === "thinking" && block.thinking.trim()) {
 						body.push(`_thinking:_ ${block.thinking}`);
 					}
@@ -286,7 +330,7 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 			case "toolResult": {
 				// Normally consumed by its toolCall; orphans (e.g. truncated history) get their own line.
 				if (consumed.has(msg.toolCallId)) break;
-				lines.push(toolCallLine(msg.toolName, undefined, msg, opts?.includeToolIntent), "");
+				lines.push(toolCallLine(msg.toolName, undefined, msg, opts?.includeToolIntent, opts?.expandEditDiffs), "");
 				lastWatchedLabel = undefined;
 				break;
 			}

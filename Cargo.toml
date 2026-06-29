@@ -1,10 +1,10 @@
 [workspace]
-members = ["crates/*"]
-exclude = ["crates/brush-core-vendored", "crates/brush-builtins-vendored"]
+members = ["crates/pi-*", "crates/vendor/*"]
+exclude = ["crates/vendor/brush-core", "crates/vendor/brush-builtins"]
 resolver = "3"
 
 [workspace.package]
-version = "16.1.19"
+version = "16.2.5"
 edition = "2024"
 license = "MIT"
 authors = ["Can Boluk"]
@@ -12,15 +12,20 @@ homepage = "https://omp.sh/"
 repository = "https://github.com/can1357/oh-my-pi"
 
 [patch.crates-io]
-brush-core = { path = "crates/brush-core-vendored" }
-brush-builtins = { path = "crates/brush-builtins-vendored" }
+brush-core = { path = "crates/vendor/brush-core" }
+brush-builtins = { path = "crates/vendor/brush-builtins" }
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
+# Unwind (not abort) so panics in vendored uutils code and napi-rs functions
+# are catchable: the uutils boundary (pi-shell coreutils) and napi-rs's per-call
+# catch_unwind turn a panic into a failed command / JS error instead of killing
+# the host process. Recoverable uutils panics are kept out of the crash report
+# by the crash hook (see crates/pi-natives/src/crash_handler.rs).
+panic = "unwind"
 
 [profile.ci]
 inherits = "release"
@@ -166,8 +171,8 @@ too_many_lines = "allow"     # Arbitrary limits don't account for necessary comp
 pi-ast = { path = "crates/pi-ast" }
 pi-iso = { path = "crates/pi-iso" }
 pi-shell = { path = "crates/pi-shell" }
-brush-core = { path = "crates/brush-core-vendored" }
-brush-builtins = { path = "crates/brush-builtins-vendored" }
+brush-core = { path = "crates/vendor/brush-core" }
+brush-builtins = { path = "crates/vendor/brush-builtins" }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Async Runtime & Concurrency

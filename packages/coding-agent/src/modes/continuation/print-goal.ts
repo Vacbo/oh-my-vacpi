@@ -97,7 +97,7 @@ function lastAssistantErrored(session: AgentSession): boolean {
 	if (last?.role !== "assistant") return false;
 	const assistant = last as AssistantMessage;
 	if (assistant.stopReason !== "error" && assistant.stopReason !== "aborted") return false;
-	return !isSilentAbort(assistant.errorMessage);
+	return !isSilentAbort(assistant);
 }
 
 function stopOutcome(reason: GoalStopReason): PrintGoalOutcome {

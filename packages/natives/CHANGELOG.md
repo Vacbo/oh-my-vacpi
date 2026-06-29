@@ -9,6 +9,25 @@
 - Added `envClear` to `PtyStartOptions`: when true, the PTY child starts from an empty environment and `env` defines it exactly, instead of the default merge over the parent's environment. Lets callers actually *remove* inherited variables (the coding agent's `tui_drive` uses it to scrub terminal-identity vars like `CMUX_SURFACE_ID` from driven children).
 - Added `processExec(argv)`: POSIX `execvp` process-image replacement (never returns on success; errors return control). Backs the coding agent's `/restart` command so a restart keeps the pid, controlling terminal, and foreground process-group state without leaving a dormant parent behind. Reports unsupported on Windows, where callers fall back to spawn-and-wait.
 
+## [16.2.5] - 2026-06-28
+
+### Fixed
+
+- Fixed the in-process `grep` builtin rejecting GNU-grep's `--color`/`--colour` (with or without `=WHEN`) and `--version` flags. The shadowing rejection broke bash's near-universal `alias grep='grep --color=auto'`, causing bare `grep` in any pipeline to fail with exit 2. The builtin now accepts and ignores `--color[=WHEN]` (its output goes through in-process file descriptors, never a TTY, so ANSI injection would corrupt downstream consumers) and reports its version through the context streams ([#3755](https://github.com/can1357/oh-my-pi/issues/3755)).
+
+## [16.2.4] - 2026-06-28
+
+### Fixed
+
+- Fixed a crash in the in-process `tail` builtin where the host process would abort with a `BrokenPipe` panic if the stdout consumer closed the pipe early.
+
+## [16.1.23] - 2026-06-26
+
+### Added
+
+- Added Nix and Mermaid syntax highlighting support to `highlightCode`/`supportsLanguage` via vendored `Nix.sublime-syntax` and `Mermaid.sublime-syntax` definitions plus `nix`, `mermaid`, and `mmd` aliases.
+- Added in-process [uutils](https://github.com/uutils/coreutils)-backed shell builtins to the embedded brush `Shell`: `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `ls`, `find`, `grep`, `mkdir`, `rm`, and `mv`. These vendored + patched utilities run inside the shell process (no `fork`/`exec`), resolve path operands against the shell working directory, route stdio through the command's (possibly piped/redirected) file descriptors, read the shell's exported environment, and honor abort/timeout cancellation (a blocked `stdin` read unwinds cleanly). `grep` is built on the ripgrep `grep-*` crates and `find` on `uutils/findutils`; the rest are pinned to `uutils/coreutils` 0.8.0 (matching the bundled `uucore`). Registration is gated: set `PI_DISABLE_UUTILS_BUILTINS` to fall back to the system binaries for the whole set, or `PI_DISABLE_UUTILS_DESTRUCTIVE` / `PI_DISABLE_RM_BUILTIN` / `PI_DISABLE_MV_BUILTIN` to disable only the destructive `rm`/`mv` shadows.
+
 ## [16.1.17] - 2026-06-24
 
 ### Added

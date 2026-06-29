@@ -9,7 +9,7 @@ const OWNER_ID = "julia-prelude-tests";
 describe.skipIf(!HAS_JULIA)("eval Julia prelude helpers", () => {
 	afterEach(async () => {
 		await disposeJuliaKernelSessionsByOwner(OWNER_ID);
-	});
+	}, 30_000);
 
 	it("supports output ranges, JSON queries, metadata, and ANSI stripping", async () => {
 		using tempDir = TempDir.createSync("@omp-eval-julia-output-");
@@ -44,5 +44,23 @@ nothing
 		expect(result.output).toContain("STRIPPED=red");
 		expect(result.output).toContain("META=alpha:true");
 		expect(result.output).toContain("MULTI=2:alpha:json");
+	}, 60_000);
+
+	it("surfaces the exception type and message in the error output, not just stack frames", async () => {
+		using tempDir = TempDir.createSync("@omp-eval-julia-error-");
+		const result = await executeJulia(`println("="^8)\nmissing_var_xyz + 1`, {
+			cwd: tempDir.path(),
+			sessionId: `julia-prelude-error:${crypto.randomUUID()}`,
+			kernelOwnerId: OWNER_ID,
+			reset: true,
+		});
+
+		// The rendered error must carry the actual exception, not only the
+		// runner-internal backtrace frames (regression: traceback-only output
+		// hid `ename`/`evalue`).
+		expect(result.output).toContain("UndefVarError");
+		expect(result.output).toContain("missing_var_xyz");
+		// Frames are still present alongside the message.
+		expect(result.output).toContain("top-level scope");
 	}, 30_000);
 });

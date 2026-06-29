@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Usage } from "@oh-my-pi/pi-ai";
+import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
@@ -44,6 +45,7 @@ import {
 	type SkillPromptDetails,
 } from "../../session/messages";
 import type { SessionContext } from "../../session/session-context";
+import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
@@ -317,6 +319,24 @@ export class UiHelpers {
 			// updateResult armed.
 			previous.seal();
 		};
+		let todoSnapshot: ToolExecutionComponent | null = null;
+		const resolveTodoSnapshot = (nextToolName?: string) => {
+			const previous = todoSnapshot;
+			if (!previous) return;
+			if (!previous.isDisplaceableBlock()) {
+				todoSnapshot = null;
+				return;
+			}
+			if (previous.canBeDisplacedBy(nextToolName)) {
+				todoSnapshot = null;
+				this.ctx.chatContainer.removeChild(previous);
+				previous.seal();
+				return;
+			}
+			if (nextToolName !== undefined) return;
+			todoSnapshot = null;
+			previous.seal();
+		};
 		const messages = sessionContext.messages;
 		const count = messages.length;
 		for (let i = 0; i < count; i++) {
@@ -391,10 +411,10 @@ export class UiHelpers {
 					readGroup?.seal();
 					readGroup = null;
 					const tool = this.ctx.viewSession.getToolByName(content.name);
-					const renderArgs =
-						"partialJson" in content
-							? { ...content.arguments, __partialJson: content.partialJson }
-							: content.arguments;
+					const partialJson = getStreamingPartialJson(content);
+					const renderArgs = partialJson
+						? { ...content.arguments, __partialJson: partialJson }
+						: content.arguments;
 					const component = new ToolExecutionComponent(
 						content.name,
 						renderArgs,
@@ -477,11 +497,22 @@ export class UiHelpers {
 						component.isDisplaceableBlock()
 					) {
 						waitingPoll = component;
+					} else if (
+						message.toolName === "todo_write" &&
+						component instanceof ToolExecutionComponent &&
+						component.canBeDisplacedBy("todo")
+					) {
+						// A successful todo result supersedes the prior live snapshot. Failed
+						// follow-ups return false from canBeDisplacedBy("todo"), so the
+						// last-good panel stays on screen.
+						resolveTodoSnapshot("todo");
+						todoSnapshot = component;
 					}
 				}
 			} else {
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
+				if (message.role === "user") resolveTodoSnapshot();
 				// All other messages use standard rendering
 				this.ctx.addMessageToChat(message, options);
 			}
@@ -495,6 +526,17 @@ export class UiHelpers {
 		// A trailing waiting poll is final history on rebuild; seal it so it
 		// freezes (and its spinner timer stops) like every other block.
 		resolveWaitingPoll();
+		// A trailing todo snapshot is live state, not history: when the rebuild
+		// runs mid-turn (settings overlay close, focus attach during streaming),
+		// hand it back to the controller so a follow-up `todo` update keeps
+		// displacing instead of stacking. Idle rebuilds (resume / compaction)
+		// fall through to the seal path so the snapshot freezes as history.
+		if (todoSnapshot && this.ctx.session?.isStreaming) {
+			this.ctx.eventController?.inheritDisplaceableTodo(todoSnapshot);
+			todoSnapshot = null;
+		} else {
+			resolveTodoSnapshot();
+		}
 
 		this.ctx.pendingTools.clear();
 		this.ctx.ui.requestRender();
@@ -626,6 +668,15 @@ export class UiHelpers {
 	}
 
 	async #deliverQueuedMessage(message: CompactionQueuedMessage): Promise<void> {
+		if (
+			await invokeSkillCommandFromText(this.ctx, message.text, message.mode, {
+				propagateErrors: true,
+				queueOnly: true,
+				images: message.images,
+			})
+		) {
+			return;
+		}
 		if (this.ctx.isKnownSlashCommand(message.text)) {
 			await this.ctx.session.prompt(message.text);
 			return;
@@ -713,29 +764,37 @@ export class UiHelpers {
 				await this.#deliverQueuedMessage(message);
 			}
 
-			// Pass streamingBehavior so that if the session is still streaming when
-			// compaction-end fires (race window between isStreaming flipping false and
-			// the event landing here), prompt() routes the message into the steer/
-			// follow-up queue instead of throwing AgentBusyError. When the session is
-			// genuinely idle, streamingBehavior is ignored and a fresh prompt runs as
-			// before. This keeps the steer preview honest: if delivery has to be
-			// deferred, the message lands in the same queue every other consumer
-			// (Alt+Up dequeue, post-stream drain) already drains, instead of being
-			// stranded in compactionQueuedMessages with no drainer.
-			//
-			// firstPrompt is fire-and-forget — its rejection is funneled through
-			// `restoreQueue` rather than rethrown, so we use the primitive
-			// recordLocalSubmission and dispose manually in the catch.
-			const disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text, firstPrompt.images?.length ?? 0);
-			const promptPromise = this.ctx.session
-				.prompt(firstPrompt.text, {
-					streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
-					images: firstPrompt.images,
-				})
-				.catch((error: unknown) => {
-					disposeFirstPrompt();
-					restoreQueue(error);
-				});
+			// First prompt is fire-and-forget — its rejection is funneled through
+			// `restoreQueue` rather than rethrown. Plain prompts use primitive
+			// recordLocalSubmission and dispose manually in the catch. Skill prompts
+			// are rebuilt as user-attributed custom messages so queued `/skill:` text
+			// is not sent as a literal prompt after compaction.
+			let promptPromise: Promise<unknown>;
+			if (isKnownSkillCommand(this.ctx, firstPrompt.text)) {
+				const built = await buildSkillCommandPrompt(
+					this.ctx,
+					firstPrompt.text,
+					firstPrompt.mode,
+					firstPrompt.images,
+				);
+				promptPromise = built
+					? this.ctx.session.promptCustomMessage(built.message, built.options).catch(restoreQueue)
+					: Promise.resolve();
+			} else {
+				const disposeFirstPrompt = this.ctx.recordLocalSubmission(
+					firstPrompt.text,
+					firstPrompt.images?.length ?? 0,
+				);
+				promptPromise = this.ctx.session
+					.prompt(firstPrompt.text, {
+						streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
+						images: firstPrompt.images,
+					})
+					.catch((error: unknown) => {
+						disposeFirstPrompt();
+						restoreQueue(error);
+					});
+			}
 
 			for (const message of rest) {
 				await this.#deliverQueuedMessage(message);

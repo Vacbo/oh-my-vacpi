@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as jj from "@oh-my-pi/pi-coding-agent/utils/jj";
-import { $which } from "@oh-my-pi/pi-utils";
+import { $which, removeWithRetries } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 
 describe("jj workspace detection", () => {
@@ -12,7 +12,7 @@ describe("jj workspace detection", () => {
 	afterEach(async () => {
 		jj.repo.clearRootCache();
 		if (tmpDir) {
-			await fs.rm(tmpDir, { recursive: true, force: true });
+			await removeWithRetries(tmpDir);
 			tmpDir = undefined;
 		}
 	});
@@ -39,7 +39,7 @@ describe("jj workspace detection", () => {
 		await fs.mkdir(nested, { recursive: true });
 
 		expect(await jj.repo.root(nested)).toBe(dir);
-		await fs.rm(path.join(dir, ".jj"), { recursive: true, force: true });
+		await removeWithRetries(path.join(dir, ".jj"));
 
 		expect(await jj.repo.root(nested)).toBe(dir);
 		expect(await jj.repo.root(path.join(dir, "src"))).toBeNull();
@@ -201,7 +201,7 @@ describe("isPureJjRepo", () => {
 
 	afterEach(async () => {
 		jj.repo.clearRootCache();
-		await Promise.all(tempDirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
+		await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 	});
 
 	async function createTempDir(prefix: string): Promise<string> {

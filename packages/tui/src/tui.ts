@@ -110,7 +110,7 @@ export interface TUIStartOptions {
 const DEFAULT_RENDER_SCHEDULER: RenderScheduler = {
 	now: () => performance.now(),
 	scheduleImmediate: callback => {
-		process.nextTick(callback);
+		setImmediate(callback);
 	},
 	scheduleRender: (callback, delayMs) => {
 		const timer = setTimeout(callback, delayMs);
@@ -924,6 +924,8 @@ export class TUI extends Container {
 	#renderScheduler: RenderScheduler;
 	#lastRenderAt = 0;
 	static readonly #MIN_RENDER_INTERVAL_MS = 1000 / 30;
+	static readonly #INPUT_RENDER_GRACE_MS = TUI.#MIN_RENDER_INTERVAL_MS;
+	#inputRenderGraceUntilMs = 0;
 	// Pane-reflow settle window for tmux/screen/zellij. The host process gets
 	// SIGWINCH (and `process.stdout` already reports the new geometry) before
 	// the multiplexer finishes repainting the pane at the new size, and
@@ -1743,8 +1745,8 @@ export class TUI extends Container {
 			this.terminal.write(this.#leaveResizeAltSequence());
 		}
 		if (this.#altActive) {
-			const kittyPop = this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
-			this.terminal.write(`${MOUSE_TRACKING_OFF}${kittyPop}\x1b[?1049l`);
+			const enhancementExit = this.#keyboardEnhancementExit();
+			this.terminal.write(`${MOUSE_TRACKING_OFF}${enhancementExit}\x1b[?1049l`);
 			setAltScreenActive(false);
 			this.#altActive = false;
 			this.#altPreviousLines = [];
@@ -2109,8 +2111,11 @@ export class TUI extends Container {
 		if (this.#multiplexerResizeTimer) {
 			return;
 		}
-		const elapsed = this.#renderScheduler.now() - this.#lastRenderAt;
-		const delay = Math.max(0, TUI.#MIN_RENDER_INTERVAL_MS - elapsed);
+		const now = this.#renderScheduler.now();
+		const elapsed = now - this.#lastRenderAt;
+		const cadenceDelay = Math.max(0, TUI.#MIN_RENDER_INTERVAL_MS - elapsed);
+		const inputGraceDelay = Math.max(0, this.#inputRenderGraceUntilMs - now);
+		const delay = Math.max(cadenceDelay, inputGraceDelay);
 		this.#renderTimer = this.#renderScheduler.scheduleRender(() => {
 			this.#renderTimer = undefined;
 			if (this.#stopped || !this.#renderRequested) {
@@ -2136,6 +2141,12 @@ export class TUI extends Container {
 	}
 
 	#handleInput(data: string): void {
+		// Raw-mode Ctrl+C/Esc arrive as stdin data, not process signals. If the
+		// first key in a double-key gesture schedules an immediate slow repaint,
+		// the queued second key can sit behind that repaint long enough for the
+		// app-level double-press window to expire. Give the input queue one frame
+		// before ordinary paints; forced repaints still bypass this path.
+		this.#inputRenderGraceUntilMs = this.#renderScheduler.now() + TUI.#INPUT_RENDER_GRACE_MS;
 		if (this.#inputListeners.size > 0) {
 			let current = data;
 			for (const listener of this.#inputListeners) {
@@ -2487,11 +2498,11 @@ export class TUI extends Container {
 		// modal there; the normal screen and all accounting stay untouched.
 		const wantAlt = this.#wantsAltScreen();
 		if (wantAlt && !this.#altActive) {
-			// Kitty keyboard flags are per-screen: re-push our level on the freshly
-			// entered alternate screen, or Esc/modified keys revert to legacy
-			// encoding inside fullscreen overlays (Ghostty/kitty). See kitty
-			// keyboard-protocol docs: the mode stack is separate per screen.
-			this.terminal.write(`\x1b[?1049h${this.terminal.kittyEnableSequence ?? ""}${MOUSE_TRACKING_ON}`);
+			// Enhanced keyboard modes can be buffer-local: re-push the active
+			// modified-key reporting sequence on the freshly entered alternate
+			// screen, or Esc/modified keys revert to legacy encoding inside
+			// fullscreen overlays (Ghostty/kitty/iTerm2).
+			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${MOUSE_TRACKING_ON}`);
 			setAltScreenActive(true);
 			this.terminal.hideCursor();
 			this.#forgetHardwareCursorState();
@@ -2501,8 +2512,8 @@ export class TUI extends Container {
 			this.#altEnterWidth = width;
 			this.#altEnterHeight = height;
 		} else if (!wantAlt && this.#altActive) {
-			const kittyPop = this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
-			this.terminal.write(`${MOUSE_TRACKING_OFF}${kittyPop}\x1b[?1049l`);
+			const enhancementExit = this.#keyboardEnhancementExit();
+			this.terminal.write(`${MOUSE_TRACKING_OFF}${enhancementExit}\x1b[?1049l`);
 			setAltScreenActive(false);
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;
@@ -3338,23 +3349,42 @@ export class TUI extends Container {
 		return { window: this.#prepareLinesArray(window, width), contentRows: count };
 	}
 
-	/** Enter or leave the alternate screen borrowed for transient resize frames. */
+	/**
+	 * Resolve the active keyboard-enhancement enter sequence. Falls back to the
+	 * legacy `kittyEnableSequence` when a custom Terminal predates the
+	 * `keyboardEnhancementEnterSequence` property.
+	 */
+	#keyboardEnhancementEnter(): string {
+		return this.terminal.keyboardEnhancementEnterSequence ?? this.terminal.kittyEnableSequence ?? "";
+	}
+
+	/**
+	 * Resolve the active keyboard-enhancement exit sequence. Falls back to popping
+	 * kitty whenever a custom Terminal exposes its push sequence but predates the
+	 * `keyboardEnhancementExitSequence` property.
+	 */
+	#keyboardEnhancementExit(): string {
+		const exit = this.terminal.keyboardEnhancementExitSequence;
+		if (exit !== undefined) return exit ?? "";
+		return this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
+	}
+
 	#enterResizeAltSequence(): string {
 		if (this.#resizeAltActive || this.#altActive) return "";
 		this.#resizeAltActive = true;
 		setAltScreenActive(true);
 		this.#forgetHardwareCursorState();
 		this.#recordHardwareCursorHidden();
-		return `${ALT_SCREEN_ENTER}${this.terminal.kittyEnableSequence ?? ""}`;
+		return `${ALT_SCREEN_ENTER}${this.#keyboardEnhancementEnter()}`;
 	}
 
 	#leaveResizeAltSequence(): string {
 		if (!this.#resizeAltActive) return "";
-		const kittyPop = this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
+		const enhancementExit = this.#keyboardEnhancementExit();
 		this.#resizeAltActive = false;
 		setAltScreenActive(false);
 		this.#forgetHardwareCursorState();
-		return `${kittyPop}${ALT_SCREEN_EXIT}`;
+		return `${enhancementExit}${ALT_SCREEN_EXIT}`;
 	}
 
 	/**

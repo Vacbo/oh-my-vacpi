@@ -96,6 +96,7 @@ export type SymbolKey =
 	| "icon.pause"
 	| "icon.loop"
 	| "icon.folder"
+	| "icon.worktree"
 	| "icon.search"
 	| "icon.scratchFolder"
 	| "icon.file"
@@ -229,7 +230,9 @@ export type SymbolKey =
 	| "tool.review"
 	| "tool.inspectImage"
 	| "tool.goal"
-	| "tool.irc";
+	| "tool.irc"
+	| "tool.delete"
+	| "tool.move";
 
 type SymbolMap = Record<SymbolKey, string>;
 
@@ -298,6 +301,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.pause": "⏸",
 	"icon.loop": "↻",
 	"icon.folder": "📁",
+	"icon.worktree": "🌳",
 	"icon.search": "🔍",
 	"icon.scratchFolder": "🗑",
 	"icon.file": "📄",
@@ -432,6 +436,8 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.inspectImage": "🖼",
 	"tool.goal": "◎",
 	"tool.irc": "✉",
+	"tool.delete": "🗑",
+	"tool.move": "➜",
 };
 
 const NERD_SYMBOLS: SymbolMap = {
@@ -559,6 +565,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.search": "\uf002",
 	// pick:  | alt:
 	"icon.scratchFolder": "\uf014",
+	// pick: nf-fa-sitemap | alt: nf-cod-list_tree
+	"icon.worktree": "\uf0e8",
 	// pick:  | alt:  
 	"icon.file": "\uf15b",
 	// pick:  | alt:  ⎇
@@ -739,6 +747,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tool.inspectImage": "\uEAEA",
 	"tool.goal": "\uEBF8",
 	"tool.irc": "\uF086",
+	"tool.delete": "\uf12d",
+	"tool.move": "\uf061",
 };
 
 const ASCII_SYMBOLS: SymbolMap = {
@@ -806,6 +816,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.pause": "||",
 	"icon.loop": "loop",
 	"icon.folder": "[D]",
+	"icon.worktree": "[wt]",
 	"icon.search": "[/]",
 	"icon.scratchFolder": "[T]",
 	"icon.file": "[F]",
@@ -938,6 +949,8 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tool.inspectImage": "[i]",
 	"tool.goal": "(o)",
 	"tool.irc": "irc",
+	"tool.delete": "rm",
+	"tool.move": "mv",
 };
 
 const SYMBOL_PRESETS: Record<SymbolPreset, SymbolMap> = {
@@ -1795,6 +1808,7 @@ export class Theme {
 			pause: this.#symbols["icon.pause"],
 			loop: this.#symbols["icon.loop"],
 			folder: this.#symbols["icon.folder"],
+			worktree: this.#symbols["icon.worktree"],
 			scratchFolder: this.#symbols["icon.scratchFolder"],
 			file: this.#symbols["icon.file"],
 			git: this.#symbols["icon.git"],
@@ -2831,23 +2845,36 @@ export function getSymbolTheme(): SymbolTheme {
 
 let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
+let markdownMermaidRendering = true;
+
+export function setMarkdownMermaidRendering(enabled: boolean): void {
+	if (markdownMermaidRendering === enabled) return;
+	markdownMermaidRendering = enabled;
+	cachedMarkdownTheme = undefined;
+}
 
 export function getMarkdownTheme(): MarkdownTheme {
 	if (cachedMarkdownTheme !== undefined && cachedMarkdownThemeRef === theme) {
 		return cachedMarkdownTheme;
 	}
-	// Mermaid ASCII diagrams render with the active palette so they read as
-	// content rather than raw monochrome. Roles mirror the SVG renderer's
-	// mapping; `text`/`muted`/`border`/`borderMuted`/`accent` exist in every theme.
-	const mermaidColorMode = theme.getColorMode() === "truecolor" ? "truecolor" : "ansi256";
-	const mermaidTheme = {
-		fg: theme.getColorHex("text"),
-		border: theme.getColorHex("border"),
-		line: theme.getColorHex("muted"),
-		arrow: theme.getColorHex("accent"),
-		corner: theme.getColorHex("muted"),
-		junction: theme.getColorHex("borderMuted"),
-	};
+	const mermaid = markdownMermaidRendering
+		? (() => {
+				// Mermaid ASCII diagrams render with the active palette so they read as
+				// content rather than raw monochrome. Roles mirror the SVG renderer's
+				// mapping; `text`/`muted`/`border`/`borderMuted`/`accent` exist in every theme.
+				const mermaidColorMode =
+					theme.getColorMode() === "truecolor" ? ("truecolor" as const) : ("ansi256" as const);
+				const mermaidTheme = {
+					fg: theme.getColorHex("text"),
+					border: theme.getColorHex("border"),
+					line: theme.getColorHex("muted"),
+					arrow: theme.getColorHex("accent"),
+					corner: theme.getColorHex("muted"),
+					junction: theme.getColorHex("borderMuted"),
+				};
+				return { mermaidColorMode, mermaidTheme };
+			})()
+		: undefined;
 	const markdownTheme: MarkdownTheme = {
 		heading: (text: string) => theme.fg("mdHeading", text),
 		link: (text: string) => theme.fg("mdLink", text),
@@ -2864,8 +2891,14 @@ export function getMarkdownTheme(): MarkdownTheme {
 		underline: (text: string) => theme.underline(text),
 		strikethrough: (text: string) => chalk.strikethrough(text),
 		symbols: getSymbolTheme(),
-		resolveMermaidAscii: (source, maxWidth) =>
-			resolveMermaidAscii(source, { maxWidth, theme: mermaidTheme, colorMode: mermaidColorMode }),
+		resolveMermaidAscii: mermaid
+			? (source, maxWidth) =>
+					resolveMermaidAscii(source, {
+						maxWidth,
+						theme: mermaid.mermaidTheme,
+						colorMode: mermaid.mermaidColorMode,
+					})
+			: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 			const highlighted = highlightCached(code, validLang, theme);

@@ -38,7 +38,6 @@ import type { McpConnectionStatusEvent } from "./startup-events";
 import type { MCPToolDetails } from "./tool-bridge";
 import { MCPTool } from "./tool-bridge";
 import type { MCPToolCache } from "./tool-cache";
-import { HttpTransport } from "./transports/http";
 import type {
 	MCPGetPromptResult,
 	MCPPrompt,
@@ -49,6 +48,7 @@ import type {
 	MCPServerConfig,
 	MCPServerConnection,
 	MCPToolDefinition,
+	MCPTransport,
 } from "./types";
 import { MCPNotificationMethods } from "./types";
 
@@ -57,6 +57,13 @@ type ToolLoadResult = {
 	serverTools: MCPToolDefinition[];
 };
 
+interface AuthRefreshableMCPTransport extends MCPTransport {
+	onAuthError?: () => Promise<Record<string, string> | null>;
+}
+
+function isAuthRefreshableMCPTransport(transport: MCPTransport): transport is AuthRefreshableMCPTransport {
+	return "onAuthError" in transport;
+}
 type TrackedPromise<T> = {
 	promise: Promise<T>;
 	status: "pending" | "fulfilled" | "rejected";
@@ -497,12 +504,12 @@ export class MCPManager {
 						this.#connections.set(name, connection);
 					}
 
-					// Wire auth refresh for HTTP transports so 401s trigger token refresh.
+					// Wire auth refresh for HTTP-like transports so 401s trigger token refresh.
 					// Gate on a resolvable managed credential, not on the auth block:
 					// definition-only configs (url-keyed fallback) get Bearer injection
 					// too and need the same mid-session refresh hook.
 					if (
-						connection.transport instanceof HttpTransport &&
+						isAuthRefreshableMCPTransport(connection.transport) &&
 						lookupMcpOAuthCredential(this.#authStorage, config)
 					) {
 						connection.transport.onAuthError = async () => {
@@ -1071,9 +1078,9 @@ export class MCPManager {
 
 		this.#connections.set(name, connection);
 
-		// Wire auth refresh for HTTP transports, and reconnect for any transport.
+		// Wire auth refresh for HTTP-like transports, and reconnect for any transport.
 		// Same gate as connectServers: any resolvable managed credential.
-		if (connection.transport instanceof HttpTransport && lookupMcpOAuthCredential(this.#authStorage, config)) {
+		if (isAuthRefreshableMCPTransport(connection.transport) && lookupMcpOAuthCredential(this.#authStorage, config)) {
 			connection.transport.onAuthError = async () => {
 				const refreshed = await this.#resolveAuthConfig(config, { forceRefresh: true });
 				if (refreshed.type === "http" || refreshed.type === "sse") {
@@ -1339,8 +1346,15 @@ export class MCPManager {
 				const tokenUrl = material?.tokenUrl;
 				const clientId = material?.clientId;
 				const clientSecret = material?.clientSecret;
-				const resource =
-					material?.resource ?? (config.type === "http" || config.type === "sse" ? config.url : undefined);
+				// `authorizationUrl` only lives on the embedded credential form;
+				// legacy `MCPAuthConfig` rows never carried it. Required to filter
+				// same-origin resource indicators on refresh when the authorize and
+				// token endpoints sit on different origins (issue #3502 review
+				// follow-up).
+				const authorizationUrl = material && "authorizationUrl" in material ? material.authorizationUrl : undefined;
+				const resourceIsFallback =
+					!material?.resource && (config.type === "http" || config.type === "sse") && Boolean(config.url);
+				const resource = material?.resource ?? (resourceIsFallback ? config.url : undefined);
 				// Proactive refresh: 5-minute buffer before expiry
 				// Force refresh: on 401/403 auth errors (revoked tokens, clock skew, missing expires)
 				const REFRESH_BUFFER_MS = 5 * 60_000;
@@ -1354,6 +1368,7 @@ export class MCPManager {
 							clientId,
 							clientSecret,
 							resource,
+							{ authorizationUrl, stripSameOriginResource: resourceIsFallback },
 						);
 						// Spread the old credential first so embedded refresh material survives rotation.
 						const refreshedCredential: MCPStoredOAuthCredential = {
@@ -1362,7 +1377,8 @@ export class MCPManager {
 							tokenUrl,
 							clientId,
 							clientSecret,
-							resource,
+							resource: resourceIsFallback ? undefined : resource,
+							authorizationUrl,
 						};
 						await this.#authStorage.set(credentialId, refreshedCredential);
 						credential = refreshedCredential;
