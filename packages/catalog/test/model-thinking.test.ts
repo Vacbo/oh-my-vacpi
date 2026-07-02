@@ -372,6 +372,12 @@ describe("model thinking derivation", () => {
 			provider: "amazon-bedrock",
 		});
 		const sonnet46 = createModel({ id: "claude-sonnet-4.6", api: "anthropic-messages", provider: "anthropic" });
+		const sonnet5 = createModel({ id: "claude-sonnet-5", api: "anthropic-messages", provider: "anthropic" });
+		const sonnet5Bedrock = createModel({
+			id: "global.anthropic.claude-sonnet-5",
+			api: "bedrock-converse-stream",
+			provider: "amazon-bedrock",
+		});
 		const mythos = createModel({ id: "claude-mythos-5", api: "anthropic-messages", provider: "anthropic" });
 		const mythosBedrock = createModel({
 			id: "global.anthropic.claude-mythos-5",
@@ -404,6 +410,8 @@ describe("model thinking derivation", () => {
 		expect(sonnet45Bedrock.thinking?.mode).toBe("budget");
 		expect(opus46.thinking?.mode).toBe("anthropic-adaptive");
 		expect(sonnet46.thinking?.mode).toBe("anthropic-adaptive");
+		expect(sonnet5.thinking?.mode).toBe("anthropic-adaptive");
+		expect(sonnet5Bedrock.thinking?.mode).toBe("anthropic-adaptive");
 		expect(mythosBedrock.thinking?.mode).toBe("anthropic-adaptive");
 		// Opus 4.6 ladder is [minimal, low, medium, high, max] — no in-between "xhigh" API level.
 		expect(opus46.thinking?.efforts).toEqual([Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.Max]);
@@ -479,21 +487,24 @@ describe("model thinking derivation", () => {
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.XHigh)).toBe("max");
 		expect(mapEffortToAnthropicAdaptiveEffort(mythos, Effort.High)).toBe("xhigh");
 		expect(mapEffortToAnthropicAdaptiveEffort(mythosBedrock, Effort.XHigh)).toBe("max");
+		expect(mapEffortToAnthropicAdaptiveEffort(sonnet5, Effort.High)).toBe("xhigh");
+		expect(mapEffortToAnthropicAdaptiveEffort(sonnet5Bedrock, Effort.XHigh)).toBe("max");
 		// Bedrock Converse keeps the four-tier legacy mapping and only bakes supported efforts.
 		expect(opus47Bedrock.thinking?.effortMap).toEqual({ minimal: "low", max: "max" });
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.High)).toBe("high");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.XHigh)).toBe("max");
+		expect(mapEffortToAnthropicAdaptiveEffort(sonnet5Bedrock, Effort.High)).toBe("high");
 		// Max maps to "max" on every Opus 4.6+ adaptive backend.
 		expect(mapEffortToAnthropicAdaptiveEffort(opus46, Effort.Max)).toBe("max");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47, Effort.Max)).toBe("max");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus47Bedrock, Effort.Max)).toBe("max");
 		expect(mapEffortToAnthropicAdaptiveEffort(opus46Bedrock, Effort.Max)).toBe("max");
-		// Sonnet 4.6 caps at high — neither XHigh nor Max is in the supported set.
+		// Sonnet 4.6 caps at high; neither XHigh nor Max is in the supported set.
 		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.XHigh)).toThrow(/not supported/);
 		expect(() => mapEffortToAnthropicAdaptiveEffort(sonnet46, Effort.Max)).toThrow(/not supported/);
 	});
 
-	it("bakes adaptive display support for Opus 4.7+ and Fable/Mythos 5", () => {
+	it("bakes adaptive display support for Opus 4.7+, Sonnet 5+, and Fable/Mythos 5", () => {
 		const opus46 = createModel({ id: "claude-opus-4.6", api: "anthropic-messages", provider: "anthropic" });
 		const opus47 = createModel({ id: "claude-opus-4-7", api: "anthropic-messages", provider: "anthropic" });
 		// Dotted and dashed version forms are equivalent; bare dated ids stay Opus 4.0.
@@ -509,6 +520,12 @@ describe("model thinking derivation", () => {
 			api: "bedrock-converse-stream",
 			provider: "amazon-bedrock",
 		});
+		const sonnet5 = createModel({ id: "claude-sonnet-5", api: "anthropic-messages", provider: "anthropic" });
+		const sonnet5Bedrock = createModel({
+			id: "global.anthropic.claude-sonnet-5",
+			api: "bedrock-converse-stream",
+			provider: "amazon-bedrock",
+		});
 
 		expect(opus46.thinking?.supportsDisplay).toBeUndefined();
 		expect(opus47.thinking?.supportsDisplay).toBe(true);
@@ -516,6 +533,8 @@ describe("model thinking derivation", () => {
 		expect(opus4Dated.thinking?.supportsDisplay).toBeUndefined();
 		expect(fable.thinking?.supportsDisplay).toBe(true);
 		expect(fableBedrock.thinking?.supportsDisplay).toBe(true);
+		expect(sonnet5.thinking?.supportsDisplay).toBe(true);
+		expect(sonnet5Bedrock.thinking?.supportsDisplay).toBe(true);
 	});
 
 	it("backfills wire facts onto explicit thinking, explicit values winning", () => {
@@ -576,10 +595,12 @@ describe("model thinking derivation", () => {
 	it("bakes sampling-param rejection into anthropic compat", () => {
 		const sonnet45 = createModel({ id: "claude-sonnet-4-5", api: "anthropic-messages", provider: "anthropic" });
 		const opus47 = createModel({ id: "claude-opus-4.7", api: "anthropic-messages", provider: "anthropic" });
+		const sonnet5 = createModel({ id: "claude-sonnet-5", api: "anthropic-messages", provider: "anthropic" });
 		const fable = createModel({ id: "claude-fable-5", api: "anthropic-messages", provider: "anthropic" });
 
 		expect(sonnet45.compat.supportsSamplingParams).toBe(true);
 		expect(opus47.compat.supportsSamplingParams).toBe(false);
+		expect(sonnet5.compat.supportsSamplingParams).toBe(false);
 		expect(fable.compat.supportsSamplingParams).toBe(false);
 	});
 
@@ -735,11 +756,17 @@ describe("model thinking runtime helpers", () => {
 			api: "openai-completions",
 			provider: "openrouter",
 		});
-
+		const sonnet5 = createModel({
+			id: "anthropic/claude-sonnet-5",
+			api: "openai-completions",
+			provider: "openrouter",
+		});
 		expect(fable.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
 		expect(opus46.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
 		expect(sonnet46.thinking?.efforts.at(-1)).toBe(Effort.High);
+		expect(sonnet5.thinking?.efforts.at(-1)).toBe(Effort.XHigh);
 		expect(requireSupportedEffort(fable, Effort.XHigh)).toBe(Effort.XHigh);
+		expect(requireSupportedEffort(sonnet5, Effort.XHigh)).toBe(Effort.XHigh);
 	});
 
 	it("enables xhigh for openai-responses and openai-codex-responses APIs", () => {

@@ -14,7 +14,15 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { glob, type SummaryResult, summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { getRemoteDir, type ImageMetadata, logger, prompt, readImageMetadata, untilAborted } from "@oh-my-pi/pi-utils";
+import {
+	getRemoteDir,
+	type ImageMetadata,
+	isProbablyBinary,
+	logger,
+	prompt,
+	readImageMetadata,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { LRUCache } from "lru-cache/raw";
 import {
@@ -69,7 +77,6 @@ import {
 } from "./conflict-detect";
 import {
 	executeReadUrl,
-	isReadableUrlPath,
 	loadReadUrlCacheEntry,
 	parseReadUrlTarget,
 	type ReadUrlToolDetails,
@@ -87,6 +94,7 @@ import {
 import {
 	expandPath,
 	formatPathRelativeToCwd,
+	isReadableUrlPath,
 	type LineRange,
 	parseLineRanges,
 	pathTargetsSsh,
@@ -320,7 +328,14 @@ function formatMergedBraceLine(
 
 function countTextLines(text: string): number {
 	if (text.length === 0) return 0;
-	return text.split("\n").length;
+	// Count newlines directly instead of allocating an array via split("\n").
+	// Called on every read of file content; the result is identical (N newlines
+	// ⇒ N+1 lines for non-empty text).
+	let lines = 1;
+	for (let i = 0; i < text.length; i++) {
+		if (text.charCodeAt(i) === 10) lines++;
+	}
+	return lines;
 }
 
 function contiguousLineNumbers(startLine: number, count: number): number[] {
@@ -1321,7 +1336,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				startLine: startNum,
 				lineNumbers: Array.from({ length: lineCount }, (_, i) => startNum + i),
 			};
-			if (shouldAddHashLines) seenLines = contiguousLineNumbers(startNum, countTextLines(content));
+			if (shouldAddHashLines) seenLines = contiguousLineNumbers(startNum, lineCount);
 			const formatted = formatTextWithMode(content, startNum, shouldAddHashLines, shouldAddLineNumbers);
 			if (!hashContext || emittedHashlineHeader) return formatted;
 			emittedHashlineHeader = true;
@@ -2325,6 +2340,25 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				content = [{ type: "text", text: `[Cannot read ${ext} file: conversion failed]` }];
 			}
 		} else {
+			// Binary sniff before any UTF-8 text materialization. A binary file
+			// (font, object, archive, packed blob) decodes to NUL/control bytes and
+			// U+FFFD mojibake that corrupts the terminal and burns context. Images,
+			// notebooks, and markit-convertible documents were already routed above;
+			// everything reaching here is meant to be plain text. `:raw` stays the
+			// explicit escape hatch for reading bytes verbatim. This single guard
+			// covers both the multi-range and single-range disk paths below.
+			if (!isRawSelector(parsed) && (await isProbablyBinary(absolutePath))) {
+				return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
+					.text(
+						prependSuffixResolutionNotice(
+							`[Cannot read binary file '${formatPathRelativeToCwd(absolutePath, this.session.cwd)}' (${formatBytes(fileSize)}); not valid UTF-8 text. Use ':raw' to read bytes verbatim.]`,
+							suffixResolution,
+						),
+					)
+					.sourcePath(absolutePath)
+					.done();
+			}
+
 			if (
 				parsed.kind === "none" &&
 				this.session.settings.get("read.summarize.enabled") &&
@@ -2460,33 +2494,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					// counts in `truncation` keep reflecting the source, not the trimmed
 					// view — column truncation surfaces separately via `.limits()`.
 					const rawSelector = isRawSelector(parsed);
-					// Binary sniff: NUL bytes mean the file is not displayable text
-					// (binary, or UTF-16 which has NULs in the ASCII range) — emit a
-					// notice instead of mojibake filling the line budget. `:raw`
-					// stays an explicit escape hatch.
-					//
-					// `collectedLines` covers the common case where at least one
-					// physical line terminates within the byte budget. Binary blobs
-					// without newlines (videos, archives, packed JSON) leave it
-					// empty; their bytes only land in `firstLinePreview`, which the
-					// `firstLineExceedsLimit` branch below would otherwise emit
-					// verbatim. Sniffing the preview here keeps the refusal uniform.
-					if (!rawSelector) {
-						const hasNul = (text: string): boolean => text.includes("\u0000");
-						const binaryDetected =
-							collectedLines.some(hasNul) || (firstLinePreview !== undefined && hasNul(firstLinePreview.text));
-						if (binaryDetected) {
-							return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
-								.text(
-									prependSuffixResolutionNotice(
-										`[Cannot read binary file '${formatPathRelativeToCwd(absolutePath, this.session.cwd)}' (${formatBytes(fileSize)}); content contains NUL bytes (binary or UTF-16 encoded)]`,
-										suffixResolution,
-									),
-								)
-								.sourcePath(absolutePath)
-								.done();
-						}
-					}
 					const maxColumns = resolveOutputMaxColumns(this.session.settings);
 					// Column truncation is display-only. `collectedLines` MUST stay
 					// byte-for-byte with the on-disk content so the snapshot recorded

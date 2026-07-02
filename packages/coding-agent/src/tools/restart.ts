@@ -54,6 +54,7 @@ export class RestartTool implements AgentTool<typeof restartSchema, RestartToolD
 	readonly approval = "exec" as const;
 	readonly label = "Restart";
 	readonly summary = "Restart omp in place and resume this session on the rebuilt code";
+	readonly loadMode = "discoverable" as const;
 	readonly description: string;
 	readonly parameters = restartSchema;
 	readonly strict = true;

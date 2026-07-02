@@ -1,7 +1,5 @@
 # Changelog
-
 ## [Unreleased]
-
 ### oh-my-vacpi (fork)
 
 #### Added
@@ -19,6 +17,115 @@
 
 - Fixed Anthropic adaptive-thinking responses being truncated mid-emission by `stop_reason: "max_tokens"` because `buildParams` defaulted `max_tokens` to `model.maxTokens / 3` for *every* mode, but adaptive thinking self-allocates the thinking budget out of the same per-response ceiling — so a long thinking burst plus a large structured `tool_use` (e.g. a multi-phase `todo_write`) could exceed the `/3` cap, trigger `max_tokens`, and silently install a partial-JSON-repaired truncated call. `ensureMaxTokensForThinking` now restores the deleted adaptive-mode branch: when the resolved thinking shape is `{ type: "adaptive" }` and the caller did not pass an explicit `maxTokens`, lift `params.max_tokens` to `model.maxTokens` so the model gets the full documented per-response capacity. Budget-mode behaviour (`type: "enabled"` + `budget_tokens`) and explicit caller overrides are unchanged
 - Restored the legacy `Type` export from `@oh-my-pi/pi-ai` for fork compatibility.
+## [16.3.1] - 2026-07-02
+
+### Changed
+
+- Removed automated injection of reasoning suppression prompts in OpenAI responses
+
+## [16.3.0] - 2026-07-02
+
+### Added
+
+- Added opt-in support for Anthropic's server-side fallback beta (server-side-fallback-2026-06-01) on the anthropic-messages provider, including support for AnthropicOptions.fallbacks and automatic filtering of fallback blocks during cross-provider message transformations.
+
+### Changed
+
+- Improved stream healing for official first-party endpoints (Anthropic, OpenAI, and OpenAI Codex) by skipping leaked-thinking healing, preventing misfires on legitimate code blocks while maintaining healing for third-party gateways and custom base URLs.
+- Updated CoreWeave Serverless Inference login instructions to clarify persisting COREWEAVE_PROJECT in shell startup files.
+
+### Fixed
+
+- Fixed an issue where same-model Anthropic message replays incorrectly demoted unsigned thinking into textual content during API calls
+- Fixed a performance issue where broker usage fetch failures were not cached, causing redundant network requests when the broker is offline.
+- Fixed Xiaomi MiMo API key validation to use the supported mimo-v2.5 model.
+- Fixed certificate verification errors for custom gateways behind private CA bundles by ensuring NODE_EXTRA_CA_CERTS is respected across all provider fetches.
+- Fixed Claude Fable demoted-thinking replay to use markdown-italic assistant prose instead of <thinking> tags, preventing context issues after model switches.
+- Fixed OpenAI Responses replay errors (400 Bad Request) caused by missing reasoning items during history replay.
+
+## [16.2.13] - 2026-07-01
+
+### Fixed
+
+- Fixed pre-5.4 OpenAI Codex models (`gpt-5.1-codex`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`) rejecting requests with `Unsupported parameter: 'reasoning.summary' is not supported with this model` by gating `reasoning.summary` behind the same gpt-5.4 wire floor as `reasoning.context: "all_turns"`.
+
+## [16.2.12] - 2026-07-01
+
+### Changed
+
+- Improved streaming performance for Cursor and Devin providers by optimizing mid-stream tool-call argument parsing to prevent UI stalls when handling large payloads.
+
+### Fixed
+
+- Fixed issues with tool call streaming where tool call IDs, partial JSON payloads, or late-arriving IDs could be lost, filtered, or incorrectly initialized.
+- Fixed an issue where stream healing for leaked thinking blocks could replace live tool-call blocks with empty-id placeholders, breaking streamed tool arguments on Anthropic-compatible streams.
+- Fixed an issue where stalled auth-gateway SSE responses could hang indefinitely in pi-native streams by ensuring first-event and idle timeout watchdogs are properly honored.
+- Fixed cross-turn tool-call loops going undetected by adding a guard for consecutive identical tool calls. (#3971)
+
+## [16.2.11] - 2026-07-01
+
+### Fixed
+
+- Fixed streaming UI glitches and resolved an issue where invalid empty tool call IDs were persisted in the chat history.
+
+## [16.2.10] - 2026-06-30
+
+### Added
+
+- Added streaming support for keyed parameter argument deltas in XML-family in-band tool call scanners (Anthropic, DeepSeek, XML, Minimax)
+
+### Changed
+
+- Improved native tool-call passthrough in `wrapInbandToolStream` to accurately mirror live streaming IDs, arguments, and partial JSON states from the underlying provider
+
+### Fixed
+
+- Fixed a bug where tool calls with empty or missing IDs were not detected as malformed, causing API validation failures (e.g., 400 errors with Anthropic) on subsequent requests
+- Raised Gemini header runaway threshold to prevent premature interruption of complex reasoning loops
+- Fixed leaked ` ```thinking ` fences with nested language-tagged Markdown code blocks so inner fences remain inside structured thinking instead of leaking as visible reply text.
+
+## [16.2.9] - 2026-06-30
+
+### Added
+
+- Added `OAuthCallbackFlowOptions.allowPortFallback` to allow disabling random-port fallback, enabling strict port enforcement and early configuration errors for OAuth flows with static redirect URIs.
+
+### Changed
+
+- Improved `OAuthCallbackFlow` port conflict error messages to include the busy port, configured redirect URI, and actionable remediation steps.
+
+### Fixed
+
+- Fixed an issue where malformed tool-call JSON from local Ollama or llama.cpp models was incorrectly retried as generic 500 errors, now surfacing a clear recovery message.
+- Fixed a race condition in OAuth callback flows where abort signals triggered before the callback listener was registered were ignored.
+
+## [16.2.7] - 2026-06-30
+
+### Added
+
+- Added service tier support for Google Gemini and Vertex AI, including model-specific service tier configurations via ServiceTierByFamily.
+- Added Google Vertex AI Interactions API support for Gemini 3+ models by default, with automatic fallback to :streamGenerateContent and a useInteractionsApi: false option to force standard generation.
+- Added support for explicit Vertex bearer access tokens via GOOGLE_CLOUD_ACCESS_TOKEN or CLOUDSDK_AUTH_ACCESS_TOKEN environment variables.
+
+### Changed
+
+- Updated service tier logic to use per-provider configurations instead of global scopes.
+- Refactored priority request billing and accounting to better align with specific provider capabilities.
+- Updated API key resolution precedence so explicit environment variables (e.g., GEMINI_API_KEY) override stored or broker-migrated static API keys, while deliberate OAuth logins still take highest precedence.
+
+### Fixed
+
+- Improved Vertex AI reliability by automatically falling back to global endpoints on 404 errors.
+- Fixed safety setting application for Google Vertex AI models.
+- Fixed Kimi Code's Anthropic-compatible request path to keep thinking enabled and downgrade forced tool choice for Kimi K2.7 Code title generation.
+- Fixed leaked reasoning fences (such as ```thinking or <think>) across all providers by splitting them into structured thinking blocks during streaming.
+- Fixed Codex requests failing with unsupported all_turns errors on older models (gpt-5.1 and gpt-5.3) by gating the reasoning.context: "all_turns" default to gpt-5.4+ models.
+
+## [16.2.6] - 2026-06-29
+
+### Fixed
+
+- Fixed Antigravity usage reporting to correctly infer daily and weekly quota windows from unlabeled reset-only rows, preventing Cloud Code Assist payloads from collapsing these counters into the default category.
 
 ## [16.2.5] - 2026-06-28
 

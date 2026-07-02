@@ -41,6 +41,24 @@ git fetch --all --tags
 
 ---
 
+## 2026-07-02 — Merged upstream v16.3.2: schema break adopted, fork controls retained   `[done]` `[high]`
+
+**Merge**: fork `16.2.5` → upstream `v16.3.2`.
+
+**Divergence calls**:
+- **Adopted upstream's `pi_walker::WalkRequest` workspace scan** instead of resurrecting the fork's deleted `ignore::WalkBuilder` cancellation visitor. Upstream now owns cancellation during collection via `collect_with_heartbeat`; the fork re-added one cheap `ct.heartbeat()?` in the post-collection AGENTS.md loop so aborts still cut off local per-entry stat work.
+- **Preserved `todo_write` as the model-facing todo tool name** while adopting upstream's new reminder paths. Literal upstream `"todo"` comparisons in event handling, goal context, mid-run nudges, and plan prompts were re-homed to `todo_write`; obsolete anchored reminder UI clearing was dropped with upstream's replacement mechanism.
+- **Synthesized Anthropic adaptive effort policy**: upstream's `isAnthropicAdaptiveGenAtLeast` eligibility brings Sonnet 5+ and future adaptive generations; the fork's API-specific ladders remain so Bedrock Converse keeps `[minimal..high, max]` without baking unsupported `xhigh`, while direct Messages models get the richer `xhigh`/`max` ladder when supported.
+- **Kept fork selection restoration and live-session teardown hooks** in the new upstream session-switch/shutdown flow. Upstream's checkpoint-rewind rehydration and bounded Mnemopi dispose were added around the fork's broader tool-selection restoration and live-session unregister path.
+- **Normalized generated/catalog and changelog conflicts by source of truth**: `models.json` conflict picks were treated as temporary and must be regenerated from catalog sources; package changelogs keep fork entries under `### oh-my-vacpi (fork)` and take upstream released sections byte-identical from `v16.3.2`.
+
+**Residual levers**:
+- The upstream `paths`→`path` search-tool schema break touches prompts, compatibility shims, and extension callers. Keep fork-specific shims only where an observable contract still requires them; otherwise follow upstream.
+- `todo_write` remains the highest-frequency merge hotspot. Any new upstream todo reminder, goal, or tool-selection path probably needs a literal-name audit.
+- `models.json` must be regenerated after this merge before final verification; hand-resolved JSON is only an unblocker for conflict resolution.
+
+---
+
 ## 2026-06-28 — Merged upstream v16.2.5: upstream tool rename adopted, fork updater retained   `[done]` `[high]`
 
 **Merge**: fork `16.1.19` → upstream `v16.2.5`.

@@ -58,6 +58,7 @@ import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from 
 import {
 	cachedRenderedString,
 	createRenderedStringCache,
+	Ellipsis,
 	formatDiagnostics,
 	formatErrorDetail,
 	formatExpandHint,
@@ -67,6 +68,8 @@ import {
 	type RenderedStringCache,
 	replaceTabs,
 	shortenPath,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
 } from "./render-utils";
 import {
 	deleteRowByKey,
@@ -185,6 +188,18 @@ function appendNoteToResult(result: AgentToolResult<WriteToolDetails>, note: str
 	} else {
 		result.content.push({ type: "text", text: note });
 	}
+}
+
+function emitWriteProgress(
+	onUpdate: AgentToolUpdateCallback<WriteToolDetails> | undefined,
+	content: string,
+	displayPath: string,
+	resolvedPath?: string,
+): void {
+	onUpdate?.({
+		content: [{ type: "text", text: `Writing ${content.length} bytes to ${shortenPath(displayPath)}...` }],
+		details: resolvedPath ? { resolvedPath } : {},
+	});
 }
 
 /**
@@ -819,7 +834,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		_toolCallId: string,
 		{ path: rawPath, content }: WriteParams,
 		signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<WriteToolDetails>,
+		onUpdate?: AgentToolUpdateCallback<WriteToolDetails>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		// Strip a hashline `[path#TAG]` wrapper up front so every downstream
@@ -845,6 +860,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					// Handler-owned writes (vault:// notes, host URIs) mutate user
 					// data outside the local sandbox — plan mode must reject them.
 					enforcePlanModeWrite(this.session, path, { op: "update" });
+					emitWriteProgress(onUpdate, cleanContent, path);
 					await handler.write(parsed, cleanContent, { cwd: this.session.cwd, signal });
 					let resultText = `Successfully wrote ${cleanContent.length} bytes to ${path}`;
 					if (stripped) {
@@ -865,6 +881,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					);
 				}
 				const pathGuard = conflictUri.recoveredPrefix;
+				emitWriteProgress(onUpdate, cleanContent, path);
 				const result =
 					conflictUri.id === "*"
 						? await this.#resolveAllConflicts(cleanContent, stripped, signal, context, pathGuard)
@@ -887,6 +904,14 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					op: resolvedArchivePath.exists ? "update" : "create",
 				});
 
+				emitWriteProgress(
+					onUpdate,
+					cleanContent,
+					`${formatPathRelativeToCwd(resolvedArchivePath.absolutePath, this.session.cwd)}:${
+						resolvedArchivePath.archiveSubPath
+					}`,
+					resolvedArchivePath.absolutePath,
+				);
 				const archiveResult = await this.#writeArchiveEntry(cleanContent, resolvedArchivePath);
 				if (stripped) {
 					const firstText = archiveResult.content.find(
@@ -904,6 +929,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (resolvedSqlitePath) {
 				enforcePlanModeWrite(this.session, resolvedSqlitePath.sqlitePath, { op: "update" });
 
+				emitWriteProgress(onUpdate, cleanContent, path, resolvedSqlitePath.absolutePath);
 				const sqliteResult = await this.#writeSqliteRow(path, cleanContent, resolvedSqlitePath);
 				if (stripped) {
 					const firstText = sqliteResult.content.find(
@@ -926,11 +952,13 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				await assertEditableFile(absolutePath, path);
 			}
 
+			const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
+			emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
+
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
 			// artifacts such as local:// plans are owned by OMP, not the editor.
 			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent)) {
 				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
-				const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
 				const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
 				let resultText = header ? `${header}\n${writeLine}` : writeLine;
@@ -951,7 +979,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			this.session.bumpFileMutationVersion?.(absolutePath);
 			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
 
-			const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
 			const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
 			let resultText = header ? `${header}\n${writeLine}` : writeLine;
@@ -1171,14 +1198,19 @@ export const writeToolRenderer = {
 			}));
 		}
 
+		const isPartial = options.isPartial === true;
+		const progressText = result.content?.find(c => c.type === "text")?.text ?? "";
 		const lineCount = countLines(fileContent);
 		const lineSuffix = formatLineCountSuffix(lineCount, uiTheme);
-		const execSuffix = result.details?.madeExecutable
-			? `${uiTheme.fg("dim", " · ")}${uiTheme.fg("success", "made executable!")}`
-			: "";
+		const execSuffix =
+			!isPartial && result.details?.madeExecutable
+				? `${uiTheme.fg("dim", " · ")}${uiTheme.fg("success", "made executable!")}`
+				: "";
 		const header = renderStatusLine(
 			{
-				iconOverride: uiTheme.styledSymbol("tool.write", "accent"),
+				icon: isPartial ? "running" : undefined,
+				iconOverride: isPartial ? undefined : uiTheme.styledSymbol("tool.write", "accent"),
+				spinnerFrame: options.spinnerFrame,
 				title: "Write",
 				description: `${langIcon} ${pathDisplay}${lineSuffix}${execSuffix}`,
 			},
@@ -1190,7 +1222,15 @@ export const writeToolRenderer = {
 		return framedBlock(uiTheme, width => {
 			const { expanded } = options;
 			let body = renderContentPreview(fileContent, expanded, lang, uiTheme, previewCache);
-			if (diagnostics) {
+			if (isPartial && progressText) {
+				const safeProgressText = truncateToWidth(
+					replaceTabs(progressText),
+					TRUNCATE_LENGTHS.LINE,
+					Ellipsis.Unicode,
+				);
+				body = `${uiTheme.fg("muted", safeProgressText)}${body ? `\n${body}` : ""}`;
+			}
+			if (!isPartial && diagnostics) {
 				const diagText = formatDiagnostics(diagnostics, expanded, uiTheme, fp =>
 					uiTheme.getLangIcon(getLanguageFromPath(fp)),
 				);
@@ -1205,7 +1245,7 @@ export const writeToolRenderer = {
 			return {
 				header,
 				sections: bodyLines.length > 0 ? [{ lines: bodyLines }] : [],
-				state: "success",
+				state: isPartial ? "pending" : "success",
 				borderColor: "borderMuted",
 				width,
 			};

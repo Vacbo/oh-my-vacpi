@@ -1,6 +1,6 @@
 import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { FetchImpl, ImageContent, Model, ServiceTier, ToolChoice } from "@oh-my-pi/pi-ai";
+import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
@@ -44,7 +44,7 @@ import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, normalizeToolNames } from "./builtin-names";
-import { type CheckpointState, CheckpointTool, RewindTool } from "./checkpoint";
+import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
@@ -287,8 +287,8 @@ export interface ToolSession {
 	getActiveModelString?: () => string | undefined;
 	/** Get the current session model object (provider/api capabilities), regardless of how it was chosen. */
 	getActiveModel?: () => Model | undefined;
-	/** Get the session's live effective service tier (undefined = none). Source of truth for subagent `serviceTierSubagent: inherit`. */
-	getServiceTier?: () => ServiceTier | undefined;
+	/** Get the session's live per-family service tiers (undefined = none). Source of truth for subagent `tier.subagent: inherit`. */
+	getServiceTierByFamily?: () => ServiceTierByFamily | undefined;
 	/** Auth storage for passing to subagents (avoids re-discovery) */
 	authStorage?: import("../session/auth-storage").AuthStorage;
 	/** Model registry for passing to subagents (avoids re-discovery) */
@@ -385,6 +385,8 @@ export interface ToolSession {
 	getCheckpointState?: () => CheckpointState | undefined;
 	/** Set or clear active checkpoint state. */
 	setCheckpointState?: (state: CheckpointState | null) => void;
+	/** Get the most recent completed rewind, if this session just rewound a checkpoint. */
+	getLastCompletedRewind?: () => CompletedRewindState | undefined;
 
 	/** Per-session snapshot store of file contents as last shown to the model
 	 *  by `read`/`search`. Used by hashline anchor-stale recovery to
@@ -482,7 +484,7 @@ export function computeForceActiveToolNames(settings: Settings, hasTool: (name: 
  * via `search_tool_bm25` and activates them on demand. A tool survives hiding
  * when it is essential, explicitly requested, restored from a prior selection,
  * or required by a forced tool_choice feature (`forceActive`). The last case is
- * load-bearing: a named tool_choice (e.g. the eager `todo` prelude) must
+ * load-bearing: a named tool_choice (e.g. the eager `todo_write` prelude) must
  * reference a tool present in the request, or the provider rejects it with 400.
  */
 export function filterInitialToolsForDiscoveryAll(

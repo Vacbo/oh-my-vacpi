@@ -19,7 +19,7 @@ import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
  *
  * The contract these tests defend: a reminder MUST NOT escalate inside a
  * self-continuation chain unless the agent has produced a tool-level result
- * (e.g. called `todo` or `edit`) between the prior reminder and the next stop.
+ * (e.g. called `todo_write` or `edit`) between the prior reminder and the next stop.
  */
 describe("AgentSession todo reminder self-continuation suppression", () => {
 	let tempDir: TempDir;
@@ -193,9 +193,9 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		vi.spyOn(session.agent, "continue").mockImplementation(async () => {
 			continueCount += 1;
 			if (continueCount === 1) {
-				// In response to reminder 1/3 the agent actually did work (called `todo`),
+				// In response to reminder 1/3 the agent actually did work (called `todo_write`),
 				// then stopped again with todos still incomplete.
-				emitToolResult("todo", { phases: session.getTodoPhases() });
+				emitToolResult("todo_write", { phases: session.getTodoPhases() });
 				emitTextOnlyStop();
 				return;
 			}

@@ -30,7 +30,12 @@ import { checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
-import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
+import {
+	formatStyledTruncationWarning,
+	type OutputMeta,
+	stripOutputNotice,
+	stripRawOutputArtifactNotice,
+} from "./output-meta";
 import { resolveToCwd } from "./path-utils";
 import { capPreviewLines, formatToolWorkingDirectory, previewWindowRows, replaceTabs } from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
@@ -293,35 +298,6 @@ function formatWallTimeNotice(wallTimeMs: number): string {
 
 function formatExitCodeNotice(exitCode: number): string {
 	return `Command exited with code ${exitCode}`;
-}
-
-const RAW_OUTPUT_ARTIFACT_PREFIX = "[raw output: artifact://";
-const RAW_OUTPUT_ARTIFACT_SUFFIX = "]";
-
-function stripRawOutputArtifactNotice(text: string): { text: string; artifactId?: string } {
-	const trimmed = text.trimEnd();
-	const lineStart = trimmed.lastIndexOf("\n");
-	const candidateStart = lineStart === -1 ? 0 : lineStart + 1;
-	if (
-		!trimmed.startsWith(RAW_OUTPUT_ARTIFACT_PREFIX, candidateStart) ||
-		!trimmed.endsWith(RAW_OUTPUT_ARTIFACT_SUFFIX)
-	) {
-		return { text };
-	}
-
-	const idStart = candidateStart + RAW_OUTPUT_ARTIFACT_PREFIX.length;
-	const idEnd = trimmed.length - RAW_OUTPUT_ARTIFACT_SUFFIX.length;
-	if (idStart === idEnd) return { text };
-	for (let i = idStart; i < idEnd; i++) {
-		const code = trimmed.charCodeAt(i);
-		if (code < 48 || code > 57) return { text };
-	}
-
-	const artifactId = trimmed.slice(idStart, idEnd);
-	return {
-		text: trimmed.slice(0, lineStart === -1 ? 0 : lineStart).trimEnd(),
-		artifactId,
-	};
 }
 
 /**
@@ -1199,22 +1175,30 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
 			const cmdLines = formatBashCommandLines(renderArgs, uiTheme);
-			const header =
-				config.showHeader === false
-					? undefined
-					: renderStatusLine({ icon: "pending", title: config.resolveTitle(args, options) }, uiTheme);
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
-				render: (width: number): readonly string[] =>
-					outputBlock.render(
+				render: (width: number): readonly string[] => {
+					const header =
+						config.showHeader === false
+							? undefined
+							: renderStatusLine(
+									{
+										icon: options.spinnerFrame !== undefined ? "running" : "pending",
+										spinnerFrame: options.spinnerFrame,
+										title: config.resolveTitle(args, options),
+									},
+									uiTheme,
+								);
+					return outputBlock.render(
 						{
 							header,
-							state: "pending",
+							state: options.spinnerFrame !== undefined ? "running" : "pending",
 							sections: [{ lines: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded }) }],
 							width,
 						},
 						uiTheme,
-					),
+					);
+				},
 				invalidate: () => {
 					outputBlock.invalidate();
 				},

@@ -28,6 +28,7 @@ const allToolsSettings = Settings.isolated({
 	"browser.enabled": true,
 	"checkpoint.enabled": true,
 	"todo.enabled": true,
+	"restart.toolEnabled": true,
 	"memory.backend": "mnemopi",
 	"autolearn.enabled": true,
 	"tools.discoveryMode": "all",
@@ -150,7 +151,7 @@ describe("filterInitialToolsForDiscoveryAll", () => {
 	const loadModes: Record<string, BuiltinToolLoadMode> = {
 		read: "essential",
 		edit: "essential",
-		todo: "discoverable",
+		todo_write: "discoverable",
 		grep: "discoverable",
 	};
 	const base = {
@@ -162,24 +163,24 @@ describe("filterInitialToolsForDiscoveryAll", () => {
 	};
 
 	it("hides non-essential discoverable built-ins", () => {
-		expect(filterInitialToolsForDiscoveryAll(["read", "edit", "todo", "grep"], base)).toEqual(["read", "edit"]);
+		expect(filterInitialToolsForDiscoveryAll(["read", "edit", "todo_write", "grep"], base)).toEqual(["read", "edit"]);
 	});
 
 	it("keeps discoverable tools required by a forced tool_choice (eager todo)", () => {
-		const result = filterInitialToolsForDiscoveryAll(["read", "todo", "grep"], {
+		const result = filterInitialToolsForDiscoveryAll(["read", "todo_write", "grep"], {
 			...base,
-			forceActive: new Set(["todo"]),
+			forceActive: new Set(["todo_write"]),
 		});
-		expect(result).toEqual(["read", "todo"]);
+		expect(result).toEqual(["read", "todo_write"]);
 	});
 
 	it("keeps explicitly requested and restored discoverable tools", () => {
-		const result = filterInitialToolsForDiscoveryAll(["todo", "grep"], {
+		const result = filterInitialToolsForDiscoveryAll(["todo_write", "grep"], {
 			...base,
 			explicitlyRequested: new Set(["grep"]),
-			restored: new Set(["todo"]),
+			restored: new Set(["todo_write"]),
 		});
-		expect([...result].sort()).toEqual(["grep", "todo"]);
+		expect([...result].sort()).toEqual(["grep", "todo_write"]);
 	});
 
 	it("never hides tools without a built-in loadMode (MCP/custom/extension)", () => {
