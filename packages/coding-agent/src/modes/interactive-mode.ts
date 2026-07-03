@@ -3690,6 +3690,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else if (!this.statusContainer.children.includes(this.loadingAnimation)) {
 			this.statusContainer.clear();
 			this.statusContainer.addChild(this.loadingAnimation);
+			this.ui.requestRender();
 		}
 		this.applyPendingWorkingMessage();
 	}

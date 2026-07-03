@@ -1,12 +1,26 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 import { parseArgs } from "../src/cli/args";
+import * as pluginCli from "../src/cli/plugin-cli";
+import * as updateCli from "../src/cli/update-cli";
 import { buildForkUpdateLaunchArgs, resolveForkRepoDir, resolveForkUpdateModelScope } from "../src/cli/update-cli";
+import Update from "../src/commands/update";
 
 const settingsWithSlowRole = {
 	getModelRole(role: string): string | undefined {
 		return role === "slow" ? "anthropic/claude-opus-4-5" : undefined;
 	},
 };
+
+const TEST_CONFIG: CliConfig = {
+	bin: "omp",
+	version: "0.0.0-test",
+	commands: new Map(),
+};
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 describe("fork update session launch", () => {
 	it("uses PI_SLOW_MODEL as the update session model scope", () => {
@@ -45,5 +59,29 @@ describe("fork update session launch", () => {
 		const dir = resolveForkRepoDir({ env: { OMP_VACPI_REPO_DIR: "/srv/forks/vacpi" }, homedir: "/home/pedro" });
 
 		expect(dir).toBe("/srv/forks/vacpi");
+	});
+});
+
+describe("update command plugin dispatch", () => {
+	it("routes -l to plugin upgrade instead of the fork merge launcher", async () => {
+		const pluginSpy = spyOn(pluginCli, "runPluginCommand").mockResolvedValue(undefined);
+		const updateSpy = spyOn(updateCli, "runUpdateCommand").mockResolvedValue(undefined);
+
+		const command = new Update(["-l"], TEST_CONFIG);
+		await command.run();
+
+		expect(pluginSpy).toHaveBeenCalledWith({ action: "upgrade", args: [], flags: {} });
+		expect(updateSpy).not.toHaveBeenCalled();
+	});
+
+	it("runs the fork merge launcher for normal update", async () => {
+		const pluginSpy = spyOn(pluginCli, "runPluginCommand").mockResolvedValue(undefined);
+		const updateSpy = spyOn(updateCli, "runUpdateCommand").mockResolvedValue(undefined);
+
+		const command = new Update([], TEST_CONFIG);
+		await command.run();
+
+		expect(updateSpy).toHaveBeenCalledWith();
+		expect(pluginSpy).not.toHaveBeenCalled();
 	});
 });

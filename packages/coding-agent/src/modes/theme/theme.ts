@@ -160,6 +160,8 @@ export type SymbolKey =
 	| "md.hrChar"
 	| "md.bullet"
 	| "md.colorSwatch"
+	// Advisor note rail
+	| "advisor.rail"
 	// Language/file type icons
 	| "lang.default"
 	| "lang.typescript"
@@ -366,6 +368,8 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"md.hrChar": "─",
 	"md.bullet": "•",
 	"md.colorSwatch": "■",
+	// Advisor note rail (heavier than md.quoteBorder so notes read as a distinct voice)
+	"advisor.rail": "▎",
 	// Language/file icons (emoji-centric, no Nerd Font required)
 	"lang.default": "⌘",
 	"lang.typescript": "🟦",
@@ -679,6 +683,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"md.bullet": "\uf111",
 	// pick: ■ | alt:  (U+F096)
 	"md.colorSwatch": "■",
+	// pick: ▎ | alt: ┃ │
+	"advisor.rail": "▎",
 	// Language icons (nerd font devicons)
 	"lang.default": "",
 	"lang.typescript": "\u{E628}",
@@ -882,6 +888,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"md.hrChar": "-",
 	"md.bullet": "*",
 	"md.colorSwatch": "[]",
+	"advisor.rail": "|",
 	// Language icons (ASCII uses abbreviations)
 	"lang.default": "code",
 	"lang.typescript": "ts",

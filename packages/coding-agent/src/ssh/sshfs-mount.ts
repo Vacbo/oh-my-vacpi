@@ -16,6 +16,16 @@ const CONTROL_PATH = getControlPathTemplate();
 
 const mountedPaths = new Set<string>();
 
+type MountPointStatReader = (filePath: string) => Promise<{ dev: number }>;
+
+interface MountCheckOptions {
+	platform?: NodeJS.Platform;
+	stat?: MountPointStatReader;
+	which?: (command: string) => string | null;
+}
+
+const readMountPointStats: MountPointStatReader = async filePath => fs.promises.stat(filePath);
+
 async function ensureDir(path: string, mode = 0o700): Promise<void> {
 	try {
 		await fs.promises.mkdir(path, { recursive: true, mode });
@@ -83,24 +93,25 @@ type StatPath = (path: string) => Promise<Pick<fs.Stats, "dev">>;
 
 export async function isMountedByDeviceBoundary(
 	mountPath: string,
-	statPath: StatPath = fs.promises.stat,
+	statPath: StatPath = readMountPointStats,
 ): Promise<boolean> {
 	try {
-		const [stats, parentStats] = await Promise.all([statPath(mountPath), statPath(path.dirname(mountPath))]);
-		return stats.dev !== parentStats.dev;
+		const [mountStats, parentStats] = await Promise.all([statPath(mountPath), statPath(path.dirname(mountPath))]);
+		return mountStats.dev !== parentStats.dev;
 	} catch {
 		return false;
 	}
 }
 
-export async function isMounted(mountPath: string): Promise<boolean> {
-	const mountpoint = $which("mountpoint");
-	if (mountpoint) {
-		const result = await $`${mountpoint} -q ${mountPath}`.quiet().nothrow();
-		return result.exitCode === 0;
+export async function isMounted(mountPath: string, options: MountCheckOptions = {}): Promise<boolean> {
+	const which = options.which ?? $which;
+	const mountpoint = which("mountpoint");
+	if (!mountpoint) {
+		const platform = options.platform ?? process.platform;
+		return platform === "darwin" ? isMountedByDeviceBoundary(mountPath, options.stat) : false;
 	}
-
-	return isMountedByDeviceBoundary(mountPath);
+	const result = await $`${mountpoint} -q ${mountPath}`.quiet().nothrow();
+	return result.exitCode === 0;
 }
 
 let registered = false;

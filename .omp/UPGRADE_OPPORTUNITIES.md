@@ -41,6 +41,24 @@ git fetch --all --tags
 
 ---
 
+## 2026-07-03 — Merged upstream v16.3.4: fork updater retained, upstream reliability fixes adopted   `[done]` `[high]`
+
+**Merge**: fork `16.3.2` → upstream `v16.3.4`.
+
+**Divergence calls**:
+- **Preserved the fork `omp update` merge-session launcher** and discarded upstream's package/Homebrew/mise/binary self-updater implementation again. The fork cannot safely self-replace from upstream packages; only the upstream `-l` plugin-update shorthand was re-homed as a safe `plugins` dispatch path on the fork command. Upstream updater tests for install target detection, binary replacement, and Bun cache pruning were dropped as tests of a dead mechanism; the retained contract asserts normal `omp update` starts the fork merge launcher and `omp update -l` upgrades plugins.
+- **Synthesized `ToolExecutionComponent.updateResult`** by keeping the fork's generic "drop partial updates after finalized" guard while retaining upstream's placeholder/partial-result topology reset. This preserves the background async scrollback fix and keeps upstream's TUI repaint-state correction.
+- **Adopted upstream's macOS-only SSHFS mount fallback** to avoid false mount positives on Linux when `mountpoint` is unavailable, while retaining the fork-exported `isMountedByDeviceBoundary()` helper used by existing tests and diagnostics.
+- **Treated `packages/catalog/src/models.json` as generated output**. The conflict was unblocked from upstream's side, then the catalog generator must be rerun so fork catalog source policies and upstream Baseten/model additions produce the final JSON.
+- **Normalized package changelogs by source of truth**: fork entries remain under `### oh-my-vacpi (fork)` in `## [Unreleased]`; upstream `16.3.3` and `16.3.4` released sections are taken from upstream `v16.3.4`.
+
+**Residual levers**:
+- `update-cli.ts` remains a standing merge hotspot. Port only behavior compatible with the fork merge-session workflow; do not resurrect upstream self-update installation code unless a future upstream mode becomes source-checkout/jj-aware.
+- Keep the generic finalized-partial guard in TUI tool rendering until upstream has an equivalent coverage contract for background `bash` and non-task partial updates.
+- Regenerate `models.json` after every merge touching catalog provider descriptors, resolvers, seeds, or generated model policy inputs.
+
+---
+
 ## 2026-07-02 — Merged upstream v16.3.2: schema break adopted, fork controls retained   `[done]` `[high]`
 
 **Merge**: fork `16.2.5` → upstream `v16.3.2`.

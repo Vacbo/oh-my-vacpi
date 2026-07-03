@@ -1,10 +1,25 @@
 # Changelog
+
 ## [Unreleased]
+
 ### oh-my-vacpi (fork)
 
 #### Added
 
 - Added `NothingToCompactError` to `compaction/errors`: a typed sentinel raised when a compaction request finds nothing to summarize (branch below the minimum size, or already ending in a compaction entry). Callers that compact opportunistically can classify the benign no-op via `instanceof` instead of sniffing error messages.
+
+## [16.3.3] - 2026-07-02
+
+### Changed
+
+- Enabled dynamic model resolution to support seamless mid-run model switching.
+
+### Fixed
+
+- Fixed an issue in the Cursor agent where assistant messages containing native tool calls could duplicate text blocks on replay.
+- Fixed a bug where Cursor agent exec-channel tools (such as bash, write, and delete) were executed a second time after server-side execution.
+- Improved error handling for tool calls interrupted by upstream provider stream errors, distinguishing transport/provider failures from local tool execution failures in the CLI, events, and messages.
+
 ## [16.3.0] - 2026-07-02
 
 ### Added

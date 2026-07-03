@@ -10999,6 +10999,7 @@
 			},
 			"compat": {
 				"officialEndpoint": true,
+				"signingEndpoint": true,
 				"disableAdaptiveThinking": false,
 				"supportsEagerToolInputStreaming": true,
 				"supportsLongCacheRetention": true,
@@ -11052,6 +11053,7 @@
 			"maxTokens": 4096,
 			"compat": {
 				"officialEndpoint": true,
+				"signingEndpoint": true,
 				"disableAdaptiveThinking": false,
 				"supportsEagerToolInputStreaming": true,
 				"supportsLongCacheRetention": true,
@@ -11085,6 +11087,7 @@
 			"maxTokens": 4096,
 			"compat": {
 				"officialEndpoint": true,
+				"signingEndpoint": true,
 				"disableAdaptiveThinking": false,
 				"supportsEagerToolInputStreaming": true,
 				"supportsLongCacheRetention": true,
@@ -12662,6 +12665,335 @@
 					"xhigh"
 				],
 				"requiresEffort": true
+			}
+		}
+	},
+	"baseten": {
+		"deepseek-ai/DeepSeek-V4-Pro": {
+			"id": "deepseek-ai/DeepSeek-V4-Pro",
+			"name": "Deepseek V4 Pro",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 1.74,
+				"output": 3.48,
+				"cacheRead": 0.145,
+				"cacheWrite": 0
+			},
+			"contextWindow": 262144,
+			"maxTokens": 262144,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				],
+				"effortMap": {
+					"minimal": "high",
+					"low": "high",
+					"medium": "high",
+					"high": "high",
+					"xhigh": "max"
+				}
+			}
+		},
+		"moonshotai/Kimi-K2.5": {
+			"id": "moonshotai/Kimi-K2.5",
+			"name": "Kimi K2.5",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.6,
+				"output": 3,
+				"cacheRead": 0.12,
+				"cacheWrite": 0
+			},
+			"contextWindow": 262000,
+			"maxTokens": 262000,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"moonshotai/Kimi-K2.6": {
+			"id": "moonshotai/Kimi-K2.6",
+			"name": "Kimi K2.6",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.95,
+				"output": 4,
+				"cacheRead": 0.16,
+				"cacheWrite": 0
+			},
+			"contextWindow": 262000,
+			"maxTokens": 262000,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"moonshotai/Kimi-K2.7-Code": {
+			"id": "moonshotai/Kimi-K2.7-Code",
+			"name": "Kimi K2.7 Code",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.95,
+				"output": 4,
+				"cacheRead": 0.16,
+				"cacheWrite": 0
+			},
+			"contextWindow": 262000,
+			"maxTokens": 262000,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"nvidia/Nemotron-120B-A12B": {
+			"id": "nvidia/Nemotron-120B-A12B",
+			"name": "Nemotron Super",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.3,
+				"output": 0.75,
+				"cacheRead": 0.06,
+				"cacheWrite": 0
+			},
+			"contextWindow": 202800,
+			"maxTokens": 202800,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {
+			"id": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+			"name": "Nemotron Ultra",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.6,
+				"output": 2.4,
+				"cacheRead": 0.12,
+				"cacheWrite": 0
+			},
+			"contextWindow": 202800,
+			"maxTokens": 202800,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"openai/gpt-oss-120b": {
+			"id": "openai/gpt-oss-120b",
+			"name": "OpenAI GPT 120B",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.09999999999999999,
+				"output": 0.5,
+				"cacheRead": 0.09999999999999999,
+				"cacheWrite": 0
+			},
+			"contextWindow": 128072,
+			"maxTokens": 128072,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"low",
+					"medium",
+					"high"
+				]
+			}
+		},
+		"zai-org/GLM-4.7": {
+			"id": "zai-org/GLM-4.7",
+			"name": "GLM 4.7",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.6,
+				"output": 2.2,
+				"cacheRead": 0.12,
+				"cacheWrite": 0
+			},
+			"contextWindow": 200000,
+			"maxTokens": 200000,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"zai-org/GLM-5": {
+			"id": "zai-org/GLM-5",
+			"name": "GLM 5",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.95,
+				"output": 3.15,
+				"cacheRead": 0.19999999999999998,
+				"cacheWrite": 0
+			},
+			"contextWindow": 202800,
+			"maxTokens": 202800,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"zai-org/GLM-5.1": {
+			"id": "zai-org/GLM-5.1",
+			"name": "GLM 5.1",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 1.3,
+				"output": 4.300000000000001,
+				"cacheRead": 0.26,
+				"cacheWrite": 0
+			},
+			"contextWindow": 202800,
+			"maxTokens": 202800,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			}
+		},
+		"zai-org/GLM-5.2": {
+			"id": "zai-org/GLM-5.2",
+			"name": "GLM 5.2",
+			"api": "openai-completions",
+			"provider": "baseten",
+			"baseUrl": "https://inference.baseten.co/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 1.4,
+				"output": 4.4,
+				"cacheRead": 0.26,
+				"cacheWrite": 0
+			},
+			"contextWindow": 202720,
+			"maxTokens": 202720,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
 			}
 		}
 	},
@@ -17907,6 +18239,111 @@
 		}
 	},
 	"devin": {
+		"claude-5-fable-high": {
+			"id": "claude-5-fable-high",
+			"name": "Claude Fable 5 High",
+			"api": "devin-agent",
+			"provider": "devin",
+			"baseUrl": "https://server.codeium.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"supportsTools": true,
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 64000
+		},
+		"claude-5-fable-low": {
+			"id": "claude-5-fable-low",
+			"name": "Claude Fable 5 Low",
+			"api": "devin-agent",
+			"provider": "devin",
+			"baseUrl": "https://server.codeium.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"supportsTools": true,
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 64000
+		},
+		"claude-5-fable-max": {
+			"id": "claude-5-fable-max",
+			"name": "Claude Fable 5 Max",
+			"api": "devin-agent",
+			"provider": "devin",
+			"baseUrl": "https://server.codeium.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"supportsTools": true,
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 64000
+		},
+		"claude-5-fable-medium": {
+			"id": "claude-5-fable-medium",
+			"name": "Claude Fable 5 Medium",
+			"api": "devin-agent",
+			"provider": "devin",
+			"baseUrl": "https://server.codeium.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"supportsTools": true,
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 64000
+		},
+		"claude-5-fable-xhigh": {
+			"id": "claude-5-fable-xhigh",
+			"name": "Claude Fable 5 XHigh",
+			"api": "devin-agent",
+			"provider": "devin",
+			"baseUrl": "https://server.codeium.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"supportsTools": true,
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 64000
+		},
 		"claude-opus-4-6": {
 			"id": "claude-opus-4-6",
 			"name": "Claude Opus 4.6",
@@ -58903,6 +59340,38 @@
 				]
 			}
 		},
+		"z-ai/glm-5.2": {
+			"id": "z-ai/glm-5.2",
+			"name": "GLM 5.2",
+			"api": "openai-completions",
+			"provider": "nvidia",
+			"baseUrl": "https://integrate.api.nvidia.com/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 131072,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				],
+				"effortMap": {
+					"xhigh": "max"
+				}
+			}
+		},
 		"z-ai/glm4.7": {
 			"id": "z-ai/glm4.7",
 			"name": "GLM-4.7",
@@ -66413,13 +66882,13 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.08900000000000001,
+				"input": 0.09,
 				"output": 0.18,
 				"cacheRead": 0.018,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1048576,
-			"maxTokens": 65536,
+			"maxTokens": 16384,
 			"thinking": {
 				"mode": "effort",
 				"efforts": [
@@ -73516,13 +73985,13 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.975,
-				"output": 4.300000000000001,
-				"cacheRead": 0.182,
+				"input": 0.966,
+				"output": 3.036,
+				"cacheRead": 0.1794,
 				"cacheWrite": 0
 			},
 			"contextWindow": 202752,
-			"maxTokens": 65535,
+			"maxTokens": 128000,
 			"thinking": {
 				"mode": "effort",
 				"efforts": [
@@ -74348,36 +74817,6 @@
 				]
 			}
 		},
-		"hf:moonshotai/Kimi-K2.6": {
-			"id": "hf:moonshotai/Kimi-K2.6",
-			"name": "Kimi K2.6",
-			"api": "openai-completions",
-			"provider": "synthetic",
-			"baseUrl": "https://api.synthetic.new/openai/v1",
-			"reasoning": true,
-			"input": [
-				"text",
-				"image"
-			],
-			"cost": {
-				"input": 0.95,
-				"output": 4,
-				"cacheRead": 0.95,
-				"cacheWrite": 0
-			},
-			"contextWindow": 262144,
-			"maxTokens": 65536,
-			"thinking": {
-				"mode": "effort",
-				"efforts": [
-					"minimal",
-					"low",
-					"medium",
-					"high",
-					"xhigh"
-				]
-			}
-		},
 		"hf:moonshotai/Kimi-K2.7-Code": {
 			"id": "hf:moonshotai/Kimi-K2.7-Code",
 			"name": "Kimi K2.7 Code",
@@ -74393,36 +74832,6 @@
 				"input": 0.95,
 				"output": 4,
 				"cacheRead": 0.95,
-				"cacheWrite": 0
-			},
-			"contextWindow": 262144,
-			"maxTokens": 65536,
-			"thinking": {
-				"mode": "effort",
-				"efforts": [
-					"minimal",
-					"low",
-					"medium",
-					"high",
-					"xhigh"
-				]
-			}
-		},
-		"hf:nvidia/Kimi-K2.5-NVFP4": {
-			"id": "hf:nvidia/Kimi-K2.5-NVFP4",
-			"name": "Kimi K2.5 (NVFP4)",
-			"api": "openai-completions",
-			"provider": "synthetic",
-			"baseUrl": "https://api.synthetic.new/openai/v1",
-			"reasoning": true,
-			"input": [
-				"text",
-				"image"
-			],
-			"cost": {
-				"input": 0.55,
-				"output": 2.19,
-				"cacheRead": 0,
 				"cacheWrite": 0
 			},
 			"contextWindow": 262144,
@@ -74604,64 +75013,6 @@
 				"input": 0.1,
 				"output": 0.5,
 				"cacheRead": 0.1,
-				"cacheWrite": 0
-			},
-			"contextWindow": 196608,
-			"maxTokens": 65536,
-			"thinking": {
-				"mode": "effort",
-				"efforts": [
-					"minimal",
-					"low",
-					"medium",
-					"high",
-					"xhigh"
-				]
-			}
-		},
-		"hf:zai-org/GLM-5": {
-			"id": "hf:zai-org/GLM-5",
-			"name": "GLM-5",
-			"api": "openai-completions",
-			"provider": "synthetic",
-			"baseUrl": "https://api.synthetic.new/openai/v1",
-			"reasoning": true,
-			"input": [
-				"text"
-			],
-			"cost": {
-				"input": 1,
-				"output": 3,
-				"cacheRead": 1,
-				"cacheWrite": 0
-			},
-			"contextWindow": 196608,
-			"maxTokens": 65536,
-			"thinking": {
-				"mode": "effort",
-				"efforts": [
-					"minimal",
-					"low",
-					"medium",
-					"high",
-					"xhigh"
-				]
-			}
-		},
-		"hf:zai-org/GLM-5.1": {
-			"id": "hf:zai-org/GLM-5.1",
-			"name": "GLM 5.1",
-			"api": "openai-completions",
-			"provider": "synthetic",
-			"baseUrl": "https://api.synthetic.new/openai/v1",
-			"reasoning": true,
-			"input": [
-				"text"
-			],
-			"cost": {
-				"input": 1,
-				"output": 3,
-				"cacheRead": 1,
 				"cacheWrite": 0
 			},
 			"contextWindow": 196608,
@@ -76939,9 +77290,9 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.1625,
-				"output": 0.5,
-				"cacheRead": 0,
+				"input": 0.13,
+				"output": 0.4,
+				"cacheRead": 0.05,
 				"cacheWrite": 0
 			},
 			"contextWindow": 256000,
@@ -77346,9 +77697,9 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.9,
-				"output": 4.3,
-				"cacheRead": 0.2,
+				"input": 0.75,
+				"output": 3.5,
+				"cacheRead": 0.16,
 				"cacheWrite": 0
 			},
 			"contextWindow": 256000,
@@ -77506,9 +77857,9 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.34,
-				"output": 1.19,
-				"cacheRead": 0.04,
+				"input": 0.27,
+				"output": 0.95,
+				"cacheRead": 0.03,
 				"cacheWrite": 0
 			},
 			"contextWindow": 198000,
@@ -77589,7 +77940,8 @@
 			"baseUrl": "https://api.venice.ai/api/v1",
 			"reasoning": true,
 			"input": [
-				"text"
+				"text",
+				"image"
 			],
 			"cost": {
 				"input": 0.3,
@@ -77770,9 +78122,9 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.14,
-				"output": 0.8,
-				"cacheRead": 0,
+				"input": 0.07,
+				"output": 0.4,
+				"cacheRead": 0.035,
 				"cacheWrite": 0
 			},
 			"contextWindow": 200000,
@@ -78450,9 +78802,9 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.25,
-				"output": 1.5,
-				"cacheRead": 0,
+				"input": 0.21,
+				"output": 1.9,
+				"cacheRead": 0.1,
 				"cacheWrite": 0
 			},
 			"contextWindow": 128000,
@@ -78561,9 +78913,9 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.175,
-				"output": 0.35,
-				"cacheRead": 0.0625,
+				"input": 0.14,
+				"output": 0.28,
+				"cacheRead": 0.05,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1000000,
@@ -78763,9 +79115,9 @@
 				"text"
 			],
 			"cost": {
-				"input": 1.75,
-				"output": 5.5,
-				"cacheRead": 0.325,
+				"input": 1.54,
+				"output": 4.84,
+				"cacheRead": 0.286,
 				"cacheWrite": 0
 			},
 			"contextWindow": 200000,
@@ -84415,12 +84767,12 @@
 				"text"
 			],
 			"cost": {
-				"input": 1.5,
-				"output": 4.5,
-				"cacheRead": 0.3,
+				"input": 1.4,
+				"output": 4.4,
+				"cacheRead": 0.26,
 				"cacheWrite": 0
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 1040000,
 			"maxTokens": 128000,
 			"thinking": {
 				"mode": "budget",
