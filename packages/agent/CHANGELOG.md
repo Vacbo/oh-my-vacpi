@@ -8,6 +8,12 @@
 
 - Added `NothingToCompactError` to `compaction/errors`: a typed sentinel raised when a compaction request finds nothing to summarize (branch below the minimum size, or already ending in a compaction entry). Callers that compact opportunistically can classify the benign no-op via `instanceof` instead of sniffing error messages.
 
+## [16.3.7] - 2026-07-05
+
+### Fixed
+
+- Fixed an issue where provider orchestration tokens were incorrectly included in context token calculations, which could trigger premature context auto-compaction and promotion.
+
 ## [16.3.3] - 2026-07-02
 
 ### Changed

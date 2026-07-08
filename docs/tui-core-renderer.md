@@ -41,22 +41,18 @@ selection, transcript persists after exit). The engine maintains one ledger:
 - **`windowTopRow` (W)** — the frame row mapped to grid row 0. The visible
   window is frame rows `[W, W + height)`, repainted in place with relative
   cursor moves.
-- **commit boundary** — reported by the component tree per frame
-  (`NativeScrollbackLiveRegion`) as two nested ends:
-  - **byte-stable end (B)** — `commitSafeEnd ?? liveRegionStart ?? frame.length`.
-    Rows below B are asserted never to re-layout and stay under the
-    committed-prefix audit.
-  - **durable end (D)** — `max(B, snapshotSafeEnd ?? B)`. Rows in `[B, D)` may
-    still drift bytes later (a streaming markdown table re-aligning columns) but
-    are *durable* — their current snapshot is permanent content, so dropping them
-    when they scroll off is forbidden. They commit **audit-exempt**: later drift
-    becomes a frozen stale row in history, never a re-anchor.
+- **exactness boundary** — reported by the component tree per frame
+  (`NativeScrollbackLiveRegion`) as the first mutable row:
+  `liveRegionStart ?? frame.length`. Rows below it are byte-stable at the
+  current width and stay under the committed-prefix audit. Rows at or after it
+  may still mutate; if they scroll off, they are kept only as frozen visual
+  snapshots.
 
-Per ordinary frame: `W = max(C, L − height)`, `C' = max(C, min(D, W))`, and the
-only bytes that ever touch history are the **chunk** `frame[C, C')` written at
-the scrollback seam. The engine also tracks **`auditRows` (A ≤ C)** — the
-byte-stable leading prefix `[0, A)`; the committed-prefix audit (§2) samples only
-that prefix, so the durable suffix `[A, C)` drifting never triggers a re-anchor.
+Per ordinary frame: `W = max(C, L − height)`, `C' = max(C, W)`, and the only
+bytes that ever touch history are the **chunk** `frame[C, C')` written at the
+scrollback seam. The engine also tracks **`auditRows` (A ≤ C)** — the exact
+leading prefix `[0, A)`; the committed-prefix audit (§2) samples only that
+prefix, so the snapshot suffix `[A, C)` drifting never triggers a re-anchor.
 Scrollback therefore equals `frame[0..C)` — every row exactly once, in order,
 with its content at commit time. There is nothing to guess, nothing to defer,
 and nothing to reconcile: the scroll position is irrelevant because ordinary
@@ -81,8 +77,8 @@ updates never rewrite anything a scrolled reader could be looking at.
 
 `#doRender` per frame:
 
-1. Compose the frame (`render(width)`), collecting `liveRegionStart` /
-   `commitSafeEnd` from the root children (absolute row indices).
+1. Compose the frame (`render(width)`), collecting `liveRegionStart` from the
+   root children (absolute row indices) plus any `RenderStablePrefix` report.
 2. **Audit the committed prefix** (`findCommittedPrefixResync`, skipped on
    geometry frames). Components must never re-layout rows below C, but real
    flows violate it (a TTSR rewind truncating a streamed block, an image-cap
@@ -128,61 +124,38 @@ several terminal families snap a scrolled reader to the bottom on those.
 ### The commit-boundary seam (the load-bearing app contract)
 
 `NativeScrollbackLiveRegion` (tui.ts) is how a component keeps mutable rows out
-of history:
+of exact, audited history:
 
-- `getNativeScrollbackLiveRegionStart()` — first row that may still mutate
-  (everything below it, including root chrome rendered after it, stays in the
-  window).
-- `getNativeScrollbackCommitSafeEnd()` — optional **byte-stable** deeper boundary
-  (B): the append-only prefix of the live region (a streaming assistant message's
-  settled rows), asserted never to re-layout, so it stays under the audit.
-- `getNativeScrollbackSnapshotSafeEnd()` — optional **durable** deeper boundary
-  (D ≥ B): rows whose current snapshot is permanent but may still drift bytes
-  (a streaming markdown table whose columns keep re-aligning). They commit on
-  scroll-off (never dropped) but **audit-exempt** — drift after commit freezes a
-  stale row in history rather than re-anchoring the audit and spraying duplicate
-  snapshots. Without it, a commit-stable block that perpetually re-lays-out an
-  interior row (a table taller than the window) had no byte-stable prefix past
-  the table head, so its scrolled-off rows were committed nowhere and repainted
-  nowhere — silent content loss as the reply streamed.
+- `getNativeScrollbackLiveRegionStart()` — first row that may still mutate.
+  Rows before it are declared FINAL at the current width and may enter the
+  audited native scrollback prefix. Rows at or after it stay live in the
+  repaintable window; if they scroll off, the tape records the visual snapshot
+  that was on screen, but the audit no longer treats those bytes as a source of
+  truth to re-anchor.
+- `RenderStablePrefix.getRenderStablePrefixRows()` — optional optimization for
+  in-place renderers. It reports how many leading rows of the just-rendered
+  frame are byte-identical to the last frame the engine observed. Reading it is
+  consumptive: the engine reads it immediately after `render()` and that read
+  re-bases the component's stability baseline. This is a diff/audit fast path,
+  not permission to commit mutable rows.
 
 `TranscriptContainer` implements this for the coding agent: finalized blocks
-freeze (their render is snapshotted, so their content can never drift after
-the engine may have committed it), still-mutating blocks
-(`isTranscriptBlockFinalized?.() === false`) anchor the live region, and
-`deriveLiveCommitState` derives the byte-stable commit-safe end of the first
-live block from two independent signals:
+freeze (their render is snapshotted, so their content can never drift after the
+engine may have committed it), still-mutating blocks
+(`isTranscriptBlockFinalized?.() === false`) anchor the live region, and the
+first still-live block may extend the exact boundary only by explicitly
+declaring settled rows via `getTranscriptBlockSettledRows()`. That declaration
+is the block's contract: those leading rows are byte-stable until the block
+finalizes (for example, markdown's frozen token prefix in
+`AssistantMessageComponent`). A live block that cannot prove stability reports
+nothing, so its live-region start is the block's first row.
 
-- **append-only detection** — a block observed growing without visibly
-  rewriting an interior row commits its full body; a rewrite suspends this
-  for `VOLATILE_REARM_FRAMES` clean frames.
-- **stable-prefix ratchet** — rows that stayed visibly identical for a full
-  `STABLE_PREFIX_COMMIT_FRAMES` window commit even while the block's tail
-  keeps rewriting (a task tool's static prompt above a ticking progress
-  tree). Without it, one perpetually animating row holds the whole block out
-  of history, so a block taller than the window reads as cut off (head
-  neither committed nor on screen) for the entire run. The ratchet tracks the
-  window-minimum common prefix; a rewrite above the promoted run retreats it
-  to the divergence, and rows that already committed are the engine audit's
-  problem (recommit → duplication, never loss). That retreat also arms a
-  permanent **rewrite floor** at the divergence: a row that mutates *after*
-  surviving a full promotion window is a slow ticker (an agent row's tool/cost
-  counter updating every few seconds), not settling content — without the
-  floor, every quiet stretch re-promoted it and every later tick forced an
-  audit recommit, spraying stale snapshots of the block into scrollback for
-  the whole run. Rows at/after the floor never re-promote while the block
-  lives (the floor index travels with append-shaped insertions above it);
-  one-off re-layouts before any promotion never arm it, and the append-only
-  path commits the full block regardless.
-
-The byte-stable end gates audited commits; the **durable snapshot end** is the
-separate floor that guarantees no loss. `TranscriptContainer` reports the whole
-body of a still-live **commit-stable** block (`isTranscriptBlockCommitStable?.()
-!== false`) as the snapshot-safe end, so its scrolled-off rows always reach
-history even while its interior re-lays-out. Provisional blocks
-(`isTranscriptBlockCommitStable?.() === false`: a collapsing tool/edit preview
-whose head is a throwaway tail window) report no snapshot-safe end, so their
-head is correctly dropped rather than stranded as stale history.
+This replaced the old two-boundary contract (`commitSafeEnd` /
+`snapshotSafeEnd`). There is no container-side append-only classifier now:
+content-diff knowledge belongs in the renderer that owns the content. The TUI
+engine owns what happens after the seam: exact rows are audited; still-live rows
+that scroll off are frozen as visual snapshots to avoid loss without repeatedly
+recommitting stale bytes.
 
 Freezing is unconditional — it is the engine's required guarantee, not a
 per-terminal optimization.
@@ -205,9 +178,9 @@ per-terminal optimization.
 4. **NEVER probe the viewport position or fork on platform in the update
    path.** win32 behaves like POSIX. The probe APIs are gone; do not
    reintroduce them.
-5. **Mutable content stays below the commit boundary.** App-layer renderers
-   must finalize-before-commit; the engine trusts B and clamps, it does not
-   verify content.
+5. **Mutable content stays below the exactness boundary.** App-layer renderers
+   may advance that boundary only for rows they explicitly declare settled; the
+   engine trusts the declaration and audits exact rows after they commit.
 6. **Park the hardware cursor at real content bottom**, not the padded window
    bottom, or height shrinks scroll live rows into history and duplicate them
    per resize step.

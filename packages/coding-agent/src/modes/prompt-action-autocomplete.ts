@@ -3,6 +3,7 @@ import {
 	type AutocompleteProvider,
 	type AutocompleteRequestOptions,
 	CombinedAutocompleteProvider,
+	findLeadingSlashCommandStart,
 	getKeybindings,
 	type SlashCommand,
 } from "@oh-my-pi/pi-tui";
@@ -97,6 +98,7 @@ function getPromptActionPrefix(textBeforeCursor: string): string | null {
 }
 
 export class PromptActionAutocompleteProvider implements AutocompleteProvider {
+	#commands: SlashCommand[];
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
 	#basePath: string;
@@ -107,6 +109,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		actions: PromptActionDefinition[],
 		getSlashUsageOrder?: () => readonly string[],
 	) {
+		this.#commands = commands;
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, getSlashUsageOrder);
 		this.#basePath = basePath;
 		this.#actions = actions;
@@ -120,6 +123,21 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
+		const leadingSlashStart = findLeadingSlashCommandStart(textBeforeCursor);
+		const hasPromptTextBeforeCursorLine = lines.slice(0, cursorLine).some(line => (line || "").trim() !== "");
+		const commandText =
+			leadingSlashStart !== null && !hasPromptTextBeforeCursorLine
+				? textBeforeCursor.slice(leadingSlashStart)
+				: null;
+		const spaceIndex = commandText?.indexOf(" ") ?? -1;
+		if (commandText !== null && spaceIndex !== -1) {
+			const commandName = commandText.slice(1, spaceIndex);
+			const command = this.#commands.find(cmd => cmd.name === commandName || cmd.aliases?.includes(commandName));
+			if (command && (!("allowArgs" in command) || command.allowArgs !== false)) {
+				return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol);
+			}
+		}
+
 		const promptActionPrefix = getPromptActionPrefix(textBeforeCursor);
 		if (promptActionPrefix) {
 			const query = promptActionPrefix.slice(1).toLowerCase();

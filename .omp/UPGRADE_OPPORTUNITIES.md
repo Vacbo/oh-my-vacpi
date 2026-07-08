@@ -41,6 +41,21 @@ git fetch --all --tags
 
 ---
 
+## 2026-07-08 — Merged upstream v16.3.11: image cleanup divergence kept, upstream fixes adopted   `[done]` `[med]`
+
+**Merge**: fork `16.3.4` → upstream `v16.3.11`.
+
+**Divergence calls**:
+- **Preserved the fork `ImageComponent` transmitted-box cleanup alongside upstream key-map cleanup.** Upstream's new `#forgetKeyForId(id)` only deletes `#idToKey` / `#keyToId`; it does not touch the fork's `#transmittedBoxes` cache. The merge resolution keeps `this.#transmittedBoxes.delete(id)` with upstream's `this.#forgetKeyForId(id)` after transmitted image data is purged, so stale pre-scaled placement boxes do not survive an image eviction.
+- **Re-homed fork auth and skill-discovery hooks into upstream session/auth changes.** `auth-storage.ts` keeps the fork `getEnvApiKeyForModel` path while adopting upstream OAuth env helpers and `OAuthAuthInfo`; `agent-session.ts` keeps `collectDiscoverableSkillEntries` while adopting upstream retry recovery typing.
+- **Treated generated catalog JSON as disposable.** The `models.json` conflict was unblocked with upstream bytes only so source conflicts could settle; the final artifact must be regenerated from the merged `packages/catalog` sources.
+
+**Residual levers**:
+- `packages/tui/src/components/image.ts` remains a map-invalidation hotspot. If upstream grows a single image-id eviction helper, fold the fork `#transmittedBoxes` cleanup into that API and delete the extra fork line.
+- Continue regenerating catalog models after merges that touch `packages/catalog/src/provider-models/`, `packages/catalog/scripts/`, or catalog identity/type sources. `packages/catalog/src/models.json` is generated and should never be hand-resolved as the final state.
+
+---
+
 ## 2026-07-03 — Merged upstream v16.3.4: fork updater retained, upstream reliability fixes adopted   `[done]` `[high]`
 
 **Merge**: fork `16.3.2` → upstream `v16.3.4`.
