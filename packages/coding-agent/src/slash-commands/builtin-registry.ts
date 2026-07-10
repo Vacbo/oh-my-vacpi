@@ -3,12 +3,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { type AutocompleteItem, Spacer } from "@oh-my-pi/pi-tui";
-import { APP_NAME, getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getProjectDir, prompt, setProjectDir } from "@oh-my-pi/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
+import { CONTEXT_EXPORT_TASK_MAX_LENGTH, CONTEXT_EXPORT_TASK_TOO_LONG_MESSAGE } from "../context-export";
 import {
 	clearPluginRootsAndCaches,
 	resolveActiveProjectRegistryPath,
@@ -28,10 +29,12 @@ import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
+import contextExportCommandPrompt from "../prompts/commands/context-export.md" with { type: "text" };
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { resolveResumableSession } from "../session/session-listing";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
+import { isContextExportController } from "../tools/context-export";
 import { expandTilde, resolveToCwd } from "../tools/path-utils";
 import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
@@ -570,6 +573,49 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			await runtime.ctx.handleExportCommand(command.text);
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "context-export",
+		description: "Export task-focused repository context for ChatGPT",
+		inlineHint: "<task>",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const task = command.args.trim();
+			if (!task) return usage("Usage: /context-export <task>", runtime);
+			if (task.length > CONTEXT_EXPORT_TASK_MAX_LENGTH) {
+				return usage(CONTEXT_EXPORT_TASK_TOO_LONG_MESSAGE, runtime);
+			}
+			if ((runtime.settings.get("tools.disabledTools") ?? []).includes("context_export")) {
+				return usage("The context_export tool is disabled for this session.", runtime);
+			}
+			const tool = runtime.session.hasBuiltInTool("context_export")
+				? runtime.session.getToolByName("context_export")
+				: undefined;
+			if (!tool || !isContextExportController(tool)) {
+				return usage("The built-in context_export tool is unavailable for this session.", runtime);
+			}
+			// Bind the exact task BEFORE activation so every invocation invalidates
+			// any stale workflow/receipt from an earlier run.
+			let workflowId: string;
+			try {
+				workflowId = tool.beginContextExport(task);
+			} catch (err) {
+				return usage(errorMessage(err), runtime);
+			}
+			const activeToolNames = runtime.session.getActiveToolNames();
+			if (!activeToolNames.includes("context_export")) {
+				await runtime.session.setActiveToolsByName([...activeToolNames, "context_export"]);
+			}
+			// `{ prompt }` submits the workflow as an ordinary turn in THIS session,
+			// so the selecting agent keeps the full prior conversation. Never route
+			// this through a subagent or a fresh session.
+			return {
+				prompt: prompt.render(contextExportCommandPrompt, {
+					taskJson: JSON.stringify(task),
+					workflowIdJson: JSON.stringify(workflowId),
+				}),
+			};
 		},
 	},
 	{

@@ -6,6 +6,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"ast_edit",
 	"ask",
 	"debug",
+	"context_export",
 	"eval",
 	"ssh",
 	"github",

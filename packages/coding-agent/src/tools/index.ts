@@ -45,6 +45,7 @@ import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
+import { ContextExportTool } from "./context-export";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
@@ -86,6 +87,7 @@ export * from "./ast-grep";
 export * from "./bash";
 export * from "./browser";
 export * from "./checkpoint";
+export * from "./context-export";
 export * from "./debug";
 export * from "./eval";
 export * from "./eval-backends";
@@ -462,6 +464,17 @@ export function computeEssentialBuiltinNames(settings: Settings): string[] {
 }
 
 /**
+ * Built-ins that register in the tool set without joining the initial active
+ * set. Their schema/description never reaches ordinary model requests; a
+ * driving surface (e.g. `/context-export`) activates them on demand. An
+ * explicit `--tools <name>` request still activates them. Mirrors the
+ * extension-side `ToolDefinition.defaultInactive` convention.
+ */
+export const DEFAULT_INACTIVE_BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"context_export",
+] satisfies BuiltinToolName[]);
+
+/**
  * Tool names a forced tool_choice may target at session start; these must
  * survive discovery hiding. A named tool_choice referencing a tool absent from
  * the request is rejected by providers (HTTP 400), and eager todo/task prompt
@@ -525,6 +538,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	ast_edit: s => new AstEditTool(s),
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
+	context_export: ContextExportTool.createIf,
 	eval: s => new EvalTool(s),
 	ssh: loadSshTool,
 	github: GithubTool.createIf,
@@ -724,11 +738,22 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			? filteredRequestedTools.filter(name => name !== "resolve").map(name => [name, allTools[name]] as const)
 			: [
 					...Object.entries(BUILTIN_TOOLS)
-						.filter(([name]) => isToolAllowed(name))
+						.filter(([name]) => isToolAllowed(name) && !DEFAULT_INACTIVE_BUILTIN_TOOL_NAMES.has(name))
 						.map(([name, factory]) => [name, factory] as const),
 					...(includeYield ? ([["yield", HIDDEN_TOOLS.yield]] as const) : []),
 					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
 				];
+	// Default-inactive built-ins are constructed registry-only when not
+	// explicitly requested: registered (so a driving surface can activate them
+	// later) but excluded from the active-name set below, keeping their schema
+	// out of ordinary model requests.
+	const registryOnlyEntries: (readonly [string, ToolFactory])[] = [];
+	for (const name of DEFAULT_INACTIVE_BUILTIN_TOOL_NAMES) {
+		if (!(name in BUILTIN_TOOLS)) continue;
+		if (baseEntries.some(([entryName]) => entryName === name)) continue;
+		if (!isToolAllowed(name)) continue;
+		registryOnlyEntries.push([name, BUILTIN_TOOLS[name as BuiltinToolName]] as const);
+	}
 
 	const activeToolNames = new Set(baseEntries.map(([name]) => name));
 	if (session.setActiveToolNames) {
@@ -738,7 +763,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	}
 
 	const baseResults = await Promise.all(
-		baseEntries.map(async ([name, factory]) => {
+		[...baseEntries, ...registryOnlyEntries].map(async ([name, factory]) => {
 			const tool = await logger.time(`createTools:${name}`, factory as ToolFactory, session);
 			return tool ? wrapToolWithMetaNotice(tool) : null;
 		}),

@@ -251,4 +251,37 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await session.dispose();
 		}
 	});
+
+	it("registers context_export registry-only by default; explicit request or later activation enables it", async () => {
+		const tempDir = makeTempDir();
+
+		const { session } = await createAgentSession(baseOptions(tempDir));
+
+		try {
+			// Registered as a built-in, but absent from the initial active set and
+			// therefore from the model-facing prompt.
+			expect(session.getAllToolNames()).toContain("context_export");
+			expect(session.hasBuiltInTool("context_export")).toBe(true);
+			expect(session.getActiveToolNames()).not.toContain("context_export");
+			expect(session.systemPrompt.join("\n")).not.toContain("context_export");
+
+			// The /context-export handler activates it by appending to the active set.
+			await session.setActiveToolsByName([...session.getActiveToolNames(), "context_export"]);
+			expect(session.getActiveToolNames()).toContain("context_export");
+		} finally {
+			await session.dispose();
+		}
+
+		const explicitDir = makeTempDir();
+		const { session: explicitSession } = await createAgentSession({
+			...baseOptions(explicitDir),
+			toolNames: ["read", "context_export"],
+		});
+
+		try {
+			expect(explicitSession.getActiveToolNames()).toContain("context_export");
+		} finally {
+			await explicitSession.dispose();
+		}
+	});
 });

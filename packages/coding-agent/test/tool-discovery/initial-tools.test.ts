@@ -208,3 +208,47 @@ describe("computeForceActiveToolNames", () => {
 		expect(computeForceActiveToolNames(todosOff, () => true).size).toBe(0);
 	});
 });
+
+describe("default-inactive built-in registration (context_export)", () => {
+	function sessionWithActiveCapture(overrides: Partial<ToolSession> = {}): {
+		session: ToolSession;
+		activeNames: Set<string>;
+	} {
+		const activeNames = new Set<string>();
+		const session: ToolSession = {
+			...toolSession,
+			...overrides,
+			setActiveToolNames: names => {
+				activeNames.clear();
+				for (const name of names) activeNames.add(name);
+			},
+		};
+		return { session, activeNames };
+	}
+
+	it("constructs context_export registry-only by default: registered but NOT active", async () => {
+		const { session, activeNames } = sessionWithActiveCapture();
+		const tools = await createTools(session);
+		expect(tools.some(tool => tool.name === "context_export")).toBe(true);
+		expect(activeNames.has("context_export")).toBe(false);
+	});
+
+	it("activates context_export when explicitly requested", async () => {
+		const { session, activeNames } = sessionWithActiveCapture();
+		const tools = await createTools(session, ["read", "context_export"]);
+		expect(tools.some(tool => tool.name === "context_export")).toBe(true);
+		expect(activeNames.has("context_export")).toBe(true);
+	});
+
+	it("does not construct context_export when disabled or in a subagent session", async () => {
+		const disabled = sessionWithActiveCapture({
+			settings: Settings.isolated({ "tools.disabledTools": ["context_export"] }),
+		});
+		const disabledTools = await createTools(disabled.session);
+		expect(disabledTools.some(tool => tool.name === "context_export")).toBe(false);
+
+		const subagent = sessionWithActiveCapture({ taskDepth: 1 });
+		const subagentTools = await createTools(subagent.session);
+		expect(subagentTools.some(tool => tool.name === "context_export")).toBe(false);
+	});
+});

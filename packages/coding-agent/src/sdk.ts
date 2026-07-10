@@ -168,6 +168,7 @@ import {
 	computeEssentialBuiltinNames,
 	computeForceActiveToolNames,
 	createTools,
+	DEFAULT_INACTIVE_BUILTIN_TOOL_NAMES,
 	type DeferredDiagnosticsEntry,
 	discoverStartupLspServers,
 	EditTool,
@@ -2540,9 +2541,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const normalizedRequested = requestedToolNames.filter(name => toolRegistry.has(name));
 		const requestedToolNameSet = new Set(normalizedRequested);
 		// Effective discovery mode is resolved after the full registry exists so auto mode can count MCP/extension tools.
-		const defaultInactiveToolNames = new Set(
-			registeredTools.filter(tool => tool.definition.defaultInactive).map(tool => tool.definition.name),
-		);
+		// Extension `defaultInactive` definitions and default-inactive built-ins
+		// (e.g. context_export) share one activation path: registered, but out of
+		// the initial active set unless `options.toolNames` names them explicitly.
+		const defaultInactiveToolNames = new Set([
+			...registeredTools.filter(tool => tool.definition.defaultInactive).map(tool => tool.definition.name),
+			...DEFAULT_INACTIVE_BUILTIN_TOOL_NAMES,
+		]);
 		const requestedActiveToolNames = normalizedRequested.filter(name => name !== "goal");
 		const initialRequestedActiveToolNames = options.toolNames
 			? requestedActiveToolNames
