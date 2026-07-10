@@ -112,6 +112,33 @@ function hardToolChoiceBlocks(choice: ToolChoice | undefined, requiredTool: stri
  * tool's own window elapses. A cheap synchronous queue check; latency-bounded
  * at one tick.
  */
+/**
+ * Abort reason for a turn-wide interruption where only some tool calls caused
+ * the abort and sibling placeholders need neutral messages.
+ */
+export interface ToolScopedAbortReason {
+	readonly kind: "tool-scoped-abort";
+	readonly message: string;
+	readonly toolCallMessages: Record<string, string>;
+	readonly defaultToolCallMessage: string;
+}
+
+/** Creates an abort reason that labels matching tool calls separately from siblings. */
+export function createToolScopedAbortReason(
+	message: string,
+	toolCallMessages: Record<string, string>,
+	defaultToolCallMessage: string,
+): ToolScopedAbortReason {
+	return { kind: "tool-scoped-abort", message, toolCallMessages, defaultToolCallMessage };
+}
+
+/**
+ * Marks an abort raised by a completed post-tool hook as terminal for the
+ * current run. External/user aborts still synthesize an aborted assistant
+ * boundary; this reason stops after persisting the completed tool batch.
+ */
+export const TERMINAL_TOOL_RESULT_ABORT_REASON = Symbol.for("pi-agent-core.terminal-tool-result");
+
 const STEERING_INTERRUPT_POLL_MS = 250;
 
 class HarmonyLeakInterruption extends Error {
@@ -173,6 +200,7 @@ function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
 			cost: { ...message.usage.cost },
 		},
 		disabledFeatures: message.disabledFeatures ? [...message.disabledFeatures] : undefined,
+		toolCallAbortMessages: message.toolCallAbortMessages ? { ...message.toolCallAbortMessages } : undefined,
 	};
 }
 
@@ -918,9 +946,17 @@ async function runLoopBody(
 						(c): c is ToolCallContent =>
 							c.type === "toolCall" && (c as CursorExecResolvedCarrier)[kCursorExecResolved] !== true,
 					);
+					// Provider-built aborted messages (stream error events) carry no
+					// per-tool labels; derive them from a tool-scoped abort signal so
+					// only the matching call is blamed and siblings stay neutral.
+					const scopedAbort = toolScopedAbortReason(signal);
+					const toolCallAbortMessages =
+						message.toolCallAbortMessages ??
+						(scopedAbort ? buildToolCallAbortMessages(message, scopedAbort) : undefined);
 					const toolResults: ToolResultMessage[] = [];
 					for (const toolCall of toolCalls) {
-						const result = createAbortedToolResult(toolCall, stream, message.stopReason, message.errorMessage);
+						const errorMessage = toolCallAbortMessages?.[toolCall.id] ?? message.errorMessage;
+						const result = createAbortedToolResult(toolCall, stream, message.stopReason, errorMessage);
 						currentContext.messages.push(result);
 						newMessages.push(result);
 						toolResults.push(result);
@@ -1053,6 +1089,12 @@ async function runLoopBody(
 					if (message.stopReason === "length" && toolResults.length > 0 && !deadlinePassed) {
 						hasMoreToolCalls = true;
 					}
+				}
+
+				// A tool hook may mark its completed result as terminal (e.g. subagent yield).
+				// Stop before the next provider call without changing external/user abort semantics.
+				if (signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+					hasMoreToolCalls = false;
 				}
 
 				if (toolCalls.length > 0) {
@@ -1610,6 +1652,34 @@ function emitDiscardedHarmonyPartial(
 	});
 }
 
+function isStringRecord(value: unknown): value is Record<string, string> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	return Object.values(value).every(child => typeof child === "string");
+}
+
+function toolScopedAbortReason(signal: AbortSignal | undefined): ToolScopedAbortReason | undefined {
+	const reason = signal?.reason;
+	if (!reason || typeof reason !== "object") return undefined;
+	if (Reflect.get(reason, "kind") !== "tool-scoped-abort") return undefined;
+	if (typeof Reflect.get(reason, "message") !== "string") return undefined;
+	if (typeof Reflect.get(reason, "defaultToolCallMessage") !== "string") return undefined;
+	return isStringRecord(Reflect.get(reason, "toolCallMessages")) ? reason : undefined;
+}
+
+function buildToolCallAbortMessages(
+	message: AssistantMessage,
+	reason: ToolScopedAbortReason,
+): Record<string, string> | undefined {
+	let hasToolCall = false;
+	const messages: Record<string, string> = {};
+	for (const block of message.content) {
+		if (block.type !== "toolCall") continue;
+		hasToolCall = true;
+		messages[block.id] = reason.toolCallMessages[block.id] ?? reason.defaultToolCallMessage;
+	}
+	return hasToolCall ? messages : undefined;
+}
+
 /** Resolve the human-readable reason an abort carried. A caller that aborts via
  *  `AbortController.abort(reason)` with a string or a non-`AbortError` `Error`
  *  (e.g. the coding agent's user-interrupt label) gets that text surfaced on the
@@ -1617,6 +1687,8 @@ function emitDiscardedHarmonyPartial(
  *  `signal.reason` is the default `AbortError` `DOMException`) falls back to the
  *  generic sentinel that downstream renderers treat as "no specific reason". */
 export function abortReasonText(signal: AbortSignal | undefined): string {
+	const scopedReason = toolScopedAbortReason(signal);
+	if (scopedReason) return scopedReason.message;
 	const reason = signal?.reason;
 	if (typeof reason === "string" && reason.trim().length > 0) return reason;
 	if (reason instanceof Error && reason.name !== "AbortError" && reason.message.trim().length > 0) {
@@ -1665,6 +1737,11 @@ function emitAbortedAssistantMessage(
 	// labeled user interrupt still surfaces through `errorMessage`, but partial
 	// tool arguments are unsafe to keep and can carry incomplete provider IDs.
 	const retained = retainCompletedToolCalls(base, completedToolCallIds);
+	const scopedAbort = toolScopedAbortReason(requestSignal);
+	const toolCallAbortMessages = scopedAbort ? buildToolCallAbortMessages(retained, scopedAbort) : undefined;
+	if (toolCallAbortMessages) {
+		retained.toolCallAbortMessages = toolCallAbortMessages;
+	}
 	const abortedMessage = snapshotAssistantMessage(retained);
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = abortedMessage;

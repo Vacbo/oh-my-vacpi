@@ -23,6 +23,35 @@
 
 - Removed the fork's opt-in eager native-scrollback rebuild (`tui.rebuildScrollbackDuringStreaming`): upstream 15.10.10's append-only commit-ledger renderer makes committed scrollback immutable by design and deleted the `TUI.setEagerNativeScrollbackRebuild()` API the fork hook drove, solving the same history-cleanliness problem without the mouse-scroll yank tradeoff.
 
+## [16.4.0] - 2026-07-10
+
+### Fixed
+
+- Fixed terminal flickering during session resume, replacement, or resizing on terminals that do not support synchronized output.
+
+## [16.3.14] - 2026-07-09
+
+### Fixed
+
+- Fixed race condition where scrollback rows could be incorrectly retracted between render frames
+
+## [16.3.13] - 2026-07-09
+
+### Fixed
+
+- Fixed late terminal appearance subscribers missing the already-detected OSC 11 light/dark result, so theme auto-detection picks up the terminal appearance even when the response arrives before the UI subscribes ([#4731](https://github.com/can1357/oh-my-pi/issues/4731)).
+- Fixed slash command Tab completion reopening the file autocomplete drawer after accepting no-argument commands ([#4808](https://github.com/can1357/oh-my-pi/issues/4808)).
+
+## [16.3.12] - 2026-07-08
+
+### Fixed
+
+- Fixed selector rendering when a legacy theme omits symbol settings by falling back to an ASCII cursor instead of crashing ([#4745](https://github.com/can1357/oh-my-pi/issues/4745)).
+- Kept slash command autocomplete rows compact by truncating descriptions instead of wrapping them into multi-line blocks.
+- Fixed mid-prompt skill autocomplete so Tab and Enter accept the highlighted `/skill:<name>` suggestion and Backspace dismisses the popup immediately after removing the triggering slash ([#4619](https://github.com/can1357/oh-my-pi/issues/4619)).
+- Fixed submitted slash-command arguments treating `@` file-reference tokens as prompt-composer autocomplete triggers when the command does not define argument completions. ([#4600](https://github.com/can1357/oh-my-pi/issues/4600))
+- Fixed box-drawing tree lines (`├── item` — directory layouts, decision trees) in prose shearing apart when they wrap: continuation rows now hang under the node text with ancestor rails carried through (`├` → `│`, `└` → blank) instead of restarting at column 0. Applies to prose paragraphs (including inside blockquotes) only when a line with a branch-connector prefix (`├──`, `└─`, …) actually overflows; fitting lines, non-tree prose, and code blocks render byte-for-byte as before.
+
 ## [16.3.10] - 2026-07-06
 
 ### Fixed

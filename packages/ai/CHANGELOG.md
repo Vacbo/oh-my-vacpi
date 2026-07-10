@@ -14,11 +14,99 @@
 - Extended the fork's Anthropic adaptive effort ladders to Claude Fable/Mythos 5: on the Messages API they ride the Opus 4.7+ ladder (`xhigh` plus the top `max` tier) instead of upstream's `xhigh`-capped default, and on Bedrock they collapse to the Opus 4.6 ladder.
 - Rebased the fork's adaptive-thinking `max_tokens` raise and the `/3` no-explicit-maxTokens default onto upstream 15.10.10's OAuth-conditional output cap: OAuth requests stay clamped to the Claude Code 64k fingerprint ceiling, while API-key callers now get the full model ceiling (e.g. 128k on Opus 4.8) for both the default and the adaptive raise.
 - Extracted the fork's Anthropic output-budget policy (the `/3` no-explicit-maxTokens default and the adaptive-thinking full-ceiling carve-out) out of upstream's `buildParams`/`ensureMaxTokensForThinking` bodies into a single fork-owned `applyForkOutputBudget` applied at the end of the param pipeline. Wire behavior is unchanged; the upstream functions are byte-identical to upstream again, shrinking the recurring three-hunk merge conflict to one insert-only callsite.
+- Retired the fork-specific shifted Anthropic adaptive `Effort.Max` ladder and 64k default-budget overrides in favor of upstream v16.4.0's wire-exact `max` tier model. The fork still preserves compatibility exports and output-cap policy shims, but catalog effort maps and generated model metadata now follow upstream's 32k `max` behavior.
 
 #### Fixed
 
 - Fixed Anthropic adaptive-thinking responses being truncated mid-emission by `stop_reason: "max_tokens"` because `buildParams` defaulted `max_tokens` to `model.maxTokens / 3` for *every* mode, but adaptive thinking self-allocates the thinking budget out of the same per-response ceiling — so a long thinking burst plus a large structured `tool_use` (e.g. a multi-phase `todo_write`) could exceed the `/3` cap, trigger `max_tokens`, and silently install a partial-JSON-repaired truncated call. `ensureMaxTokensForThinking` now restores the deleted adaptive-mode branch: when the resolved thinking shape is `{ type: "adaptive" }` and the caller did not pass an explicit `maxTokens`, lift `params.max_tokens` to `model.maxTokens` so the model gets the full documented per-response capacity. Budget-mode behaviour (`type: "enabled"` + `budget_tokens`) and explicit caller overrides are unchanged
 - Restored the legacy `Type` export from `@oh-my-pi/pi-ai` for fork compatibility.
+
+## [16.4.0] - 2026-07-10
+
+### Added
+
+- Added "max" as a first-class reasoning effort option across providers (including Anthropic, Google, Bedrock, and OpenAI), supporting a maximum reasoning budget of 32,768 tokens.
+- Added and standardized the "Responses Lite" wire contract and transport, enabling automatic activation via model-level catalog flags, moving tools and instructions into developer input items, disabling parallel tool calls, and stripping image detail instead of falling back to the full transport.
+- Added support for concurrent reasoning summaries on Codex Responses using the sequential-cutoff streaming contract.
+- Added Novita API-key login with authenticated key validation and automatic NOVITA_API_KEY environment variable discovery.
+
+### Changed
+
+- Recognized Pro Lite as a paid plan tier for OpenAI Codex models.
+
+### Fixed
+
+- Fixed xAI SuperGrok multi-account rotation to correctly treat HTTP 403 credit exhaustion and spending limit errors as usage limits, triggering a credential rotation to a sibling account.
+- Fixed error classification for AWS credential-resolution failures (AwsCredentialsError) to correctly map them as authentication failures.
+- Fixed OpenAI-compatible chat-completions streams to preserve vLLM-style trailing cached-token usage chunks, ensuring accurate cacheRead and billable input session statistics.
+- Fixed xai-oauth/grok-4.5 Responses requests to omit the unsupported reasoning.summary field while preserving the reasoning.effort payload.
+- Fixed Codex OAuth credential selection to re-check blocked accounts during ranking and clear stale usage-limit blocks once live usage indicates recovery.
+- Fixed sequential-cutoff reasoning summaries duplicating section headers across Codex reasoning items by tracking the cumulative summary response-globally, so replayed sections and replay-only items no longer re-emit text earlier thinking blocks already streamed.
+
+## [16.3.15] - 2026-07-09
+
+### Breaking Changes
+
+- Renamed `OpenAIResponsesCacheOptions`, `normalizeOpenAIResponsesPromptCacheKey`, and `getOpenAIResponsesPromptCacheKey` to the endpoint-neutral `OpenAICacheOptions`, `normalizeOpenAIPromptCacheKey`, and `getOpenAIPromptCacheKey`.
+
+### Added
+
+- Added automatic prompt-cache affinity header injection for OpenAI-family chat completions
+- Added support for explicit prompt-cache affinity headers in OpenAI-family chat completions
+- Added OpenAI pro reasoning mode support: models carrying the catalog `reasoningMode: "pro"` marker (GPT-5.6 Pro aliases) send `reasoning: { mode: "pro" }` on OpenAI Responses and Codex Responses requests, alongside the configured effort. The Codex request body now honors `requestModelId` so catalog aliases request the base upstream model id.
+
+### Changed
+
+- Updated xAI OAuth to use a dedicated device-code flow instead of redirect/loopback server
+
+### Fixed
+
+- Improved account routing for GPT-5.6 models to better respect paid tier requirements
+- Refined account selection logic to correctly identify plan types from account metadata
+- Fixed OpenAI Codex multi-account routing for GPT-5.6: Sol and Luna requests now prefer Plus-or-higher accounts while Terra remains available to Free/Go accounts; local pro-mode aliases inherit their base model's Codex plan eligibility.
+- Fixed xAI Grok OAuth login to use xAI's device authorization flow: `/login` now opens the verification URL, displays the device code, and polls for approval instead of asking for a pasted redirect or linking to Hermes Agent documentation.
+
+## [16.3.14] - 2026-07-09
+
+### Changed
+
+- Updated Codex reasoning effort mapping to support shifted wire tiers for newer models
+
+### Fixed
+
+- Fixed the Codex Responses request transformer bypassing catalog/compat reasoning effort maps: the clamped user effort is now remapped to the provider wire tier (GPT-5.6's shifted five-tier scale sends `max` for user `xhigh` and `xhigh` for `high`), failing loudly if a map produces a value outside the Codex wire vocabulary.
+
+## [16.3.13] - 2026-07-09
+
+### Changed
+
+- Changed the xAI Grok OAuth (`xai-oauth`) provider to use manual code-paste login by default. `/login` now accepts a pasted authorization code or full `http://127.0.0.1:56121/callback?code=...` redirect URL without starting a local callback listener ([#3277](https://github.com/can1357/oh-my-pi/pull/3277) by [@Jaaneek](https://github.com/Jaaneek)).
+- Renamed the xAI Grok OAuth provider in login and credential prompts to "xAI Grok OAuth (SuperGrok or X Premium+)" ([#3277](https://github.com/can1357/oh-my-pi/pull/3277) by [@Jaaneek](https://github.com/Jaaneek)).
+
+### Fixed
+
+- Fixed the generic lazy-stream idle watchdog aborting healthy `cursor-agent` streams with "Provider stream stalled while waiting for the next event" while a Cursor exec-channel local tool (shell/read/grep/write/MCP/…) legitimately ran longer than the idle budget. Provider streams now advertise consumer-side local work in flight and the watchdog slides its deadline instead of aborting; genuinely silent streams still time out. ([#4593](https://github.com/can1357/oh-my-pi/issues/4593))
+- Fixed OpenAI Codex/Responses reasoning streams so streamed thinking content is preserved when the final `output_item.done` reconstructs to an empty summary ([#4918](https://github.com/can1357/oh-my-pi/issues/4918)).
+- Fixed Anthropic streams hanging forever when generation wedges mid-stream (notably long `write` tool calls on Opus 4.8 high/xhigh) while the server keeps sending `ping` keepalives: pings now extend the idle watchdog only within a bounded window (3x the idle timeout) since the last real stream event, so a stalled tool-call stream times out and recovers instead of hanging with no retry path ([#4900](https://github.com/can1357/oh-my-pi/issues/4900)).
+
+## [16.3.12] - 2026-07-08
+
+### Added
+
+- Added `AssistantMessage.toolCallAbortMessages` for per-tool placeholder labels on aborted assistant turns ([#2783](https://github.com/can1357/oh-my-pi/issues/2783)).
+
+### Fixed
+
+- Fixed Anthropic replay 400s (`tool_use ids were found without tool_result blocks immediately after`) when a persisted assistant turn carries content after a completed tool call — such as a mid-turn `server-side-fallback` handoff (fallback block plus continued text/tool calls after the primary model's `tool_use`) or trailing text from cross-provider replays — by stable-partitioning assistant content so all `tool_use` blocks trail the non-`tool_use` chain. ([#4781](https://github.com/can1357/oh-my-pi/issues/4781), [#544](https://github.com/can1357/oh-my-pi/issues/544))
+- Fixed access-token-only OAuth credentials attempting token refresh with an empty refresh token after expiry.
+- Fixed gateway usage-limit retries falling through to cross-provider model fallback before trying a sibling credential from the same provider.
+- Fixed Codex usage-limit rotation treating Plus and K-12 accounts as separate quota groups for shared 5-hour/7-day windows.
+- Fixed OpenAI Responses streams that end with `response.done` being misclassified as premature stream closures.
+- Fixed OpenCode Go `/login` credentials being shadowed by an existing `OPENCODE_API_KEY` env fallback after switching accounts. ([#4688](https://github.com/can1357/oh-my-pi/issues/4688))
+- Fixed OpenAI Codex WebSocket continuations to treat proxy stale-anchor codes such as `codex_previous_response_stale` as an expired `previous_response_id` chain — same recovery class as the OpenAI-standard `previous_response_not_found` — so the turn is retried with full context instead of surfacing the error to the user ([#4624](https://github.com/can1357/oh-my-pi/issues/4624)).
+- Fixed Azure Foundry Anthropic utility requests to omit the structured-output beta whenever strict tools are disabled, preventing `structured_outputs not supported in your workspace` failures for Sonnet 5 compaction ([#4679](https://github.com/can1357/oh-my-pi/issues/4679)).
+- Fixed OAuth `launchUrl` advertisement for flows whose redirect never returns to the local callback server: custom-scheme redirects (e.g. GitLab Duo's `vscode://` URI, which `new URL` parses without complaint) and fixed non-loopback hosts no longer receive a `http://localhost:<port>/launch` copy target that misrepresents the callback endpoint and resolves nowhere for remote users.
+- Codex load balancing: clear stale persisted and in-memory usage-limit blocks for an `openai-codex` account when a fresh live usage report shows it is allowed and below all limits, including broker-backed gateway snapshots, so traffic returns to recovered accounts instead of funneling to one sibling.
 
 ## [16.3.11] - 2026-07-06
 

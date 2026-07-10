@@ -936,7 +936,7 @@ export const SETTINGS_SCHEMA = {
 	// Reasoning and prompts
 	defaultThinkingLevel: {
 		type: "enum",
-		values: [...THINKING_EFFORTS, AUTO_THINKING, "max"],
+		values: [...THINKING_EFFORTS, AUTO_THINKING],
 		default: "high",
 		ui: {
 			tab: "model",
@@ -1367,7 +1367,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Allow retry recovery to switch to configured fallback models",
 		},
 	},
-	"retry.fallbackChains": { type: "record", default: {} as Record<string, string[]> },
+	"retry.fallbackChains": {
+		type: "record",
+		default: {} as Record<string, string[]>,
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Retry Fallback Chains",
+			description:
+				'JSON object mapping model roles to ordered fallback model selectors, e.g. {"default":["openai/gpt-4o-mini"]}.',
+		},
+	},
 	"retry.fallbackRevertPolicy": {
 		type: "enum",
 		values: ["cooldown-expiry", "never"] as const,
@@ -4254,7 +4264,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Subagents",
 			label: "Soft Subagent Request Budget",
 			description:
-				"Soft per-subagent request budget (assistant requests per run). Crossing it can inject a steering notice when task.softRequestBudgetNotice is enabled; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled explore/sonic agents use a lower built-in budget.",
+				"Soft per-subagent request budget (assistant requests per run). Crossing it can inject a steering notice when task.softRequestBudgetNotice is enabled; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled scout/sonic agents use a lower built-in budget.",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "40", label: "40 requests" },
@@ -5095,7 +5105,7 @@ export const SETTINGS_SCHEMA = {
 
 	"thinkingBudgets.xhigh": { type: "number", default: 32768 },
 
-	"thinkingBudgets.max": { type: "number", default: 64000 },
+	"thinkingBudgets.max": { type: "number", default: 32768 },
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════

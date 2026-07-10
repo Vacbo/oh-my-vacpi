@@ -1118,7 +1118,13 @@ export function streamSimple<TApi extends Api>(
 				// Caller aborted between attempts: don't mint a fresh token or fire
 				// another doomed request — emit the captured failure instead.
 				if (signal?.aborted) break;
-				const nextKey = await resolveRetryKey(apiKeyResolver, AUTH_RETRY_STEPS[step]!, failure.error, signal);
+				const nextKey = await resolveRetryKey(
+					apiKeyResolver,
+					AUTH_RETRY_STEPS[step]!,
+					failure.error,
+					signal,
+					lastKey,
+				);
 				if (nextKey === undefined || nextKey === lastKey) continue;
 				lastKey = nextKey;
 				const isLastStep = step === AUTH_RETRY_STEPS.length - 1;
@@ -1251,10 +1257,7 @@ export const ANTHROPIC_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 32768,
-	// Opus 4.7 adaptive thinking with effort=max is API-budgeted; the value here is only used by
-	// legacy budget-mode callers (gitlab-duo, openai-anthropic-shim) and the auth-gateway when no
-	// explicit budget is provided. Pick a generous ceiling so "max" is observably bigger than xhigh.
-	max: 64000,
+	max: 32768,
 };
 
 const GOOGLE_THINKING: Record<Effort, number> = {
@@ -1263,9 +1266,7 @@ const GOOGLE_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 24575,
-	// Google models never expose Effort.Max via getSupportedEfforts(); this entry exists only so the
-	// Record<Effort, number> type remains exhaustive.
-	max: 24575,
+	max: 32768,
 };
 
 const BEDROCK_CLAUDE_THINKING: Record<Effort, number> = {
@@ -1274,8 +1275,6 @@ const BEDROCK_CLAUDE_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 16384,
-	// Bedrock Converse caps Claude thinking budgets lower than Anthropic Messages. Pick 32768 for
-	// `max` to give users a meaningful step above `xhigh` while staying well under model limits.
 	max: 32768,
 };
 
@@ -1649,6 +1648,7 @@ function mapOptionsForApi<TApi extends Api>(
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
+				codexCompaction: options?.codexCompaction,
 				reasoningSummary: options?.hideThinkingSummary ? null : "detailed",
 				textVerbosity: options?.textVerbosity,
 			});
@@ -1858,7 +1858,9 @@ function getGoogleBudget(
 				return 2048;
 			case "medium":
 				return 8192;
-			default:
+			case "high":
+			case "xhigh":
+			case "max":
 				return model.id.includes("2.5-flash") ? 24576 : 32768;
 		}
 	}

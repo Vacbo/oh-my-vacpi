@@ -8,6 +8,28 @@
 
 - Added `NothingToCompactError` to `compaction/errors`: a typed sentinel raised when a compaction request finds nothing to summarize (branch below the minimum size, or already ending in a compaction entry). Callers that compact opportunistically can classify the benign no-op via `instanceof` instead of sniffing error messages.
 
+## [16.4.0] - 2026-07-10
+
+### Added
+
+- Added the `ThinkingLevel.Max` ("max") configuration option, mapping to the `Effort.Max` tier for supported models.
+
+### Fixed
+
+- Fixed remote compaction behavior for Codex Responses Lite (GPT-5.6 family) models across both V1 and V2 endpoints to ensure correct formatting and routing.
+- Fixed an issue where aborted tool-result hooks could trigger subsequent provider calls before the abort signal fully settled.
+
+## [16.3.12] - 2026-07-08
+
+### Added
+
+- Added per-tool abort metadata so stream-wide aborts can label matching tool-call placeholders separately from unaffected sibling calls ([#2783](https://github.com/can1357/oh-my-pi/issues/2783)).
+
+### Fixed
+
+- Fixed handoff generation retrying with `toolChoice: "auto"` when custom OpenAI-compatible providers reject `toolChoice: "none"` with an auto-only 400. ([#4715](https://github.com/can1357/oh-my-pi/issues/4715))
+- Fixed generic remote compaction against OpenAI-compatible `/chat/completions` endpoints (for example llama.cpp `openai-completions`) by sending chat messages instead of the custom `{ systemPrompt, prompt }` summarizer payload. ([#4630](https://github.com/can1357/oh-my-pi/issues/4630))
+
 ## [16.3.7] - 2026-07-05
 
 ### Fixed

@@ -41,6 +41,23 @@ git fetch --all --tags
 
 ---
 
+## 2026-07-10 — Merged upstream v16.4.0: upstream max-tier model adopted, fork shims retained   `[done]` `[high]`
+
+**Merge**: fork `16.3.11` → upstream `v16.4.0`.
+
+**Divergence calls**:
+- **Adopted upstream's wire-exact `max` thinking model over the fork's shifted Anthropic adaptive ladders.** Upstream v16.4.0 made `Effort.Max` first-class across `agent`, `ai`, `catalog`, and `coding-agent`, removed shifted five-tier maps, and clamps unsupported tiers at the model boundary. Keeping the fork's `minimal -> low` / `xhigh -> max` remaps and 64k default would fight the new source-of-truth catalog model and keep recurring conflicts in `model-thinking.ts`, generated policies, and `stream.ts`. The merge therefore uses upstream's 32k `max` budget defaults and 1:1 effort maps, with generated `models.json` rebuilt from merged catalog sources.
+- **Preserved fork compatibility shims without duplicating the autocomplete API.** Upstream renamed the extension autocomplete factory type to `AutocompleteProviderFactory` and added provider validation. The fork keeps `ExtensionAutocompleteProviderFactory` as a type alias for external extension compatibility, but the internal `ExtensionUIContext` and `InteractiveModeContext` expose one `addAutocompleteProvider(factory: AutocompleteProviderFactory)` member each.
+- **Synthesized session options by keeping fork live-session routing and upstream prompt-cache provenance.** `AgentSession` options now carry both `liveSession` (used by fork live TUI/session observability) and upstream's `providerPromptCacheKeySource` (needed to clear fork-inherited prompt-cache keys on incompatible route changes).
+- **Kept the fork's model-facing `todo_write` name while adopting upstream's streamlined workflow notice.** The prompt now uses upstream's task-batching guidance but names the visible fork todo system explicitly so it does not regress to the upstream `todo` spelling.
+- **Treated generated catalog JSON as disposable.** The conflicted `models.json` was seeded from upstream only to restore valid JSON for the generator; the final file was regenerated from merged catalog sources.
+
+**Residual levers**:
+- Revisit the fork's old Anthropic adaptive-thinking output-budget notes if users report regressions on Opus 4.6+/Fable/Mythos. The retained upstream model is cleaner, but the user-visible tradeoff is that `max` now follows the upstream 32k budget default rather than the fork's earlier 64k ceiling.
+- Keep `ExtensionAutocompleteProviderFactory` as a compatibility alias until legacy pi/earendil extensions no longer import it; do not reintroduce duplicate interface members.
+
+---
+
 ## 2026-07-08 — Merged upstream v16.3.11: image cleanup divergence kept, upstream fixes adopted   `[done]` `[med]`
 
 **Merge**: fork `16.3.4` → upstream `v16.3.11`.

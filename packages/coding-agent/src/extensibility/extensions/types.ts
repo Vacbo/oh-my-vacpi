@@ -125,6 +125,10 @@ export interface ExtensionUIDialogOptions {
 	timeout?: number;
 	/** Invoked when the UI times out while waiting for a selection/input */
 	onTimeout?: () => void;
+	/** Invoked when the UI-managed timeout countdown starts */
+	onTimeoutStart?: () => void;
+	/** Invoked when user input resets a UI-managed timeout countdown */
+	onTimeoutReset?: () => void;
 	/** Initial cursor position for select dialogs (0-indexed) */
 	initialIndex?: number;
 	/** Render an outlined list for select dialogs */
@@ -163,6 +167,9 @@ export type ExtensionUiComponent = Component & { dispose?(): void };
 export type ExtensionUiComponentFactory = (tui: TUI, theme: Theme) => ExtensionUiComponent;
 export type ExtensionWidgetContent = string[] | ExtensionUiComponentFactory | undefined;
 
+/** Wrap the current autocomplete provider with additional behavior (pi-compatible). */
+export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
+
 /**
  * UI context for extensions to request interactive UI.
  * Each mode (interactive, RPC, print) provides its own implementation.
@@ -173,6 +180,8 @@ export type ExtensionWidgetContent = string[] | ExtensionUiComponentFactory | un
 // and may be invoked from event handlers that have already taken the agent
 // loop's lock — hooks intentionally cannot.
 export interface ExtensionUIContext {
+	/** True when selector timeouts start only after the dialog is presented. */
+	timeoutStartsOnPresentation?: boolean;
 	/** Show a selector and return the selected label, even when an option also includes a description. */
 	select(
 		title: string,
@@ -244,6 +253,14 @@ export interface ExtensionUIContext {
 	): Promise<string | undefined>;
 
 	/**
+	 * Stack additional autocomplete behavior on top of the built-in provider
+	 * (pi-compatible). Interactive mode rebuilds the editor's provider through
+	 * every registered factory, in registration order; headless modes (print,
+	 * RPC, ACP, subagents) accept and ignore the factory.
+	 */
+	addAutocompleteProvider(factory: AutocompleteProviderFactory): void;
+
+	/**
 	 * Set a custom editor component via factory function, or `undefined` to restore the default editor.
 	 *
 	 * The factory must return a {@link CustomEditor} subclass. Plain `EditorComponent`/`Editor`
@@ -253,16 +270,6 @@ export interface ExtensionUIContext {
 	setEditorComponent(
 		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
 	): void;
-
-	/**
-	 * Register an autocomplete provider factory for the core input editor.
-	 *
-	 * The factory receives the current editor provider and returns a replacement
-	 * that may wrap it (delegating unmatched queries back to `current`). Factories
-	 * compose in registration order and are re-applied whenever the base provider
-	 * is rebuilt. Interactive mode only; a no-op in non-interactive modes.
-	 */
-	addAutocompleteProvider(factory: ExtensionAutocompleteProviderFactory): void;
 
 	/** Get the current theme for styling. */
 	readonly theme: Theme;
@@ -284,11 +291,9 @@ export interface ExtensionUIContext {
 }
 
 /**
- * Factory passed to {@link ExtensionUIContext.addAutocompleteProvider}. Receives
- * the current editor autocomplete provider and returns a replacement, typically
- * one that wraps `current` and delegates queries it does not handle.
+ * Backward-compatible name for extension code compiled against the older API.
  */
-export type ExtensionAutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
+export type ExtensionAutocompleteProviderFactory = AutocompleteProviderFactory;
 
 // ============================================================================
 // Extension Context
@@ -1124,7 +1129,7 @@ export interface ExtensionAPI {
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): void;
 
-	/** Send a user message to the agent, or queue it when deliverAs is set. */
+	/** Send a user prompt: idle starts a turn; streaming queues as steer unless deliverAs is set. */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
 		options?: { deliverAs?: "steer" | "followUp" },

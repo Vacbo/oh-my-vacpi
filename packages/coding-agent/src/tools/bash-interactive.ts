@@ -302,7 +302,7 @@ export async function runInteractiveBashPty(
 	options: {
 		command: string;
 		cwd: string;
-		timeoutMs: number;
+		timeoutMs?: number;
 		signal?: AbortSignal;
 		env?: Record<string, string>;
 		artifactPath?: string;

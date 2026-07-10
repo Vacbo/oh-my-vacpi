@@ -345,12 +345,12 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	// Compaction divider
 	"icon.camera": "📷",
 	// Thinking levels
-	"thinking.minimal": "◔ min",
-	"thinking.low": "◑ low",
-	"thinking.medium": "◒ med",
-	"thinking.high": "◕ high",
-	"thinking.xhigh": "◉ xhigh",
-	"thinking.max": "⬤ max",
+	"thinking.minimal": "○ min",
+	"thinking.low": "◔ low",
+	"thinking.medium": "◑ med",
+	"thinking.high": "◒ high",
+	"thinking.xhigh": "◕ xhigh",
+	"thinking.max": "◉ max",
 	"thinking.autoPending": "⟳",
 	// Checkboxes
 	"checkbox.checked": "☑",
@@ -641,21 +641,15 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.mic": "\uf130",
 	// Compaction divider - fa-camera-retro
 	"icon.camera": "\uf083",
-	// Thinking Levels - emoji labels
-	// pick: 🤨 min | alt:  min  min
-	"thinking.minimal": "\u{F0E7} min",
-	// pick: 🤔 low | alt:  low  low
-	"thinking.low": "\u{F10C} low",
-	// pick: 🤓 med | alt:  med  med
-	"thinking.medium": "\u{F192} med",
-	// pick: 🤯 high | alt:  high  high
-	"thinking.high": "\u{F111} high",
-	// pick: 🔥 xhi (outline) | alt:  xhi
-	"thinking.xhigh": "\u{F490} xhi",
-	// pick: 🔥 max (filled)  | alt:  max
+	// Thinking levels — increasing circle slices, with fire reserved for max.
+	"thinking.minimal": "\u{F0A9E} min",
+	"thinking.low": "\u{F0A9F} low",
+	"thinking.medium": "\u{F0AA1} med",
+	"thinking.high": "\u{F0AA3} high",
+	"thinking.xhigh": "\u{F0AA5} xhi",
 	"thinking.max": "\u{F06D} max",
-	// pick:  (fa-circle-o-notch) | alt: 󰂼 (nf-md-cached) ⟳
-	"thinking.autoPending": "\uf1ce",
+	// Auto mode uses shuffle until the model resolves its thinking level.
+	"thinking.autoPending": "\u{F074}",
 	// Checkboxes
 	// pick:  | alt:  
 	"checkbox.checked": "\uf14a",
@@ -1064,6 +1058,7 @@ const themeColorsSchema = type({
 	thinkingMedium: "string | number",
 	thinkingHigh: "string | number",
 	thinkingXhigh: "string | number",
+	"thinkingMax?": "string | number",
 	bashMode: "string | number",
 	pythonMode: "string | number",
 	statusLineBg: "string | number",
@@ -1168,6 +1163,7 @@ export type ThemeColor =
 	| "thinkingMedium"
 	| "thinkingHigh"
 	| "thinkingXhigh"
+	| "thinkingMax"
 	| "bashMode"
 	| "pythonMode"
 	| "statusLineSep"
@@ -1230,6 +1226,7 @@ const THEME_COLOR_RECORD = {
 	thinkingMedium: true,
 	thinkingHigh: true,
 	thinkingXhigh: true,
+	thinkingMax: true,
 	bashMode: true,
 	pythonMode: true,
 	statusLineSep: true,
@@ -1679,8 +1676,10 @@ export class Theme {
 			case "high":
 				return (str: string) => this.fg("thinkingHigh", str);
 			case "xhigh":
-			case "max":
 				return (str: string) => this.fg("thinkingXhigh", str);
+			case "max":
+				// thinkingMax is optional; themes without it resolve to the xhigh color.
+				return (str: string) => this.fg(this.#fgColors.thinkingMax ? "thinkingMax" : "thinkingXhigh", str);
 			default:
 				return (str: string) => this.fg("thinkingOff", str);
 		}

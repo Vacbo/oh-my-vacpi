@@ -997,9 +997,6 @@ function buildAdditionalModelRequestFields(
 		medium: 8192,
 		high: 16384,
 		xhigh: 32768,
-		// Keep budget-mode Bedrock at the same ceiling stream.ts BEDROCK_CLAUDE_THINKING reports.
-		// Adaptive Opus models return earlier via `mode === "anthropic-adaptive"` and send
-		// output_config.effort instead of consuming this budget.
 		max: 32768,
 	};
 	const budget = options.thinkingBudgets?.[level] ?? defaultBudgets[level];
