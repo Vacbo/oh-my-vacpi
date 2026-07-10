@@ -21,6 +21,20 @@
 - Fixed Anthropic adaptive-thinking responses being truncated mid-emission by `stop_reason: "max_tokens"` because `buildParams` defaulted `max_tokens` to `model.maxTokens / 3` for *every* mode, but adaptive thinking self-allocates the thinking budget out of the same per-response ceiling — so a long thinking burst plus a large structured `tool_use` (e.g. a multi-phase `todo_write`) could exceed the `/3` cap, trigger `max_tokens`, and silently install a partial-JSON-repaired truncated call. `ensureMaxTokensForThinking` now restores the deleted adaptive-mode branch: when the resolved thinking shape is `{ type: "adaptive" }` and the caller did not pass an explicit `maxTokens`, lift `params.max_tokens` to `model.maxTokens` so the model gets the full documented per-response capacity. Budget-mode behaviour (`type: "enabled"` + `budget_tokens`) and explicit caller overrides are unchanged
 - Restored the legacy `Type` export from `@oh-my-pi/pi-ai` for fork compatibility.
 
+## [16.4.2] - 2026-07-10
+
+### Fixed
+
+- Fixed compatibility with xAI by automatically downgrading OpenAI-specific tool calls and image detail settings during message history replays.
+- Fixed a race condition in shared SQLite OAuth token refreshes by implementing durable credential ownership and compare-and-set persistence to prevent stale refresh failures.
+- Fixed OpenAI Codex requests to include the required version header for newly gated models.
+
+## [16.4.1] - 2026-07-10
+
+### Changed
+
+- Enforced `all_turns` reasoning context for all Responses Lite requests
+
 ## [16.4.0] - 2026-07-10
 
 ### Added

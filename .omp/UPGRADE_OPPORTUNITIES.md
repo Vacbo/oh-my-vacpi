@@ -41,6 +41,24 @@ git fetch --all --tags
 
 ---
 
+## 2026-07-11 — Merged upstream v16.4.2: durable OAuth and model-specific delegation synthesized   `[done]` `[high]`
+
+**Merge**: fork `16.4.0` → upstream `v16.4.2`.
+
+**Divergence calls**:
+- **Adopted upstream's durable OAuth refresh ownership while retaining the fork's provider and MCP diagnostics.** Shared SQLite credentials now use upstream refresh leases plus compare-and-set persistence, and MCP token refresh delegates to that single owner. The fork's model-aware environment-key lookup, broker-redacted refresh sentinel, bounded MCP discovery, and stable connection-error classification remain because they govern credential selection and user-visible connection state rather than refresh concurrency.
+- **Synthesized upstream's GPT-5.6 task policy with the fork's skill-discovery and tool-naming contract.** Upstream's model-specific delegation policy, centralized concurrency/IRC guidance, and hidden-model prompt-cache cohorts are active. The fork still collapses unpinned skills into `search_tool_bm25` and exposes `todo_write`; the merged SDK supplies both upstream task-policy variables and fork discovery data, so neither mechanism duplicates the other's prompt surface.
+- **Kept fork live-session and discovered-tool persistence around upstream prompt/session fixes.** Live-session registration, teardown, and built-in discovery selections remain wired while upstream's BigInt-safe session JSON serialization and model-dependent prompt invalidation are adopted.
+- **Adopted upstream's GPT-5.6 subscription boundaries while preserving fork Fireworks routing.** Generated `openai-codex` Luna/Sol/Terra entries intentionally omit unsupported `-pro` aliases, while API-key `openai` aliases remain. The fork's Fire Pass router/static seed and generated thinking/context policies stay in the catalog; `models.json` was regenerated from the merged source rules rather than hand-resolved.
+- **Normalized changelogs by source of truth.** Fork entries remain verbatim under `## [Unreleased]` → `### oh-my-vacpi (fork)`; every upstream released section is byte-identical to `v16.4.2`.
+
+**Residual levers**:
+- If upstream broadens `usesCodexTaskPrompt` beyond the current GPT-5.6 cohort, extend the hidden-model cache key through that policy helper instead of adding another prompt-specific model test.
+- Keep MCP connection classification separate from OAuth refresh ownership until upstream exposes an equivalent user-facing status contract; the lease/CAS path alone cannot explain launch, transport, protocol, and timeout failures.
+- Continue regenerating `packages/catalog/src/models.json` after resolver, descriptor, discovery, or policy changes. Codex subscription `-pro` aliases are intentionally absent; their reappearance is a generator regression.
+
+---
+
 ## 2026-07-10 — Merged upstream v16.4.0: upstream max-tier model adopted, fork shims retained   `[done]` `[high]`
 
 **Merge**: fork `16.3.11` → upstream `v16.4.0`.

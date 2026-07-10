@@ -799,6 +799,7 @@ import * as bundledPiCodingAgentTaskOmpCommand from "@oh-my-pi/pi-coding-agent/t
 import * as bundledPiCodingAgentTaskOutputManager from "@oh-my-pi/pi-coding-agent/task/output-manager";
 import * as bundledPiCodingAgentTaskParallel from "@oh-my-pi/pi-coding-agent/task/parallel";
 import * as bundledPiCodingAgentTaskPersistedRevive from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
+import * as bundledPiCodingAgentTaskPromptPolicy from "@oh-my-pi/pi-coding-agent/task/prompt-policy";
 import * as bundledPiCodingAgentTaskProviderConcurrency from "@oh-my-pi/pi-coding-agent/task/provider-concurrency";
 import * as bundledPiCodingAgentTaskRender from "@oh-my-pi/pi-coding-agent/task/render";
 import * as bundledPiCodingAgentTaskRenderer from "@oh-my-pi/pi-coding-agent/task/renderer";
@@ -828,6 +829,7 @@ import * as bundledPiCodingAgentToolsBuiltinNames from "@oh-my-pi/pi-coding-agen
 import * as bundledPiCodingAgentToolsCheckpoint from "@oh-my-pi/pi-coding-agent/tools/checkpoint";
 import * as bundledPiCodingAgentToolsConflictDetect from "@oh-my-pi/pi-coding-agent/tools/conflict-detect";
 import * as bundledPiCodingAgentToolsContext from "@oh-my-pi/pi-coding-agent/tools/context";
+import * as bundledPiCodingAgentToolsContextExport from "@oh-my-pi/pi-coding-agent/tools/context-export";
 import * as bundledPiCodingAgentToolsDebug from "@oh-my-pi/pi-coding-agent/tools/debug";
 import * as bundledPiCodingAgentToolsEval from "@oh-my-pi/pi-coding-agent/tools/eval";
 import * as bundledPiCodingAgentToolsEvalBackends from "@oh-my-pi/pi-coding-agent/tools/eval-backends";
@@ -2924,6 +2926,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/task/persisted-revive": bundledPiCodingAgentTaskPersistedRevive as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/task/prompt-policy": bundledPiCodingAgentTaskPromptPolicy as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/task/provider-concurrency":
 		bundledPiCodingAgentTaskProviderConcurrency as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/task/render": bundledPiCodingAgentTaskRender as unknown as Readonly<
@@ -2995,6 +3000,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/conflict-detect": bundledPiCodingAgentToolsConflictDetect as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/tools/context-export": bundledPiCodingAgentToolsContextExport as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/context": bundledPiCodingAgentToolsContext as unknown as Readonly<

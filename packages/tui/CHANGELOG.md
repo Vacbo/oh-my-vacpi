@@ -23,6 +23,21 @@
 
 - Removed the fork's opt-in eager native-scrollback rebuild (`tui.rebuildScrollbackDuringStreaming`): upstream 15.10.10's append-only commit-ledger renderer makes committed scrollback immutable by design and deleted the `TUI.setEagerNativeScrollbackRebuild()` API the fork hook drove, solving the same history-cleanliness problem without the mouse-scroll yank tradeoff.
 
+## [16.4.1] - 2026-07-10
+
+### Added
+
+- Added full 2-D layout support for display LaTeX math (fractions, matrices, radicals, limits), modeled on the layout approach of [txm](https://github.com/thatmagicalcat/txm) (Terminal TeX Math) by [@thatmagicalcat](https://github.com/thatmagicalcat)
+- Added support for `\left`, `\right`, and `\middle` stretchy delimiters in display blocks
+- Added rendering for `cases`, `matrix`, `pmatrix`, `bmatrix`, and `vmatrix` environments
+- Added support for block-level scripts and big-operator limits (e.g., `\sum`, `\int\limits`)
+- Added cross-box styling for `\color`, `\textcolor`, and math font commands (e.g., `\mathbf`)
+
+### Changed
+
+- Improved row alignment and spacing for `align`, `gather`, and `array` environments
+- Updated matrix environments to render as baseline-aligned grids with stretched brackets
+
 ## [16.4.0] - 2026-07-10
 
 ### Fixed
