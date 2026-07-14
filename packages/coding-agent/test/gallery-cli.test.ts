@@ -9,6 +9,7 @@ import type { GalleryFixture } from "@oh-my-pi/pi-coding-agent/cli/gallery-fixtu
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
+import type { TodoToolDetails } from "@oh-my-pi/pi-coding-agent/tools/todo";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -122,5 +123,30 @@ describe("gallery harness", () => {
 		const fixture = resolveFixture("a-tool-that-has-no-fixture");
 		expect(fixture.args).toBeDefined();
 		expect(fixture.result.content.length).toBeGreaterThan(0);
+	});
+
+	it("keys the curated todo fixture to todo_write and renders the completed-status contract", async () => {
+		// The fork registers the tool as `todo_write`; the curated fixture must be
+		// keyed to match, or the gallery falls through to the generic fixture and
+		// the dedicated renderer never runs.
+		const fixture = resolveFixture("todo_write");
+		expect(fixture.label).toBe("Todo");
+
+		// Fixture task statuses use the current `completed` contract, never the
+		// stale upstream `done`.
+		const details = fixture.result.details as TodoToolDetails;
+		const statuses: string[] = details.phases.flatMap(phase => phase.tasks.map(task => task.status));
+		expect(statuses).toContain("completed");
+		expect(statuses).not.toContain("done");
+
+		// The dedicated renderer draws the phase tree; the completed task shows the
+		// checked marker — a stale `done` status would render it unchecked.
+		const lines = (await renderGalleryState("todo_write", fixture, "success", 100)).map(line => Bun.stripANSI(line));
+		const output = lines.join("\n");
+		expect(output).toContain("Foundation");
+		expect(output).toContain("Wire workspace");
+		const scaffoldLine = lines.find(line => line.includes("Scaffold crate"));
+		expect(scaffoldLine).toBeDefined();
+		expect(scaffoldLine).toContain(theme.checkbox.checked);
 	});
 });

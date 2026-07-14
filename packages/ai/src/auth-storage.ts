@@ -23,7 +23,7 @@ import type {
 	OAuthProvider,
 	OAuthProviderId,
 } from "./registry/oauth/types";
-import { getEnvApiKey, getEnvApiKeyForModel, getEnvApiKeyName } from "./stream";
+import { getEnvApiKey, getEnvApiKeyForModel, getEnvApiKeyName, getModelScopedEnvApiKey } from "./stream";
 import type { Provider } from "./types";
 import type {
 	CredentialRankingContext,
@@ -315,6 +315,8 @@ export interface CredentialRefreshLeaseFence {
 
 export interface AuthCredentialStore {
 	close(): void;
+	/** Optional hook to notify the underlying store that usage report cache is stale. */
+	invalidateUsageCache?(signal?: AbortSignal): Promise<void>;
 	listAuthCredentials(provider?: string): StoredAuthCredential[];
 	updateAuthCredential(id: number, credential: AuthCredential): void;
 	deleteAuthCredential(id: number, disabledCause: string): void;
@@ -2183,6 +2185,23 @@ export class AuthStorage {
 	}
 
 	/**
+	 * Model-aware counterpart to {@link AuthStorage.hasAuth}: true when a
+	 * dedicated non-env credential is configured for the provider, or when the
+	 * model-aware env fallback ({@link getEnvApiKeyForModel}) yields a key for
+	 * this specific model.
+	 *
+	 * Unlike {@link AuthStorage.hasAuth} it never consults the generic
+	 * {@link getEnvApiKey} directly, so a provider whose only env credential is a
+	 * model-scoped key (the Fire Pass `FIREWORKS_PASS_API_KEY`, scoped to the
+	 * Kimi K2.6 Turbo router) marks ONLY the router model available — ordinary
+	 * `fireworks` models stay unavailable on a pass-only environment because the
+	 * generic `FIREWORKS_API_KEY` is absent.
+	 */
+	hasAuthForModel(provider: string, modelId: string | undefined): boolean {
+		return this.hasNonEnvCredential(provider) || Boolean(getEnvApiKeyForModel(provider, modelId));
+	}
+
+	/**
 	 * Classify where a provider's auth comes from, following the same precedence
 	 * as {@link AuthStorage.getApiKey}: runtime override → config override →
 	 * stored OAuth → login-stored api_key → env var → stored api_key →
@@ -3739,8 +3758,17 @@ export class AuthStorage {
 
 	/**
 	 * Resolves an OAuth credential, trying credentials in priority order.
-	 * Skips blocked credentials and checks usage limits for providers with usage data.
-	 * Falls back to earliest-unblocking credential if all are blocked.
+	 *
+	 * Resolution ladder — a request in hand always beats "no API key":
+	 * 1. strict: unblocked credentials only, usage limits respected, plan
+	 *    filter enforced (when any account is confirmed eligible);
+	 * 2. plan-fitting last resort: same plan filter, but blocked/exhausted
+	 *    accounts are allowed (blocked candidates rank earliest-unblocking
+	 *    first) so the caller gets real usage-limit semantics from the wire
+	 *    instead of a missing key;
+	 * 3. unfiltered last resort: the plan filter matched nothing usable —
+	 *    skip it and try every account once; the server is the final arbiter
+	 *    of model access.
 	 *
 	 * Returns both the API key bytes for outbound requests AND the refreshed
 	 * {@link OAuthCredential} so callers needing identity metadata (account id,
@@ -3890,42 +3918,34 @@ export class AuthStorage {
 			hasPlanRequirement &&
 			candidates.some(candidate => getOpenAICodexPlanEligibility(candidate.usage, planRequirement) === true);
 
-		const fallback = candidates[0];
+		const passes: Array<{ allowBlocked: boolean; enforcePlanRequirement: boolean }> = [
+			{ allowBlocked: false, enforcePlanRequirement },
+			{ allowBlocked: true, enforcePlanRequirement },
+		];
+		if (enforcePlanRequirement) passes.push({ allowBlocked: true, enforcePlanRequirement: false });
 
-		for (const candidate of candidates) {
-			const resolved = await this.#tryOAuthCredential(
-				provider,
-				candidate.selection,
-				providerKey,
-				sessionId,
-				options,
-				{
-					checkUsage,
-					allowBlocked: false,
-					prefetchedUsage: candidate.usage,
-					usagePrechecked: candidate.usageChecked,
-					planRequirement,
-					enforcePlanRequirement,
-					strategy,
-					rankingContext,
-					blockScope,
-				},
-			);
-			if (resolved) return resolved;
-		}
-
-		if (fallback && this.#isCredentialBlocked(provider, providerKey, fallback.selection.index, blockScope)) {
-			return this.#tryOAuthCredential(provider, fallback.selection, providerKey, sessionId, options, {
-				checkUsage,
-				allowBlocked: true,
-				prefetchedUsage: fallback.usage,
-				usagePrechecked: fallback.usageChecked,
-				planRequirement,
-				enforcePlanRequirement,
-				strategy,
-				rankingContext,
-				blockScope,
-			});
+		for (const pass of passes) {
+			for (const candidate of candidates) {
+				const resolved = await this.#tryOAuthCredential(
+					provider,
+					candidate.selection,
+					providerKey,
+					sessionId,
+					options,
+					{
+						checkUsage,
+						allowBlocked: pass.allowBlocked,
+						prefetchedUsage: candidate.usage,
+						usagePrechecked: candidate.usageChecked,
+						planRequirement,
+						enforcePlanRequirement: pass.enforcePlanRequirement,
+						strategy,
+						rankingContext,
+						blockScope,
+					},
+				);
+				if (resolved) return resolved;
+			}
 		}
 
 		return undefined;
@@ -4339,11 +4359,13 @@ export class AuthStorage {
 	 * Priority (first match wins):
 	 * 1. Runtime override (CLI --api-key)
 	 * 2. Config override (models.yml `providers.<name>.apiKey`)
-	 * 3. OAuth token from storage (auto-refreshed)
-	 * 4. API key persisted by a successful `/login`
-	 * 5. Environment variable
-	 * 6. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
-	 * 7. Fallback resolver (models.yml custom providers, last-resort)
+	 * 3. Dedicated model-scoped env key (Fire Pass `FIREWORKS_PASS_API_KEY` for the
+	 *    router models) — beats unrelated generic OAuth/login/stored credentials
+	 * 4. OAuth token from storage (auto-refreshed)
+	 * 5. API key persisted by a successful `/login`
+	 * 6. Environment variable (generic, model-aware fallback)
+	 * 7. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
+	 * 8. Fallback resolver (models.yml custom providers, last-resort)
 	 */
 	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
 		// Runtime override takes highest priority
@@ -4361,6 +4383,15 @@ export class AuthStorage {
 		if (configKey) {
 			return configKey;
 		}
+
+		// A dedicated model-scoped env key (the Fire Pass `FIREWORKS_PASS_API_KEY`,
+		// scoped to the Kimi K2.6 Turbo router) authenticates a specific model that
+		// generic provider credentials do not authorize. It must beat unrelated
+		// stored/OAuth/login Fireworks credentials, yet stays below the explicit
+		// runtime/config overrides above and never displaces ordinary generic env
+		// precedence (that stays at the getEnvApiKeyForModel step below).
+		const modelScopedEnvKey = getModelScopedEnvApiKey(provider, options?.modelId);
+		if (modelScopedEnvKey) return modelScopedEnvKey;
 
 		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
 		// then a stored static api_key (which may be a stale broker-migrated copy) as a last resort.
@@ -4665,6 +4696,11 @@ export class AuthStorage {
 		});
 		if (result.ok) {
 			this.#invalidateUsageReportCache(provider, baseUrl);
+			if (this.#store.invalidateUsageCache) {
+				await this.#store.invalidateUsageCache(options.signal).catch(err => {
+					logger.debug("Failed to notify store of stale usage", { err });
+				});
+			}
 			// The window this credential was blocked on (by markUsageLimitReached)
 			// is now reset, so lift its temporary block — otherwise selection
 			// keeps skipping/under-ranking the freshly-reset account.
@@ -4687,6 +4723,40 @@ export class AuthStorage {
 			);
 			const existing = this.#usageCache.getStale<UsageReport | null>(cacheKey);
 			this.#usageCache.set(cacheKey, { value: existing?.value ?? null, expiresAt: expired });
+		}
+	}
+
+	/**
+	 * Force-invalidate cached usage reports so the next fetch retrieves fresh
+	 * values from upstream providers. If `provider` is specified, only that
+	 * provider's credentials are invalidated; otherwise, all credentials in the
+	 * store are invalidated.
+	 */
+	async invalidateUsageCache(provider?: string, signal?: AbortSignal): Promise<void> {
+		if (provider) {
+			this.#invalidateUsageReportCache(provider);
+		} else {
+			this.#usageCacheEpoch += 1;
+			const expired = Date.now() - 1;
+			try {
+				const credentials = this.#store.listAuthCredentials();
+				for (const entry of credentials) {
+					if (entry.credential.type !== "oauth") continue;
+					const cacheKey = this.#buildUsageReportCacheKey(
+						this.#buildUsageRequestForOauth(entry.provider, entry.credential),
+					);
+					const existing = this.#usageCache.getStale<UsageReport | null>(cacheKey);
+					this.#usageCache.set(cacheKey, { value: existing?.value ?? null, expiresAt: expired });
+				}
+			} catch (err) {
+				logger.debug("Failed to list auth credentials for complete usage cache invalidation", { err });
+			}
+		}
+
+		if (this.#store.invalidateUsageCache) {
+			await this.#store.invalidateUsageCache(signal).catch(err => {
+				logger.debug("Failed to notify store of stale usage", { err });
+			});
 		}
 	}
 
@@ -5636,6 +5706,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 				} catch {
 					// Ignore chmod failures (e.g., Windows)
 				}
+				SqliteAuthCredentialStore.#ensureAuthCredentialRefreshLeasesTable(db);
 				return new SqliteAuthCredentialStore(db);
 			} catch (err) {
 				db?.close();
@@ -5652,6 +5723,18 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			`Failed to open auth database at '${dbPath}' after ${maxAttempts} attempts: ${lastBusyError?.message}`,
 			{ cause: lastBusyError },
 		);
+	}
+
+	static #ensureAuthCredentialRefreshLeasesTable(db: Database): void {
+		db.run(`
+			CREATE TABLE IF NOT EXISTS auth_credential_refresh_leases (
+				credential_id INTEGER PRIMARY KEY,
+				owner TEXT NOT NULL,
+				expires_at_ms INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_auth_credential_refresh_leases_expires ON auth_credential_refresh_leases(expires_at_ms);
+		`);
 	}
 
 	#initializeSchema(): void {
@@ -5819,15 +5902,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	}
 
 	#createAuthCredentialRefreshLeasesTable(): void {
-		this.#db.run(`
-			CREATE TABLE IF NOT EXISTS auth_credential_refresh_leases (
-				credential_id INTEGER PRIMARY KEY,
-				owner TEXT NOT NULL,
-				expires_at_ms INTEGER NOT NULL,
-				updated_at INTEGER NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_auth_credential_refresh_leases_expires ON auth_credential_refresh_leases(expires_at_ms);
-		`);
+		SqliteAuthCredentialStore.#ensureAuthCredentialRefreshLeasesTable(this.#db);
 	}
 
 	#migrateAuthSchema(fromVersion: number): void {

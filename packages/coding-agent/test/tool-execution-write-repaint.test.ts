@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type Component, TUI } from "@oh-my-pi/pi-tui";
@@ -31,16 +31,49 @@ function plainBuffer(term: VirtualTerminal): string[] {
 		.filter(Boolean);
 }
 
+// A host-independent direct-terminal baseline for the buffer assertions below.
+// A multiplexer id (TMUX/STY/ZELLIJ/CMUX_*/TERM=tmux*|screen*), read fresh from
+// Bun.env, makes the destructive rebuild fall back to repair-below (ED3 would
+// corrupt a pane's own history), so the stale pending tail rows survive instead
+// of being scrubbed — clearing these keeps the ED3 scrub path. TERM_PROGRAM and
+// PI_TUI_RESIZE_IN_PLACE only steer the resize path (not exercised here) but are
+// cleared too so no ambient terminal identity leaks in. The suite runs inside
+// cmux (CMUX_WORKSPACE_ID/CMUX_SURFACE_ID), tmux/screen/zellij, or Warp.
+const DIRECT_TERMINAL_ENV_KEYS = [
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"TERM",
+	"TERM_PROGRAM",
+	"PI_TUI_RESIZE_IN_PLACE",
+] as const;
+
 describe("ToolExecutionComponent write repaint seam", () => {
 	const components: ToolExecutionComponent[] = [];
+	let savedTerminalEnv: Record<string, string | undefined> = {};
 
 	beforeAll(async () => {
 		await initTheme();
 	});
 
+	beforeEach(() => {
+		for (const key of DIRECT_TERMINAL_ENV_KEYS) {
+			savedTerminalEnv[key] = Bun.env[key];
+			delete Bun.env[key];
+		}
+	});
+
 	afterEach(() => {
 		for (const component of components) component.stopAnimation();
 		components.length = 0;
+		for (const key in savedTerminalEnv) {
+			const value = savedTerminalEnv[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+		savedTerminalEnv = {};
 		vi.restoreAllMocks();
 	});
 

@@ -299,10 +299,14 @@ export function validateServerConfig(name: string, config: MCPServerConfig): str
 		}
 	}
 
-	// connectTimeoutMs must be a positive number when set
+	// connectTimeoutMs must be a non-negative number when set (0 disables, per mcp-schema.json).
 	if (config.connectTimeoutMs !== undefined) {
-		if (typeof config.connectTimeoutMs !== "number" || !(config.connectTimeoutMs > 0)) {
-			errors.push(`Server "${name}": "connectTimeoutMs" must be a positive number`);
+		if (
+			typeof config.connectTimeoutMs !== "number" ||
+			!Number.isFinite(config.connectTimeoutMs) ||
+			config.connectTimeoutMs < 0
+		) {
+			errors.push(`Server "${name}": "connectTimeoutMs" must be a non-negative number`);
 		}
 	}
 

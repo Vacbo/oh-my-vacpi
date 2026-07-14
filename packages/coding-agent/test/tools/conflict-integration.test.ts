@@ -332,6 +332,40 @@ describe("write resolves conflicts via conflict://N", () => {
 		expect(session.conflictHistory?.get(1)).toBeUndefined();
 	});
 
+	it("drops trailing lines that echo the context below the region and notes the repair", async () => {
+		const filePath = path.join(tempDir, "echo.ts");
+		const content = [
+			"function f() {",
+			"<<<<<<< HEAD",
+			"\tours();",
+			"=======",
+			"\ttheirs();",
+			">>>>>>> feature/x",
+			"\tdone();",
+			"}",
+			"",
+		].join("\n");
+		await Bun.write(filePath, content);
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-echo", { path: "echo.ts" });
+		// The classic failure: the model pastes the whole resolved function,
+		// including the two lines that live below the marker block.
+		const result = await write.execute("write-echo", {
+			path: "conflict://1",
+			content: "\tours();\n\ttheirs();\n\tdone();\n}\n",
+		});
+
+		const text = getText(result);
+		expect(text).toContain("Resolved conflict #1");
+		expect(text).toContain("dropped 2 content line(s)");
+		expect(await Bun.file(filePath).text()).toBe(
+			["function f() {", "\tours();", "\ttheirs();", "\tdone();", "}", ""].join("\n"),
+		);
+	});
+
 	it("auto-recovers a `<file>:conflict://N` path and resolves the conflict", async () => {
 		const filePath = path.join(tempDir, "prefix.ts");
 		await Bun.write(filePath, TWO_WAY);
@@ -435,6 +469,88 @@ describe("write resolves conflicts via conflict://N", () => {
 		expect(await Bun.file(fileB).text()).toBe("line 1\notherApi(x)\nline N\n");
 		expect(session.conflictHistory?.get(1)).toBeDefined();
 		expect(session.conflictHistory?.get(2)).toBeUndefined();
+	});
+
+	it("resolves per-id bulk directives in one call, leaving unlisted ids registered", async () => {
+		const filePath = path.join(tempDir, "directives.ts");
+		await Bun.write(filePath, TWO_BLOCKS);
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-directives", { path: "directives.ts" });
+		const result = await write.execute("write-directives", {
+			path: "conflict://*",
+			content: "1: @ours\n2: @theirs\n",
+		});
+
+		const text = getText(result);
+		expect(text).toContain("Resolved 2 conflicts");
+		expect(await Bun.file(filePath).text()).toBe("a-ours\nmiddle\nb-theirs\ntail\n");
+		expect(session.conflictHistory?.get(1)).toBeUndefined();
+		expect(session.conflictHistory?.get(2)).toBeUndefined();
+	});
+
+	it("directive mode resolves a subset and reports the ids left registered", async () => {
+		const filePath = path.join(tempDir, "directives-subset.ts");
+		await Bun.write(filePath, TWO_BLOCKS);
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-directives-subset", { path: "directives-subset.ts" });
+		const result = await write.execute("write-directives-subset", {
+			path: "conflict://*",
+			content: "2: @ours",
+		});
+
+		const text = getText(result);
+		expect(text).toContain("Resolved 1 conflict");
+		expect(text).toContain("still registered (#1)");
+		expect(await Bun.file(filePath).text()).toBe(
+			["<<<<<<< A", "a-ours", "=======", "a-theirs", ">>>>>>> A", "middle", "b-ours", "tail", ""].join("\n"),
+		);
+		expect(session.conflictHistory?.get(1)).toBeDefined();
+	});
+
+	it("rejects directives referencing unknown ids", async () => {
+		const filePath = path.join(tempDir, "directives-bad.ts");
+		await Bun.write(filePath, TWO_WAY);
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-directives-bad", { path: "directives-bad.ts" });
+		const promise = write.execute("write-directives-bad", {
+			path: "conflict://*",
+			content: "1: @ours\n7: @theirs",
+		});
+		await expect(promise).rejects.toThrow(/unknown conflict id\(s\) #7/);
+	});
+
+	it("path-qualified directive bulk rejects ids registered for a different file", async () => {
+		const fileA = path.join(tempDir, "cross-a.ts");
+		const fileB = path.join(tempDir, "cross-b.ts");
+		await Bun.write(fileA, TWO_WAY);
+		await Bun.write(fileB, TWO_WAY.replace("newApi(x)", "otherApi(x)"));
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-cross-a", { path: "cross-a.ts:conflicts" });
+		await read.execute("read-cross-b", { path: "cross-b.ts:conflicts" });
+
+		// #1 belongs to cross-a.ts; the cross-b.ts guard scopes the wildcard to
+		// cross-b.ts, so the directive id is unknown-in-scope and must reject
+		// before any splice — directive selection cannot bypass the path guard.
+		await expect(
+			write.execute("write-cross-directive", {
+				path: "cross-b.ts:conflict://*",
+				content: "1: @theirs",
+			}),
+		).rejects.toThrow(/unknown conflict id\(s\) #1/);
+		expect(await Bun.file(fileA).text()).toBe(TWO_WAY);
+		expect(await Bun.file(fileB).text()).toBe(TWO_WAY.replace("newApi(x)", "otherApi(x)"));
 	});
 
 	it("can resolve two blocks in the same file by id, in either order", async () => {

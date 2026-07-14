@@ -7,8 +7,6 @@ import xterm from "@xterm/headless";
 const XtermTerminal = xterm.Terminal;
 const DEFAULT_COLUMNS = 120;
 const DEFAULT_ROWS = 40;
-const MAX_ROWS = 200;
-const MAX_COLUMNS = 240;
 const WRITE_FLUSH_DELAY_MS = 25;
 
 export type TerminalColorMode = "palette" | "rgb";
@@ -94,6 +92,15 @@ export class TerminalSnapshotRecorder {
 	#isWriting = false;
 	#flushResolvers: Array<() => void> = [];
 	#persistTimer: Timer | undefined;
+	/**
+	 * Serializes every snapshot write (scheduled and final) so two persists
+	 * never write `path` concurrently, and a later-issued persist always lands
+	 * after an earlier one — the final teardown snapshot cannot be overwritten
+	 * by a stale scheduled persist that resolves out of order.
+	 */
+	#persistChain: Promise<void> = Promise.resolve();
+	/** Set by {@link flushAndPersist}: stops arming new scheduled persists during teardown. */
+	#closing = false;
 	#cursorVisible = true;
 	#now: () => Date;
 
@@ -192,8 +199,41 @@ export class TerminalSnapshotRecorder {
 		};
 	}
 
-	async persist(): Promise<void> {
-		await Bun.write(this.path, `${JSON.stringify(this.snapshot(), null, 2)}\n`);
+	/**
+	 * Write the current snapshot to {@link path}. The snapshot is captured
+	 * synchronously at call time, then the write is appended to {@link #persistChain}
+	 * so it runs strictly after any in-flight persist — the resolved promise waits
+	 * for both this and every prior write. A recorder without a path (in-memory
+	 * capture, e.g. the interactive bash overlay) is a no-op.
+	 */
+	persist(): Promise<void> {
+		if (!this.path) return Promise.resolve();
+		const payload = `${JSON.stringify(this.snapshot(), null, 2)}\n`;
+		const done = this.#persistChain.then(() => Bun.write(this.path, payload)).then(() => {});
+		// Keep the chain alive across a rejected write so later persists still run;
+		// the returned `done` still surfaces this write's own rejection to callers.
+		this.#persistChain = done.then(
+			() => {},
+			() => {},
+		);
+		return done;
+	}
+
+	/**
+	 * Finalize the recorder for shutdown/restart/disposal: stop arming new
+	 * scheduled persists, drain every queued xterm write, then persist the final
+	 * state after all prior writes settle. Awaiting this before {@link dispose}
+	 * guarantees queued terminal data reaches disk and no stale scheduled persist
+	 * can overwrite the final snapshot at process exit.
+	 */
+	async flushAndPersist(): Promise<void> {
+		this.#closing = true;
+		if (this.#persistTimer) {
+			clearTimeout(this.#persistTimer);
+			this.#persistTimer = undefined;
+		}
+		await this.flush();
+		await this.persist();
 	}
 
 	dispose(): void {
@@ -241,7 +281,9 @@ export class TerminalSnapshotRecorder {
 	}
 
 	#schedulePersist(): void {
-		if (this.#persistTimer) return;
+		// Never persist an in-memory recorder (no path), and stop arming new
+		// timers once teardown has taken over the final persist.
+		if (!this.path || this.#closing || this.#persistTimer) return;
 		this.#persistTimer = setTimeout(() => {
 			this.#persistTimer = undefined;
 			void this.persist().catch(error => {
@@ -377,11 +419,11 @@ export function terminalColorToCss(color: TerminalColor): string {
 }
 
 function clampColumns(cols: number): number {
-	return Math.max(1, Math.min(MAX_COLUMNS, Math.floor(cols)));
+	return Number.isFinite(cols) ? Math.max(1, Math.floor(cols)) : DEFAULT_COLUMNS;
 }
 
 function clampRows(rows: number): number {
-	return Math.max(1, Math.min(MAX_ROWS, Math.floor(rows)));
+	return Number.isFinite(rows) ? Math.max(1, Math.floor(rows)) : DEFAULT_ROWS;
 }
 
 function isEnoentError(error: unknown): boolean {

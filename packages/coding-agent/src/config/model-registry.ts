@@ -1916,23 +1916,35 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Availability predicate with per-provider memoization. Auth lookups
-	 * (`authStorage.hasAuth`) and the disabled-provider set are resolved once
-	 * per provider instead of once per model, which matters when filtering the
-	 * full bundled catalog (thousands of models, ~50 providers).
+	 * Availability predicate memoized by provider and by provider+model. The
+	 * common case — a provider that is generically authenticated (stored
+	 * credential or generic env key) or keyless — resolves once per provider and
+	 * makes every one of its models available, which matters when filtering the
+	 * full bundled catalog (thousands of models, ~50 providers). Only when a
+	 * provider has no generic auth do we fall to a per-model check: a dedicated
+	 * model-scoped env key (the Fire Pass `FIREWORKS_PASS_API_KEY`, scoped to the
+	 * Kimi K2.6 Turbo router) can still make a single model available without
+	 * exposing the rest of the `fireworks` catalog.
 	 */
 	#createAvailabilityCheck(): (model: Model<Api>) => boolean {
 		const disabledProviders = getDisabledProviderIdsFromSettings();
 		const byProvider = new Map<string, boolean>();
+		const byModel = new Map<string, boolean>();
 		return model => {
-			let available = byProvider.get(model.provider);
-			if (available === undefined) {
-				available =
-					!disabledProviders.has(model.provider) &&
-					(this.#keylessProviders.has(model.provider) || this.authStorage.hasAuth(model.provider));
-				byProvider.set(model.provider, available);
+			if (disabledProviders.has(model.provider)) return false;
+			let providerAvailable = byProvider.get(model.provider);
+			if (providerAvailable === undefined) {
+				providerAvailable = this.#keylessProviders.has(model.provider) || this.authStorage.hasAuth(model.provider);
+				byProvider.set(model.provider, providerAvailable);
 			}
-			return available;
+			if (providerAvailable) return true;
+			const modelKey = `${model.provider}/${model.id}`;
+			let modelAvailable = byModel.get(modelKey);
+			if (modelAvailable === undefined) {
+				modelAvailable = this.authStorage.hasAuthForModel(model.provider, model.id);
+				byModel.set(modelKey, modelAvailable);
+			}
+			return modelAvailable;
 		};
 	}
 
@@ -1950,8 +1962,9 @@ export class ModelRegistry {
 	 * Mirrors the upstream `@mariozechner/pi-coding-agent` API surface so that
 	 * external plugins/extensions and downstream wrappers (e.g. subagent launch
 	 * paths that pre-flight auth before model resolution) can probe a model
-	 * without resolving an API key. Returns true for keyless providers as well
-	 * as providers with stored credentials. See issue #993.
+	 * without resolving an API key. Returns true for keyless providers, providers
+	 * with stored credentials, and models reachable through a dedicated
+	 * model-scoped env key (the Fire Pass router). See issue #993.
 	 *
 	 * Side-effect-free and synchronous: a command-backed key (`!cmd`) counts as
 	 * configured by its presence alone — the program is NOT executed — and OAuth
@@ -1965,7 +1978,7 @@ export class ModelRegistry {
 		return (
 			isCommandConfigValue(keyConfig) ||
 			this.#keylessProviders.has(model.provider) ||
-			this.authStorage.hasAuth(model.provider)
+			this.authStorage.hasAuthForModel(model.provider, model.id)
 		);
 	}
 

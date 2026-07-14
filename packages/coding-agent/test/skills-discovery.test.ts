@@ -246,8 +246,13 @@ describe("array entry suggestions", () => {
 	});
 
 	it("does not re-suggest names covered by committed segments", () => {
+		// "cm" matches only the cmux-* entries (prefix); upstream word-local token
+		// gating keeps it from loosely matching "caveman" (span c…m = 5 > maxSpan
+		// 4). Both cmux entries are already covered by the committed "cmux*", so
+		// nothing is left to suggest — without covered-filtering "cm" would surface
+		// ["cmux-drive", "cmux-observe"].
 		const state = suggestArrayEntries("cmux*, cm", pool);
-		expect(state.items).toEqual(["caveman"]);
+		expect(state.items).toEqual([]);
 	});
 
 	it("caps suggestions at the limit and clears them between segments", () => {

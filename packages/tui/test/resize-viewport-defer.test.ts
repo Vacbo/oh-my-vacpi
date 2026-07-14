@@ -21,6 +21,13 @@ const NO_MULTIPLEXER_ENV: Record<string, string | undefined> = {
 	TMUX: undefined,
 	STY: undefined,
 	ZELLIJ: undefined,
+	// cmux marks its panes with a workspace + surface id; the suite runs inside
+	// cmux on dev machines and CI, which otherwise routes resize through the
+	// in-place (multiplexer) path and skips the ED3 scrollback rebuild.
+	CMUX_WORKSPACE_ID: undefined,
+	CMUX_SURFACE_ID: undefined,
+	// TERM=tmux*|screen* is also read as a multiplexer signal.
+	TERM: undefined,
 	// Pin terminal identity so the alt-screen fast-path assertions below are
 	// deterministic even when the suite runs inside Warp (which otherwise takes
 	// the in-place path — see the Warp describe block at the bottom).
@@ -335,6 +342,54 @@ describe("non-multiplexer resize viewport fast path", () => {
 				await scheduler.flushAll(term);
 				expect(tui.resizeViewportActive).toBe(false);
 				expect(tui.fullRedraws).toBe(baselineFull + 1);
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
+	it("keeps a forced render mid-drag on the viewport fast path instead of a destructive normal-screen replay", async () => {
+		await withEnvPatch(NO_MULTIPLEXER_ENV, async () => {
+			const term = new VirtualTerminal(40, 10, 1000);
+			const { tui, scheduler } = makeTui(term);
+			try {
+				tui.start();
+				await scheduler.flushImmediates(term);
+
+				// One drag SIGWINCH enters the fast path and borrows the alt screen.
+				term.resize(60, 10);
+				await scheduler.flushImmediates(term);
+				expect(tui.resizeViewportActive).toBe(true);
+
+				const baselineFull = tui.fullRedraws;
+				const baselinePaints = tui.resizeViewportPaints;
+				const writes = captureWrites(term);
+
+				// A FORCED render lands mid-drag (tool finalization, resetDisplay,
+				// image reconciliation — routine during a live agent session). It must
+				// stay on the viewport fast path: preempting leaves the borrowed
+				// alternate screen and runs the geometry-rebuild full paint on the
+				// normal screen — ED3 plus an O(history) replay the user watches
+				// scroll through the viewport — and the settle then replays the whole
+				// transcript a second time.
+				tui.requestRender(true);
+				await scheduler.flushImmediates(term);
+
+				// Still mid-drag, still on the alternate screen: a viewport-only
+				// paint, no full redraw, no scrollback erase, no alt-screen exit.
+				expect(tui.resizeViewportActive).toBe(true);
+				expect(tui.resizeViewportPaints).toBeGreaterThan(baselinePaints);
+				expect(tui.fullRedraws).toBe(baselineFull);
+				expect(writes.join("")).not.toContain(ALT_SCREEN_EXIT);
+				expect(eraseScrollbackCount(writes)).toBe(0);
+
+				// The forced intent folds into the settle: exactly one authoritative
+				// full paint with exactly one ED3 once the drag goes quiet.
+				await scheduler.flushAll(term);
+				expect(tui.resizeViewportActive).toBe(false);
+				expect(tui.fullRedraws).toBe(baselineFull + 1);
+				expect(eraseScrollbackCount(writes)).toBe(1);
+				expect(visible(term).at(-1)).toBe("b14-y");
 			} finally {
 				tui.stop();
 			}

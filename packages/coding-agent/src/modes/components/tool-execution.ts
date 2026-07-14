@@ -180,6 +180,8 @@ export interface ToolExecutionHandle extends Component {
 	): void;
 	setArgsComplete(toolCallId?: string): void;
 	setExpanded(expanded: boolean): void;
+	/** Freeze the block as final history: stop spinners and let it commit to scrollback. */
+	seal(): void;
 }
 
 /** Redraw live tool blocks at the spinner's glyph-advance rate. Rendering more
@@ -602,7 +604,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					: partialAnimation === true);
 		const isLivePartialTool =
 			this.#isPartial &&
-			this.#toolName !== "todo" &&
+			this.#toolName !== "todo_write" &&
 			!isBackgroundAsyncRunning &&
 			(pendingCallConsumesSpinner || partialResultConsumesSpinner);
 		const needsSpinner = isStreamingArgs || isLivePartialTool || this.#displaceableByToolName === "job";

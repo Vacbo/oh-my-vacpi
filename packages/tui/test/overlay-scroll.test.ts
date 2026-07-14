@@ -167,13 +167,33 @@ async function settleResize(term: VirtualTerminal): Promise<void> {
 	await flushRender(term);
 }
 
+// Multiplexer / terminal-identity signals and overrides, read fresh from Bun.env
+// on every render (isInsideTerminalMultiplexer + reportsSizeOnAltScreenToggle).
+// A multiplexer id (TMUX/STY/ZELLIJ/CMUX_*/TERM=tmux*|screen*), Warp
+// (TERM_PROGRAM), or PI_TUI_RESIZE_IN_PLACE=1 can steer a resize onto the
+// in-place path that skips the ED3 scrollback rebuild. Direct-terminal
+// assertions must run with all of them cleared: dev machines and CI run this
+// suite inside cmux (CMUX_WORKSPACE_ID/CMUX_SURFACE_ID), tmux/screen/zellij, or
+// Warp.
+const DIRECT_TERMINAL_ENV_KEYS = [
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"TERM",
+	"TERM_PROGRAM",
+	"PI_TUI_RESIZE_IN_PLACE",
+] as const;
+
 describe("TUI overlays", () => {
 	let savedTerminalEnv: Record<string, string | undefined> = {};
 	beforeEach(() => {
-		// A resize on Warp takes the in-place path (no ED3), so neutralize the
-		// ambient terminal identity to keep the direct-terminal resize/scrollback
-		// assertions below deterministic on any dev machine.
-		for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE"]) {
+		// Any of these can steer a resize onto the in-place path that skips the
+		// ED3 scrollback rebuild (multiplexer detection, Warp, or the explicit
+		// override), so clear them all to keep the direct-terminal resize and
+		// scrollback assertions below deterministic on any host, including cmux.
+		for (const key of DIRECT_TERMINAL_ENV_KEYS) {
 			savedTerminalEnv[key] = Bun.env[key];
 			delete Bun.env[key];
 		}

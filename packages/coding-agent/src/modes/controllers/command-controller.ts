@@ -16,6 +16,7 @@ import {
 } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, type OverlayHandle, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
 import { shareSession } from "../../export/share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
@@ -51,7 +52,12 @@ import { limitMatchesActiveAccount } from "../../slash-commands/helpers/active-o
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
 import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
-import { getChangelogPath, parseChangelog } from "../../utils/changelog";
+import {
+	getChangelogPath,
+	parseChangelog,
+	RECENT_CHANGELOG_ENTRY_LIMIT,
+	renderChangelogEntries,
+} from "../../utils/changelog";
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
@@ -287,8 +293,8 @@ export class CommandController {
 		// Append-only context
 		{
 			const setting = this.ctx.settings.get("provider.appendOnlyContext") ?? "auto";
-			const provider = this.ctx.session.model?.provider;
-			const mode = setting === "on" ? true : setting === "off" ? false : provider === "deepseek";
+			const provider = model?.provider;
+			const mode = shouldEnableAppendOnlyContext(setting, model);
 			const activeLabel = mode ? theme.fg("success", "active") : theme.fg("dim", "inactive");
 			const settingLabel = setting === "auto" ? `${setting} (${provider ?? "?"})` : setting;
 			info += `${theme.fg("dim", "Append-Only:")} ${activeLabel} (setting: ${settingLabel})\n`;
@@ -506,16 +512,9 @@ export class CommandController {
 	async handleChangelogCommand(showFull = false): Promise<void> {
 		const changelogPath = getChangelogPath();
 		const allEntries = await parseChangelog(changelogPath);
-		// Default to showing only the latest 3 versions unless --full is specified
-		// allEntries comes from parseChangelog with newest first, reverse to show oldest->newest
-		const entriesToShow = showFull ? allEntries : allEntries.slice(0, 3);
+		const entriesToShow = showFull ? allEntries : allEntries.slice(0, RECENT_CHANGELOG_ENTRY_LIMIT);
 		const changelogMarkdown =
-			entriesToShow.length > 0
-				? [...entriesToShow]
-						.reverse()
-						.map(e => e.content)
-						.join("\n\n")
-				: "No changelog entries found.";
+			entriesToShow.length > 0 ? renderChangelogEntries(entriesToShow).markdown : "No changelog entries found.";
 		const title = showFull ? "Full Changelog" : "Recent Changes";
 		const hint = showFull
 			? ""
@@ -1242,7 +1241,15 @@ export class CommandController {
 			this.ctx.rebuildChatFromMessages();
 
 			this.ctx.statusLine.invalidate();
-			this.ctx.ui.requestRender();
+			// Same as the auto-compaction rebuild: a collapsed transcript is an
+			// intentional replacement, so drop the stale pre-compaction scrollback
+			// instead of repainting the shrunken frame below it. With collapse
+			// disabled the full history stays inline and scrollback is kept.
+			if (this.ctx.settings.get("display.collapseCompacted")) {
+				this.ctx.ui.requestRender(true, { clearScrollback: true });
+			} else {
+				this.ctx.ui.requestRender();
+			}
 		} catch (error) {
 			if (error instanceof CompactionCancelledError) {
 				outcome = "cancelled";

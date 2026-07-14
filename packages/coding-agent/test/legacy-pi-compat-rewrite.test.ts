@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
-import { formatSize, truncateHead } from "@oh-my-pi/pi-coding-agent";
+import { truncateHead } from "@oh-my-pi/pi-coding-agent";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { loadLegacyPiModule } from "../src/extensibility/plugins/legacy-pi-compat";
 
@@ -33,7 +33,11 @@ describe("legacy Pi plugin compatibility loader", () => {
 		try {
 			const loaded = (await loadLegacyPiModule(entry)) as { formatted: string; sameHelper: boolean };
 
-			expect(loaded.formatted).toBe(formatSize(1536));
+			// The legacy package root serves `formatBytes as formatSize` (see
+			// legacy-pi-coding-agent-shim.ts and collectBundledPiEntries), so legacy
+			// extensions get the compact "1.5KB" form — a stable observable contract,
+			// distinct from the current root's spaced formatSize ("1.5 KB").
+			expect(loaded.formatted).toBe("1.5KB");
 			expect(loaded.sameHelper).toBe(true);
 		} finally {
 			delete globals.__expectedTruncateHead;

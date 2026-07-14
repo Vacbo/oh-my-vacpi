@@ -117,7 +117,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
  */
 export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	appearance: ["Theme", "Status Line", "Display", "Images"],
-	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Vision"],
+	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Prewalk", "Vision"],
 	interaction: [
 		"Input",
 		"Approvals",
@@ -331,6 +331,25 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		tool: "write",
 		message: "Use the `write` tool instead of echo/cat redirection. It handles encoding and provides confirmation.",
 	},
+	{
+		pattern: "^\\s*nohup\\s+|(?<!&)\\&\\s*$",
+		tool: "launch",
+		message:
+			"Use the `launch` tool instead of nohup or background shell syntax so the process stays observable and managed.",
+	},
+	{
+		pattern:
+			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?(?:dev|start)(?:\\s|$)|(?:vite|next\\s+dev|nuxt\\s+dev|nodemon|lldb|gdb|tail\\s+-f)(?:\\s|$)|docker\\s+compose\\s+up(?!.*(?:\\s-d(?:\\s|$)|--detach))(?:\\s|$))",
+		tool: "launch",
+		message:
+			"Use the `launch` tool for services, watchers, and debuggers so other omp instances can observe and control them.",
+	},
+	{
+		pattern:
+			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?\\S+|cargo\\s+watch|watchexec|pytest|vitest|jest|tsc)(?:.|\\n)*(?:--watch|-w)(?:\\s|$)",
+		tool: "launch",
+		message: "Use the `launch` tool for watch mode so its output, input, and lifecycle stay managed.",
+	},
 ];
 
 export const SETTINGS_SCHEMA = {
@@ -401,6 +420,17 @@ export const SETTINGS_SCHEMA = {
 			label: "Enable Advisor",
 			description:
 				"Pair a second model (assigned to the 'advisor' role) that passively reviews each turn and injects notes.",
+		},
+	},
+	"prewalk.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Prewalk",
+			label: "Enable Prewalk",
+			description:
+				"Start on the active model, then switch to a fast/cheap model (default the 'smol' role) at the first edit/write after the plan nudge's todo list exists — the strong model plans, commits the todos, and starts the implementation before handing off. Overridable per session with --prewalk / --no-prewalk.",
 		},
 	},
 	"advisor.subagents": {
@@ -867,6 +897,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Remove the 1-character horizontal padding from the left and right of the terminal output",
 		},
 	},
+	"tui.scrollbackRebuild": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Rewrite Scrollback",
+			description:
+				"Erase and replay terminal scrollback when a block's final form replaces its live preview. When off (default), stale preview copies remain in history and the final content is appended below.",
+		},
+	},
 
 	"display.shimmer": {
 		type: "enum",
@@ -915,6 +956,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Cache Miss Marker",
 			description: "Show a divider above an assistant turn whose request lost (missed) the prompt cache",
+		},
+	},
+
+	"display.collapseCompacted": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Collapse Compacted History",
+			description:
+				"Collapse pre-compaction history behind the summary divider on the live transcript; disable to keep the full transcript inline with dividers at each compaction point",
 		},
 	},
 
@@ -1239,7 +1292,7 @@ export const SETTINGS_SCHEMA = {
 	textVerbosity: {
 		type: "enum",
 		values: ["low", "medium", "high"] as const,
-		default: "high",
+		default: "medium",
 		ui: {
 			tab: "model",
 			group: "Sampling",
@@ -1247,8 +1300,8 @@ export const SETTINGS_SCHEMA = {
 			description: "OpenAI Responses and Codex response verbosity (low, medium, or high)",
 			options: [
 				{ value: "low", label: "Low", description: "Prefer concise responses" },
-				{ value: "medium", label: "Medium", description: "Balance brevity and detail" },
-				{ value: "high", label: "High", description: "Prefer detailed responses (default)" },
+				{ value: "medium", label: "Medium", description: "Balance brevity and detail (default)" },
+				{ value: "high", label: "High", description: "Prefer detailed responses" },
 			],
 		},
 	},
@@ -1375,7 +1428,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Retry & Fallback",
 			label: "Retry Fallback Chains",
 			description:
-				'JSON object mapping model roles to ordered fallback model selectors, e.g. {"default":["openai/gpt-4o-mini"]}.',
+				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider.',
 		},
 	},
 	"retry.fallbackRevertPolicy": {
@@ -2597,14 +2650,14 @@ export const SETTINGS_SCHEMA = {
 			group: "Mnemopi",
 			label: "Mnemopi LLM Mode",
 			description:
-				"Use no LLM, the online tiny model (the TINY role from /models, else pi/smol), or a remote OpenAI-compatible endpoint",
+				"Use no LLM, the online tiny model (the TINY role from /models, else @smol), or a remote OpenAI-compatible endpoint",
 			condition: "mnemopiActive",
 			options: [
 				{ value: "none", label: "None", description: "Disable Mnemopi LLM-backed extraction" },
 				{
 					value: "smol",
 					label: "Online (tiny)",
-					description: "Use the online tiny model (the TINY role from /models, else pi/smol)",
+					description: "Use the online tiny model (the TINY role from /models, else @smol)",
 				},
 				{ value: "remote", label: "Remote", description: "Use the Mnemopi remote LLM settings below" },
 			],
@@ -3309,16 +3362,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"python.sharedGateway": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "editing",
-			label: "Python Shared Gateway",
-			description: "Allow Python eval calls to reuse a shared kernel gateway when available",
-		},
-	},
-
 	// ────────────────────────────────────────────────────────────────────────
 	// Tools
 	// ────────────────────────────────────────────────────────────────────────
@@ -3528,6 +3571,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"launch.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Launch",
+			description: "Enable the launch tool for supervising shared long-running project processes",
+		},
+	},
+
 	"speechgen.enabled": {
 		type: "boolean",
 		default: false,
@@ -3566,6 +3620,7 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
+			group: "Available Tools",
 			label: "Restart Tool",
 			description:
 				"Let the model restart omp in place to adopt a freshly rebuilt build and resume this session (top-level interactive sessions only)",
@@ -3654,6 +3709,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"ask.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Ask",
+			description: "Enable the ask tool for interactive user questions",
+		},
+	},
+
 	"browser.enabled": {
 		type: "boolean",
 		default: true,
@@ -3705,6 +3771,7 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
+			group: "Available Tools",
 			label: "TUI Observe",
 			description:
 				"Enable the tui_observe tool for inspecting live OMP sessions (structured terminal state, events, and screenshots).",
@@ -3715,6 +3782,7 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "tools",
+			group: "Developer",
 			label: "TUI screenshot directory",
 			description:
 				"Directory for tui_observe screenshots of live OMP sessions. Falls back to the browser screenshot directory, then a temp file. Supports ~.",
@@ -3725,6 +3793,7 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
+			group: "Developer",
 			label: "Native terminal capture",
 			description:
 				"Allow tui_observe to screenshot the actual terminal window via OS tools (macOS screencapture, Linux grim/maim/import). Privacy-sensitive; disabled by default and never falls back to full-screen capture.",
@@ -3735,6 +3804,7 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "tools",
+			group: "Developer",
 			label: "Native capture app",
 			description:
 				"Preferred terminal application name to disambiguate the capture target (e.g. Ghostty, Warp, Terminal, Alacritty, iTerm).",
@@ -3745,6 +3815,7 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "tools",
+			group: "Developer",
 			label: "Native capture directory",
 			description:
 				"Directory for native terminal-window screenshots. Falls back to the TUI screenshot directory, then the browser one, then a temp file. Supports ~.",
@@ -3755,6 +3826,7 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
+			group: "Developer",
 			label: "Native capture window chrome",
 			description: "Include the window title bar/shadow in native captures where the platform supports it.",
 		},
@@ -3764,6 +3836,7 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
+			group: "Developer",
 			label: "TUI input control",
 			description:
 				"Allow the loopback sessions server to inject input into this session's TUI. Disabled by default; only enable for trusted local automation.",
@@ -3774,6 +3847,7 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
+			group: "Developer",
 			label: "Require control token",
 			description: "Require the per-session bearer token for TUI input control requests.",
 		},
@@ -3783,6 +3857,7 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
+			group: "Developer",
 			label: "Log control inputs",
 			description: "Write an audit log entry for every TUI input-control attempt.",
 		},
@@ -4258,31 +4333,31 @@ export const SETTINGS_SCHEMA = {
 
 	"task.softRequestBudget": {
 		type: "number",
-		default: 90,
+		default: 200,
 		ui: {
 			tab: "tasks",
 			group: "Subagents",
 			label: "Soft Subagent Request Budget",
 			description:
-				"Soft per-subagent request budget (assistant requests per run). Crossing it can inject a steering notice when task.softRequestBudgetNotice is enabled; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled scout/sonic agents use a lower built-in budget.",
+				"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents use a lower built-in budget.",
 			options: [
 				{ value: "0", label: "Disabled" },
-				{ value: "40", label: "40 requests" },
-				{ value: "90", label: "90 requests", description: "Default" },
+				{ value: "90", label: "90 requests" },
 				{ value: "150", label: "150 requests" },
+				{ value: "200", label: "200 requests", description: "Default" },
 			],
 		},
 	},
 
 	"task.softRequestBudgetNotice": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "tasks",
 			group: "Subagents",
 			label: "Soft Request Budget Notice",
 			description:
-				"Inject one steering notice when a subagent crosses its soft request budget. Off by default; enabling it asks the child to wrap up before the 1.5x graceful abort guard.",
+				"Inject one steering notice when a subagent crosses its soft request budget, asking it to wrap up before the 1.5x forced-yield stop.",
 		},
 	},
 
@@ -4367,6 +4442,7 @@ export const SETTINGS_SCHEMA = {
 		default: "all",
 		ui: {
 			tab: "tools",
+			group: "Discovery & MCP",
 			label: "Skill Discovery",
 			description:
 				"all: list every skill in the system prompt. search: list only pinned skills; the rest stay loaded but are found on demand via search_tool_bm25",
@@ -4378,6 +4454,7 @@ export const SETTINGS_SCHEMA = {
 		default: [] as string[],
 		ui: {
 			tab: "tools",
+			group: "Discovery & MCP",
 			label: "Pinned Skills",
 			description:
 				"Comma-separated globs for skills that stay listed in the system prompt under search discovery (e.g. cmux*, caveman)",
@@ -4676,7 +4753,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Tiny Model",
 			label: "Tiny Model",
 			description:
-				"Session-title model: online (the TINY role from /models, else pi/smol) by default, or a local on-device model",
+				"Session-title model: online (the TINY role from /models, else @smol) by default, or a local on-device model",
 			options: TINY_TITLE_MODEL_OPTIONS,
 		},
 	},

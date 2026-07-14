@@ -737,11 +737,30 @@ export function getEnvApiKey(provider: string): string | undefined {
 	return resolver?.();
 }
 
-export function getEnvApiKeyForModel(provider: string, modelId: string | undefined): string | undefined {
+/**
+ * The env key that authenticates a *specific* model when the generic provider
+ * env fallback does not — currently the Fire Pass `FIREWORKS_PASS_API_KEY`,
+ * which is scoped to the Kimi K2.6 Turbo router models (`FIREWORKS_PASS_MODEL_IDS`)
+ * and does NOT authorize the generic `fireworks` `/v1/models` catalog. Returns
+ * undefined for every other provider/model so ordinary providers keep their
+ * plain generic env precedence.
+ */
+export function getModelScopedEnvApiKey(provider: string, modelId: string | undefined): string | undefined {
 	if (provider === "fireworks" && modelId && FIREWORKS_PASS_MODEL_IDS.has(modelId)) {
 		return $env.FIREWORKS_PASS_API_KEY;
 	}
-	return getEnvApiKey(provider);
+	return undefined;
+}
+
+/**
+ * Env fallback for a specific model: the dedicated model-scoped key when one
+ * exists ({@link getModelScopedEnvApiKey}), otherwise the provider's generic
+ * env key ({@link getEnvApiKey}). Keeps the Fire Pass router keyed to
+ * `FIREWORKS_PASS_API_KEY` while ordinary Fireworks models resolve
+ * `FIREWORKS_API_KEY`.
+ */
+export function getEnvApiKeyForModel(provider: string, modelId: string | undefined): string | undefined {
+	return getModelScopedEnvApiKey(provider, modelId) ?? getEnvApiKey(provider);
 }
 
 /**
@@ -1445,9 +1464,6 @@ function mapOptionsForApi<TApi extends Api>(
 		streamFirstEventTimeoutMs: options?.streamFirstEventTimeoutMs,
 		streamIdleTimeoutMs: options?.streamIdleTimeoutMs,
 		providerSessionState: options?.providerSessionState,
-		useInteractionsApi: options?.useInteractionsApi,
-		storeInteraction: options?.storeInteraction,
-		previousInteractionId: options?.previousInteractionId,
 		maxInFlightRequests: options?.maxInFlightRequests,
 		onPayload: options?.onPayload,
 		onResponse: options?.onResponse,

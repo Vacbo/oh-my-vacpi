@@ -20,6 +20,7 @@ import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { GitRefHead } from "@oh-my-pi/pi-coding-agent/utils/git";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
+import * as jj from "@oh-my-pi/pi-coding-agent/utils/jj";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
 
 const originalProjectDir = getProjectDir();
@@ -37,6 +38,8 @@ afterAll(() => {
 
 beforeEach(() => {
 	vi.spyOn(git.head, "resolveSync").mockReturnValue(fakeRefHead);
+	vi.spyOn(jj.repo, "rootSync").mockReturnValue(null);
+	vi.spyOn(jj.headLabel, "getSync").mockReturnValue(undefined);
 });
 
 afterEach(() => {

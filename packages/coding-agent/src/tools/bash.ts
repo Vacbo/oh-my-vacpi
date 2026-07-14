@@ -37,12 +37,18 @@ import {
 	stripRawOutputArtifactNotice,
 } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
-import { capPreviewLines, formatToolWorkingDirectory, previewWindowRows, replaceTabs } from "./render-utils";
+import {
+	capPreviewLines,
+	DEFAULT_TERMINAL_PREVIEW_LINES,
+	formatToolWorkingDirectory,
+	previewWindowRows,
+	replaceTabs,
+} from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
 
-export const BASH_DEFAULT_PREVIEW_LINES = 10;
+export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
 const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS = 60_000;
@@ -196,10 +202,9 @@ type ManagedBashJobCompletion =
 
 interface ManagedBashJobHandle {
 	jobId: string;
-	label: string;
 	completion: Promise<ManagedBashJobCompletion>;
 	getLatestText: () => string;
-	setBackgrounded: (backgrounded: boolean) => void;
+	stopUpdates: () => void;
 }
 
 function normalizeResultOutput(result: BashResult | BashInteractiveResult): string {
@@ -330,6 +335,10 @@ function formatExitCodeNotice(exitCode: number): string {
 	return `Command exited with code ${exitCode}`;
 }
 
+function formatBackgroundNotice(jobId: string): string {
+	return `Backgrounded as job ${jobId}; result will be delivered automatically.`;
+}
+
 /**
  * Strip the trailing occurrence of `notice` (plus a single surrounding newline
  * on each side) so the TUI can echo the value via a styled footer label
@@ -356,6 +365,11 @@ function stripWallTimeNotice(text: string, wallTimeMs: number | undefined): stri
 function stripExitCodeNotice(text: string, exitCode: number | undefined): string {
 	if (exitCode === undefined) return text;
 	return stripTrailingNotice(text, formatExitCodeNotice(exitCode));
+}
+
+function stripBackgroundNotice(text: string, async: BashToolDetails["async"] | undefined): string {
+	if (async?.state !== "running") return text;
+	return stripTrailingNotice(text, formatBackgroundNotice(async.jobId));
 }
 
 /**
@@ -392,6 +406,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			hasGrep: isToolActive("grep", this.session.settings.get("grep.enabled")),
 			hasGlob: isToolActive("glob", this.session.settings.get("glob.enabled")),
 			hasRead: isToolActive("read", true),
+			hasLaunch: isToolActive("launch", this.session.settings.get("launch.enabled")),
 			hasEval: isToolActive(
 				"eval",
 				evalBackends.python || evalBackends.js || evalBackends.ruby || evalBackends.julia,
@@ -530,7 +545,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 	#buildBackgroundStartResult(
 		jobId: string,
-		label: string,
 		previewText: string,
 		timeoutSec: number | undefined,
 		options: { requestedTimeoutSec?: number; notices?: readonly string[] } = {},
@@ -554,11 +568,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (options.notices?.length) {
 			lines.push(...options.notices, "");
 		}
-		lines.push(`Background job ${jobId} started: ${label}`);
-		lines.push("Result will be delivered automatically when complete.");
-		lines.push(
-			`You can use \`job\` to poll until complete, but prefer to continue with another task in the meanwhile if it's not blocking.`,
-		);
+		lines.push(formatBackgroundNotice(jobId));
 		return {
 			content: [{ type: "text", text: lines.join("\n") }],
 			details,
@@ -579,7 +589,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		resolvedEnv?: Record<string, string>;
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
-		startBackgrounded: boolean;
+		forwardUpdates: boolean;
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
@@ -588,7 +598,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		const label = options.command.length > 120 ? `${options.command.slice(0, 117)}...` : options.command;
 		let latestText = "";
-		let backgrounded = options.startBackgrounded;
+		let forwardUpdates = options.forwardUpdates;
 		const completion = Promise.withResolvers<ManagedBashJobCompletion>();
 
 		const jobId = manager.register(
@@ -644,11 +654,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			},
 			{
 				ownerId: this.session.getAgentId?.() ?? undefined,
-				onProgress: async (text, details) => {
+				onProgress: async text => {
 					latestText = text;
+					if (!forwardUpdates) return;
 					await options.onUpdate?.({
 						content: [{ type: "text", text }],
-						details: backgrounded ? ((details ?? {}) as BashToolDetails) : {},
+						details: {},
 					});
 				},
 			},
@@ -656,11 +667,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		return {
 			jobId,
-			label,
 			completion: completion.promise,
 			getLatestText: () => latestText,
-			setBackgrounded: (nextBackgrounded: boolean) => {
-				backgrounded = nextBackgrounded;
+			stopUpdates: () => {
+				forwardUpdates = false;
 			},
 		};
 	}
@@ -825,9 +835,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 				resolvedEnv,
 				onUpdate,
-				startBackgrounded: true,
+				forwardUpdates: false,
 			});
-			return this.#buildBackgroundStartResult(job.jobId, job.label, "", timeoutSec, {
+			return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
 				requestedTimeoutSec,
 				notices: pendingNotices,
 			});
@@ -863,10 +873,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 				resolvedEnv,
 				onUpdate,
-				startBackgrounded,
+				forwardUpdates: !startBackgrounded,
 			});
 			if (startBackgrounded) {
-				return this.#buildBackgroundStartResult(job.jobId, job.label, "", timeoutSec, {
+				return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
 					requestedTimeoutSec,
 					notices: pendingNotices,
 				});
@@ -886,9 +896,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				autoBgManager.cancel(job.jobId);
 				throw new ToolAbortError(job.getLatestText() || "Command aborted");
 			}
-			job.setBackgrounded(true);
+			job.stopUpdates();
 			autoBgManager.resumeDeliveries([job.jobId]);
-			return this.#buildBackgroundStartResult(job.jobId, job.label, job.getLatestText(), timeoutSec, {
+			return this.#buildBackgroundStartResult(job.jobId, job.getLatestText(), timeoutSec, {
 				requestedTimeoutSec,
 				notices: pendingNotices,
 			});
@@ -1327,7 +1337,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					) {
 						return cachedLines;
 					}
-					const strippedOutput = stripOutputNotice(rawOutput, details?.meta);
+					const withoutBackground = stripBackgroundNotice(rawOutput, details?.async);
+					const strippedOutput = stripOutputNotice(withoutBackground, details?.meta);
 					const withoutExit = stripExitCodeNotice(strippedOutput, details?.exitCode);
 					const withoutWall = stripWallTimeNotice(withoutExit, details?.wallTimeMs);
 					const rawOutputArtifact = stripRawOutputArtifactNotice(withoutWall);
@@ -1341,6 +1352,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const requestedTimeoutSeconds = details?.requestedTimeoutSeconds;
 					const wallTimeMs = details?.wallTimeMs;
 					const statsParts: string[] = [];
+					if (details?.async?.state === "running") {
+						statsParts.push(`Backgrounded: ${details.async.jobId}`);
+					}
 					if (wallTimeMs !== undefined) {
 						statsParts.push(`Wall: ${formatWallTimeSeconds(wallTimeMs)}s`);
 					}

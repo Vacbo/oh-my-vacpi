@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import {
 	type CreateAgentSessionOptions,
 	createAgentSession,
@@ -12,6 +13,7 @@ import {
 	type ExtensionFactory,
 } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { VIBE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/vibe";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 
@@ -36,6 +38,20 @@ const toolActivationExtension: ExtensionFactory = pi => {
 		},
 	});
 };
+
+function createMcpCustomTool(name: string, serverName: string, mcpToolName: string): CustomTool {
+	return {
+		name,
+		label: `${serverName}/${mcpToolName}`,
+		description: `Tool ${mcpToolName} from ${serverName}`,
+		mcpServerName: serverName,
+		mcpToolName,
+		parameters: type({ query: "string" }),
+		async execute() {
+			return { content: [{ type: "text", text: `${name} executed` }] };
+		},
+	} as CustomTool;
+}
 
 describe("createAgentSession defaultInactive tool activation", () => {
 	const tempDirs: string[] = [];
@@ -217,6 +233,130 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(session.getToolByName("resolve")).toBeUndefined();
 		} finally {
 			await session.dispose();
+		}
+	});
+
+	it("registers vibe tools only during explicit vibe activation", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession(baseOptions(tempDir));
+		const previousActiveToolNames = session.getActiveToolNames();
+
+		try {
+			for (const name of VIBE_TOOL_NAMES) {
+				expect(session.getToolByName(name)).toBeUndefined();
+			}
+
+			await session.activateVibeTools(["read"]);
+			for (const name of VIBE_TOOL_NAMES) {
+				expect(session.getToolByName(name)).toBeDefined();
+				expect(session.getActiveToolNames()).toContain(name);
+			}
+
+			await session.deactivateVibeTools(previousActiveToolNames);
+			for (const name of VIBE_TOOL_NAMES) {
+				expect(session.getToolByName(name)).toBeUndefined();
+			}
+			expect(session.getActiveToolNames()).toEqual(previousActiveToolNames);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("preserves the MCP discovery selection and writes no persistence entry across a vibe round-trip", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			toolNames: ["read", "search_tool_bm25", "mcp__github_create_issue"],
+			customTools: [
+				createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
+				createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
+			],
+		});
+
+		try {
+			// Select a second, discovered MCP tool so the selection set is non-trivial.
+			await session.activateDiscoveredMCPTools(["mcp__slack_post_message"]);
+			const mcpSelectedBefore = [...session.getSelectedMCPToolNames()].sort();
+			expect(mcpSelectedBefore).toEqual(["mcp__github_create_issue", "mcp__slack_post_message"]);
+			const previousActiveToolNames = session.getActiveToolNames();
+			const selectionEntriesBefore = session.sessionManager
+				.getEntries()
+				.filter(entry => entry.type === "mcp_tool_selection").length;
+
+			// Enter vibe: the temporary read-only + vibe-tool slate must neither
+			// rewrite the MCP selection set nor append a persistence entry.
+			await session.activateVibeTools(["read"]);
+			expect(session.getActiveToolNames()).not.toContain("mcp__github_create_issue");
+			expect([...session.getSelectedMCPToolNames()].sort()).toEqual(mcpSelectedBefore);
+			expect(session.sessionManager.getEntries().filter(entry => entry.type === "mcp_tool_selection").length).toBe(
+				selectionEntriesBefore,
+			);
+
+			// Exit vibe: prior active set and MCP selection both return, still with
+			// no persistence entry written for the slate transitions.
+			await session.deactivateVibeTools(previousActiveToolNames);
+			expect(session.getActiveToolNames()).toEqual(previousActiveToolNames);
+			expect([...session.getSelectedMCPToolNames()].sort()).toEqual(mcpSelectedBefore);
+			expect(session.sessionManager.getEntries().filter(entry => entry.type === "mcp_tool_selection").length).toBe(
+				selectionEntriesBefore,
+			);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("keeps a BM25-activated builtin selected across a vibe round-trip and a resume", async () => {
+		const tempDir = makeTempDir();
+		const sessionOptions = {
+			...baseOptions(tempDir),
+			settings: Settings.isolated({ "tools.discoveryMode": "all" }),
+		};
+		const firstManager = SessionManager.create(tempDir, tempDir);
+		const { session } = await createAgentSession({ ...sessionOptions, sessionManager: firstManager });
+
+		// Discovery "all" hides discoverable builtins at assembly; BM25-activate one.
+		expect(session.getActiveToolNames()).not.toContain("grep");
+		expect(await session.activateDiscoveredTools(["grep"])).toEqual(["grep"]);
+		const discoveredSelectedBefore = [...session.getSelectedDiscoveredToolNames()].sort();
+		expect(discoveredSelectedBefore).toContain("grep");
+		const previousActiveToolNames = session.getActiveToolNames();
+		const selectionEntriesBefore = session.sessionManager
+			.getEntries()
+			.filter(entry => entry.type === "mcp_tool_selection").length;
+
+		// Enter vibe: the slate must not prune the selection or persist an entry.
+		await session.activateVibeTools(["read"]);
+		expect(session.getActiveToolNames()).not.toContain("grep");
+		expect(session.sessionManager.getEntries().filter(entry => entry.type === "mcp_tool_selection").length).toBe(
+			selectionEntriesBefore,
+		);
+
+		// Exit vibe: prior active set and the builtin selection both return.
+		await session.deactivateVibeTools(previousActiveToolNames);
+		expect(session.getActiveToolNames()).toEqual(previousActiveToolNames);
+		expect([...session.getSelectedDiscoveredToolNames()].sort()).toEqual(discoveredSelectedBefore);
+		expect(session.sessionManager.getEntries().filter(entry => entry.type === "mcp_tool_selection").length).toBe(
+			selectionEntriesBefore,
+		);
+
+		const sessionFile = session.sessionFile;
+		expect(sessionFile).toBeDefined();
+		await session.sessionManager.rewriteEntries();
+		await session.dispose();
+
+		// Resume: the un-corrupted persisted selection must still restore grep,
+		// proving the vibe round-trip left durable discovery state intact.
+		const resumedManager = await SessionManager.open(sessionFile!, tempDir);
+		const { session: resumedSession } = await createAgentSession({
+			...sessionOptions,
+			sessionManager: resumedManager,
+		});
+		try {
+			expect(resumedSession.getActiveToolNames()).toContain("grep");
+			expect(resumedSession.getSelectedDiscoveredToolNames()).toContain("grep");
+		} finally {
+			await resumedSession.dispose();
 		}
 	});
 

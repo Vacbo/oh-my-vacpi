@@ -277,6 +277,7 @@ export class StatusLineComponent implements Component {
 	#planModeStatus: { enabled: boolean; paused: boolean } | null = null;
 	#loopModeStatus: { enabled: boolean } | null = null;
 	#goalModeStatus: { enabled: boolean; paused: boolean } | null = null;
+	#vibeModeStatus: { enabled: boolean } | null = null;
 	#collabStatus: CollabStatus | null = null;
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
@@ -505,6 +506,10 @@ export class StatusLineComponent implements Component {
 		this.#goalModeStatus = status ?? null;
 	}
 
+	setVibeModeStatus(status: { enabled: boolean } | undefined): void {
+		this.#vibeModeStatus = status ?? null;
+	}
+
 	setCollabStatus(status: CollabStatus | null): void {
 		this.#collabStatus = status;
 	}
@@ -528,9 +533,14 @@ export class StatusLineComponent implements Component {
 			this.#gitWatcher = null;
 		}
 
-		const { effectiveGitCwd } = this.#resolveActiveRepoCache();
-
 		this.#jjUnsubscribe?.();
+		this.#jjUnsubscribe = null;
+		if (!this.#gitEnabled() || !this.#hasGitBackedSegment()) {
+			this.#invalidateGitCaches();
+			return;
+		}
+
+		const { effectiveGitCwd } = this.#resolveActiveRepoCache();
 		this.#jjUnsubscribe = jj.headLabel.subscribe(effectiveGitCwd, () => {
 			this.#invalidateGitCaches();
 			if (this.#onBranchChange) {
@@ -538,10 +548,6 @@ export class StatusLineComponent implements Component {
 			}
 		});
 
-		if (!this.#gitEnabled() || !this.#hasGitBackedSegment()) {
-			this.#invalidateGitCaches();
-			return;
-		}
 		const repository = git.repo.resolveSync(effectiveGitCwd);
 		if (!repository) return;
 
@@ -1075,7 +1081,12 @@ export class StatusLineComponent implements Component {
 			compactThinkingLevel: this.#resolveSettings().compactThinkingLevel ?? false,
 			planMode: this.#planModeStatus,
 			loopMode: this.#loopModeStatus,
+			prewalk:
+				typeof this.session.getPrewalkState === "function" && this.session.getPrewalkState()
+					? { enabled: true }
+					: null,
 			goalMode: this.#goalModeStatus,
+			vibeMode: this.#vibeModeStatus,
 			collab: this.#collabStatus,
 			usageStats,
 			contextPercent,

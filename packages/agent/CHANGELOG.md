@@ -8,6 +8,25 @@
 
 - Added `NothingToCompactError` to `compaction/errors`: a typed sentinel raised when a compaction request finds nothing to summarize (branch below the minimum size, or already ending in a compaction entry). Callers that compact opportunistically can classify the benign no-op via `instanceof` instead of sniffing error messages.
 
+## [16.5.0] - 2026-07-13
+
+### Added
+
+- Added an automated image-dropping rescue tier to compaction dead-end recovery.
+- Added visual warnings and detailed recovery instructions to the session timeline when compaction fails to free sufficient space.
+
+## [16.4.5] - 2026-07-11
+
+### Added
+
+- Added a process-global pause gate (`agentPauseGate`) to safely pause agent loops before model calls or tool executions, allowing them to be resumed later or aborted cleanly.
+
+## [16.4.3] - 2026-07-11
+
+### Fixed
+
+- Fixed an issue where skipped sibling tool results incorrectly reported that a queued user message caused the skip.
+
 ## [16.4.2] - 2026-07-10
 
 ### Fixed

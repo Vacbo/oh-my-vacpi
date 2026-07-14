@@ -101,16 +101,31 @@ describe("toggleDisabledTool", () => {
 });
 
 describe("toggleEssentialTool", () => {
-	it("materializes the read/bash/edit defaults on first pin", () => {
-		expect(toggleEssentialTool([], "find")).toEqual(["bash", "edit", "find", "read"]);
+	// Empty override means DEFAULT_ESSENTIAL_TOOL_NAMES; sorted that set is
+	// [bash, edit, eval, glob, launch, read, write].
+	it("materializes the essential defaults on first pin", () => {
+		expect(toggleEssentialTool([], "find")).toEqual([
+			"bash",
+			"edit",
+			"eval",
+			"find",
+			"glob",
+			"launch",
+			"read",
+			"write",
+		]);
 	});
 
 	it("unpins a default member starting from an empty override", () => {
-		expect(toggleEssentialTool([], "bash")).toEqual(["edit", "read"]);
+		expect(toggleEssentialTool([], "bash")).toEqual(["edit", "eval", "glob", "launch", "read", "write"]);
 	});
 
 	it("normalizes back to [] when the result equals the defaults", () => {
-		expect(toggleEssentialTool(["bash", "edit", "find", "read"], "find")).toEqual([]);
-		expect(toggleEssentialTool(["edit", "read"], "bash")).toEqual([]);
+		// Removing the lone extra lands back on the defaults.
+		expect(toggleEssentialTool(["bash", "edit", "eval", "find", "glob", "launch", "read", "write"], "find")).toEqual(
+			[],
+		);
+		// Re-pinning the one missing default also lands back on the defaults.
+		expect(toggleEssentialTool(["bash", "edit", "eval", "glob", "read", "write"], "launch")).toEqual([]);
 	});
 });

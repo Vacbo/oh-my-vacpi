@@ -12,6 +12,24 @@ import { TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
+// A host-independent direct-terminal baseline for the real-TUI finalization test
+// below, which resizes and asserts the ED3 scrollback rebuild. A multiplexer id
+// (TMUX/STY/ZELLIJ/CMUX_*/TERM=tmux*|screen*), Warp (TERM_PROGRAM), or
+// PI_TUI_RESIZE_IN_PLACE=1 — all read fresh from Bun.env — routes resize onto
+// the in-place path that skips the ED3 rebuild, so clear them all. The suite
+// runs inside cmux (CMUX_WORKSPACE_ID/CMUX_SURFACE_ID), tmux/screen/zellij, or
+// Warp on dev machines and CI.
+const DIRECT_TERMINAL_ENV_KEYS = [
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"TERM",
+	"TERM_PROGRAM",
+	"PI_TUI_RESIZE_IN_PLACE",
+] as const;
+
 // The streaming edit preview is a fixed-height tail window ("cursor"): the last
 // EDIT_STREAMING_PREVIEW_LINES rows of the recomputed diff are pinned to the
 // bottom, so the box stays a steady, full window of real diff context.
@@ -37,6 +55,7 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 	let tmpDir: string;
 	let file: string;
 	let themed = false;
+	let savedTerminalEnv: Record<string, string | undefined> = {};
 
 	// The streaming edit window is sized as min(EDIT_STREAMING_PREVIEW_LINES,
 	// previewWindowRows()), and previewWindowRows() reads process.stdout.rows.
@@ -57,6 +76,10 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 	});
 
 	beforeEach(async () => {
+		for (const key of DIRECT_TERMINAL_ENV_KEYS) {
+			savedTerminalEnv[key] = Bun.env[key];
+			delete Bun.env[key];
+		}
 		if (!themed) {
 			await initTheme();
 			themed = true;
@@ -69,6 +92,14 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 	});
 
 	afterEach(async () => {
+		// Restore env before the async fixture cleanup so a cleanup failure can
+		// never leak the cleared environment into later tests.
+		for (const key in savedTerminalEnv) {
+			const value = savedTerminalEnv[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+		savedTerminalEnv = {};
 		resetSettingsForTest();
 		await removeWithRetries(tmpDir);
 	});

@@ -357,13 +357,18 @@ export async function captureMirrorScreenshot(options: {
  * result makes the TUI render it in the session, so the user sees exactly what
  * the model received. Returns undefined instead of failing a capture that
  * already succeeded when the file cannot be read or decoded.
+ *
+ * A preview reflects what was actually captured, so resizing may only shrink it:
+ * `minDimension: 1` overrides the shared resizer's vision-backend floor (which
+ * upscales sub-200px inputs) so a tiny capture — e.g. a 1x1 render — is passed
+ * through at its real size instead of being blown up to a fabricated 200px.
  */
 export async function inlineScreenshotImage(filePath: string): Promise<ImageContent | undefined> {
 	try {
 		const buffer = await fs.readFile(filePath);
 		const resized = await resizeImage(
 			{ type: "image", data: buffer.toBase64(), mimeType: "image/png" },
-			{ maxWidth: 1024, maxHeight: 1024, maxBytes: 150 * 1024, jpegQuality: 70 },
+			{ maxWidth: 1024, maxHeight: 1024, maxBytes: 150 * 1024, jpegQuality: 70, minDimension: 1 },
 		);
 		return { type: "image", data: resized.data, mimeType: resized.mimeType };
 	} catch {

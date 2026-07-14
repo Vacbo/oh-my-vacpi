@@ -46,6 +46,12 @@ beforeAll(async () => {
 beforeEach(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
+	// Force immediate (non-smooth) reveal so a streamed thinking/text delta is
+	// visible synchronously. With smooth streaming (the default) the reveal
+	// controller uncovers content gradually via a timer, leaving the first frame
+	// empty — which is correct in production but non-deterministic under a test
+	// that renders right after dispatching a single delta.
+	Settings.instance.set("display.smoothStreaming", false);
 });
 
 afterEach(() => {

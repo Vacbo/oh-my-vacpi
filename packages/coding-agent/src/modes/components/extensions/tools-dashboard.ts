@@ -73,7 +73,7 @@ export function toggleDisabledTool(disabled: readonly string[], name: string, en
 
 /**
  * Toggle a built-in in `tools.essentialOverride` (pin = always loaded at session
- * start). An empty override means the `read`/`bash`/`edit` defaults, so the first
+ * start). An empty override means the default essential set, so the first
  * toggle materializes the defaults before applying; a result equal to the default
  * set normalizes back to `[]` ("leave empty to use defaults").
  */

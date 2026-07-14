@@ -182,4 +182,36 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			component.stopAnimation();
 		}
 	});
+
+	it("does not tick partial todo_write snapshots and routes them through the dedicated renderer", () => {
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const requestComponentRender = vi.fn();
+		// The fork's todo tool is registered as `todo_write`; the dedicated
+		// renderer + static-spinner exception both key off that wire name. A
+		// live todo call must render its static "Todo" status line (not the
+		// generic tool-name fallback) and start no spinner interval.
+		const component = new ToolExecutionComponent(
+			"todo_write",
+			{ op: "init", list: [{ phase: "Foundation", items: ["Scaffold crate"] }] },
+			{},
+			undefined,
+			{ requestRender, requestComponentRender } as unknown as TUI,
+			process.cwd(),
+		);
+
+		try {
+			const callOutput = stripVTControlCharacters(component.render(100).join("\n"));
+			expect(callOutput).toContain("Todo");
+			expect(callOutput).not.toContain("todo_write");
+
+			requestRender.mockClear();
+			requestComponentRender.mockClear();
+			vi.advanceTimersByTime(500);
+			expect(requestRender).not.toHaveBeenCalled();
+			expect(requestComponentRender).not.toHaveBeenCalled();
+		} finally {
+			component.stopAnimation();
+		}
+	});
 });

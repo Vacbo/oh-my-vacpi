@@ -213,8 +213,12 @@ export function classifyConnectError(err: unknown, name: string): MCPConnectErro
 	if (code === "EAI_NONAME" || code === "ENOTFOUND" || /(EAI_NONAME|ENOTFOUND|getaddrinfo)/.test(raw)) {
 		return make("unreachable", `${name}: host did not resolve`);
 	}
-	if (/Transport closed/.test(raw)) {
-		return make("unreachable", `${name}: subprocess exited before responding to initialize`);
+	const stdioExit = /^Transport closed \(subprocess exit code (-?\d+)\)$/.exec(raw);
+	if (stdioExit) {
+		return make(
+			"unreachable",
+			`${name}: subprocess exited before responding to initialize (exit code ${stdioExit[1]})`,
+		);
 	}
 	if (/launchApp:/.test(raw)) {
 		return make("unreachable", `${name}: ${raw}`);

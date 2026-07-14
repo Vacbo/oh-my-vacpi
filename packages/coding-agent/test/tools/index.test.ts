@@ -149,7 +149,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read", "lsp", "write"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "write", "resolve"]);
+		expect(names).toEqual(["read", "write", "context_export", "resolve"]);
 	});
 
 	it("excludes lsp tool when disabled", async () => {
@@ -165,7 +165,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read", "write"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "write", "resolve"]);
+		expect(names).toEqual(["read", "write", "context_export", "resolve"]);
 	});
 
 	it("lowercases requested tool subset", async () => {
@@ -173,7 +173,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["Read", "Write"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "write", "resolve"]);
+		expect(names).toEqual(["read", "write", "context_export", "resolve"]);
 	});
 
 	it("includes hidden tools when explicitly requested", async () => {
@@ -181,7 +181,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["report_finding"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["report_finding", "resolve"]);
+		expect(names).toEqual(["report_finding", "context_export", "resolve"]);
 	});
 
 	it("includes yield tool when required", async () => {
@@ -208,6 +208,27 @@ describe("createTools", () => {
 		expect(names).toContain("ask");
 	});
 
+	it("excludes ask tool when ask.enabled is false", async () => {
+		const session = createTestSession({
+			hasUI: true,
+			settings: createSettingsWithOverrides({ "ask.enabled": false }),
+		});
+		const tools = await createTools(session);
+		expect(tools.map(t => t.name)).not.toContain("ask");
+
+		const requested = await createTools(session, ["ask", "read"]);
+		expect(requested.map(t => t.name)).toEqual(["read", "context_export", "resolve"]);
+	});
+
+	it("includes ask tool when ask.enabled is true and hasUI is true", async () => {
+		const session = createTestSession({
+			hasUI: true,
+			settings: createSettingsWithOverrides({ "ask.enabled": true }),
+		});
+		const tools = await createTools(session);
+		expect(tools.map(t => t.name)).toContain("ask");
+	});
+
 	it("filters disabled builtin tools by settings", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({
@@ -216,6 +237,7 @@ describe("createTools", () => {
 				"astGrep.enabled": false,
 				"astEdit.enabled": false,
 				"bash.enabled": false,
+				"launch.enabled": false,
 				"web_search.enabled": false,
 				"browser.enabled": false,
 				"inspect_image.enabled": false,
@@ -225,6 +247,7 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).not.toContain("bash");
+		expect(names).not.toContain("launch");
 		expect(names).not.toContain("glob");
 		expect(names).not.toContain("grep");
 		expect(names).not.toContain("ast_grep");
@@ -234,7 +257,7 @@ describe("createTools", () => {
 		expect(names).not.toContain("inspect_image");
 
 		const requestedTools = await createTools(session, ["bash", "read"]);
-		expect(requestedTools.map(t => t.name)).toEqual(["read", "resolve"]);
+		expect(requestedTools.map(t => t.name)).toEqual(["read", "context_export", "resolve"]);
 	});
 
 	it("always includes resolve regardless of plan-mode setting", async () => {
@@ -249,7 +272,7 @@ describe("createTools", () => {
 		expect(defaultTools.map(t => t.name)).not.toContain("exit_plan_mode");
 
 		const requestedTools = await createTools(session, ["read"]);
-		expect(requestedTools.map(t => t.name)).toEqual(["read", "resolve"]);
+		expect(requestedTools.map(t => t.name)).toEqual(["read", "context_export", "resolve"]);
 	});
 	it("auto-includes goal when goal mode is active", async () => {
 		const session = createTestSession({
@@ -261,7 +284,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "goal", "resolve"]);
+		expect(names).toEqual(["read", "goal", "context_export", "resolve"]);
 	});
 
 	it("records active tools on the original session object", async () => {
@@ -271,6 +294,22 @@ describe("createTools", () => {
 
 		expect(session.isToolActive?.("bash")).toBe(true);
 		expect(session.isToolActive?.("read")).toBe(false);
+	});
+
+	it("registers context_export inactive by default but activates it on explicit request", async () => {
+		// Default-inactive built-ins (DEFAULT_INACTIVE_BUILTIN_TOOL_NAMES) are
+		// constructed registry-only: present in the returned tool set so a driving
+		// surface (e.g. /context-export) can activate them, yet kept out of the
+		// active-name set so their schema never reaches ordinary model requests.
+		const defaultSession = createTestSession();
+		const defaultTools = await createTools(defaultSession);
+		expect(defaultTools.map(t => t.name)).toContain("context_export");
+		expect(defaultSession.isToolActive?.("context_export")).toBe(false);
+
+		const requestedSession = createTestSession();
+		const requestedTools = await createTools(requestedSession, ["context_export"]);
+		expect(requestedTools.map(t => t.name)).toContain("context_export");
+		expect(requestedSession.isToolActive?.("context_export")).toBe(true);
 	});
 
 	it("renders bash guidance from the live active tool predicate", async () => {

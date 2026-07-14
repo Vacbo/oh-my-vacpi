@@ -264,11 +264,30 @@ describe("classifyConnectError", () => {
 		expect(classifyConnectError(notFound, "x").kind).toBe("unreachable");
 	});
 
-	it("maps Transport closed (with exit code) → unreachable: subprocess exited", () => {
-		const err = new Error("Transport closed (subprocess exit code 1)");
-		const out = classifyConnectError(err, "x");
+	it("maps stdio close with an exit code → unreachable and surfaces the exit code", () => {
+		const out = classifyConnectError(new Error("Transport closed (subprocess exit code 137)"), "x");
 		expect(out.kind).toBe("unreachable");
 		expect(out.message).toMatch(/subprocess exited/);
+		expect(out.message).toContain("exit code 137");
+	});
+
+	it("maps stdio close with a negative exit code → unreachable and surfaces the code", () => {
+		const out = classifyConnectError(new Error("Transport closed (subprocess exit code -1)"), "x");
+		expect(out.kind).toBe("unreachable");
+		expect(out.message).toContain("exit code -1");
+	});
+
+	it("keeps generic transport closure generic (not a subprocess exit)", () => {
+		const plain = classifyConnectError(new Error("Transport closed"), "x");
+		expect(plain.kind).toBe("other");
+		expect(plain.message).toBe("x: Transport closed");
+		expect(plain.message).not.toMatch(/subprocess exited/);
+	});
+
+	it("keeps legacy SSE transport closure generic (not a subprocess exit)", () => {
+		const sse = classifyConnectError(new Error("Transport closed: legacy SSE stream closed"), "x");
+		expect(sse.kind).toBe("other");
+		expect(sse.message).not.toMatch(/subprocess exited/);
 	});
 
 	it("maps outer connect timeout → timeout", () => {

@@ -150,10 +150,14 @@ describe("tui_observe tool", () => {
 		const block = await inlineScreenshotImage(dest);
 		expect(block?.type).toBe("image");
 		expect(block?.mimeType).toMatch(/^image\//);
-		// The block must decode as a real image; that is what the TUI and model receive.
-		const meta = await new Bun.Image(Buffer.from(block!.data, "base64")).metadata();
+		// Decode the actual returned bytes — that is what the TUI and model receive.
+		// A preview reflects the real capture, so a tiny image must be passed through,
+		// never upscaled to the vision-backend floor (which reported width 200 before).
+		const outputBytes = Buffer.from(block!.data, "base64");
+		const meta = await new Bun.Image(outputBytes).metadata();
 		expect(meta.width).toBe(1);
 		expect(meta.height).toBe(1);
+		expect(outputBytes.equals(onePixelPng)).toBe(true);
 
 		expect(await inlineScreenshotImage(path.join(dir, "missing.png"))).toBeUndefined();
 	});

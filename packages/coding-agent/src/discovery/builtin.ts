@@ -4,7 +4,7 @@
  * Primary provider for OMP native configs. Supports all capabilities.
  */
 import * as path from "node:path";
-import { getAgentDir, logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
+import { getAgentDir, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { getManagedSkillsDir, MANAGED_SKILLS_PROVIDER_ID } from "../autolearn/managed-skills";
 import { registerProvider } from "../capability";
@@ -28,12 +28,12 @@ import {
 	buildRuleFromMarkdown,
 	createSourceMeta,
 	discoverExtensionModulePaths,
-	expandEnvVarsDeep,
 	getExtensionNameFromPath,
 	loadFilesFromDir,
 	SOURCE_PATHS,
 	scanSkillsFromDir,
 } from "./helpers";
+import { normalizeMCPServers } from "./mcp-normalize";
 
 const PROVIDER_ID = "native";
 const DISPLAY_NAME = "OMP";
@@ -102,92 +102,10 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 	const items: MCPServer[] = [];
 	const warnings: string[] = [];
 
-	const parseMcpServers = (content: string, path: string, level: "user" | "project"): MCPServer[] => {
-		const result: MCPServer[] = [];
-		const data = tryParseJson<{ mcpServers?: Record<string, unknown> }>(content);
-		if (!data?.mcpServers) return result;
-
-		const expanded = expandEnvVarsDeep(data.mcpServers);
-		for (const [serverName, config] of Object.entries(expanded)) {
-			const serverConfig = config as Record<string, unknown>;
-
-			// Validate enabled: coerce string "true"/"false", warn on other types
-			let enabled: boolean | undefined;
-			if (serverConfig.enabled === undefined || serverConfig.enabled === null) {
-				enabled = undefined;
-			} else if (typeof serverConfig.enabled === "boolean") {
-				enabled = serverConfig.enabled;
-			} else if (typeof serverConfig.enabled === "string") {
-				const lower = serverConfig.enabled.toLowerCase();
-				if (lower === "false" || lower === "0") enabled = false;
-				else if (lower === "true" || lower === "1") enabled = true;
-				else {
-					logger.warn(`MCP server "${serverName}": invalid enabled value "${serverConfig.enabled}", ignoring`);
-					enabled = undefined;
-				}
-			} else {
-				logger.warn(`MCP server "${serverName}": invalid enabled type ${typeof serverConfig.enabled}, ignoring`);
-				enabled = undefined;
-			}
-
-			// Validate timeout: coerce numeric strings, warn on invalid
-			let timeout: number | undefined;
-			if (serverConfig.timeout === undefined || serverConfig.timeout === null) {
-				timeout = undefined;
-			} else if (typeof serverConfig.timeout === "number") {
-				if (Number.isFinite(serverConfig.timeout) && serverConfig.timeout >= 0) {
-					timeout = serverConfig.timeout;
-				} else {
-					logger.warn(`MCP server "${serverName}": invalid timeout ${serverConfig.timeout}, ignoring`);
-					timeout = undefined;
-				}
-			} else if (typeof serverConfig.timeout === "string") {
-				const parsed = Number(serverConfig.timeout);
-				if (Number.isFinite(parsed) && parsed >= 0) {
-					timeout = parsed;
-				} else {
-					logger.warn(`MCP server "${serverName}": invalid timeout "${serverConfig.timeout}", ignoring`);
-					timeout = undefined;
-				}
-			} else {
-				logger.warn(`MCP server "${serverName}": invalid timeout type ${typeof serverConfig.timeout}, ignoring`);
-				timeout = undefined;
-			}
-
-			result.push({
-				name: serverName,
-				enabled,
-				timeout,
-				command: serverConfig.command as string | undefined,
-				args: serverConfig.args as string[] | undefined,
-				env: serverConfig.env as Record<string, string> | undefined,
-				cwd: serverConfig.cwd as string | undefined,
-				url: serverConfig.url as string | undefined,
-				headers: serverConfig.headers as Record<string, string> | undefined,
-				auth: serverConfig.auth as
-					| {
-							type: "oauth" | "apikey";
-							credentialId?: string;
-							tokenUrl?: string;
-							clientId?: string;
-							clientSecret?: string;
-					  }
-					| undefined,
-				oauth: serverConfig.oauth as
-					| {
-							clientId?: string;
-							clientSecret?: string;
-							redirectUri?: string;
-							callbackPort?: number;
-							callbackPath?: string;
-							prompt?: string;
-					  }
-					| undefined,
-				transport: serverConfig.type as "stdio" | "sse" | "http" | undefined,
-				_source: createSourceMeta(PROVIDER_ID, path, level),
-			});
-		}
-		return result;
+	const parseMcpServers = (content: string, filePath: string, level: "user" | "project") => {
+		const data = tryParseJson<{ mcpServers?: unknown }>(content);
+		if (!data) return { items: [], warnings: [] };
+		return normalizeMCPServers(data.mcpServers, createSourceMeta(PROVIDER_ID, filePath, level));
 	};
 
 	// User scope tracks the active profile via getAgentDir() (not ctx.home), so it
@@ -213,7 +131,9 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 	for (const result of contents) {
 		if (result.status === "fulfilled" && result.value) {
 			const { path, content, level } = result.value;
-			items.push(...parseMcpServers(content, path, level));
+			const normalized = parseMcpServers(content, path, level);
+			items.push(...normalized.items);
+			warnings.push(...normalized.warnings);
 		}
 	}
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { type Component, type RenderScheduler, type RenderTimer, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -13,6 +13,24 @@ import { VirtualTerminal } from "./virtual-terminal";
 // replay crossed ~1-2 MiB.
 
 const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+
+// Multiplexer / terminal-identity signals and overrides, read fresh from Bun.env
+// on every render (isInsideTerminalMultiplexer + reportsSizeOnAltScreenToggle).
+// A multiplexer id (TMUX/STY/ZELLIJ/CMUX_*/TERM=tmux*|screen*), Warp
+// (TERM_PROGRAM), or PI_TUI_RESIZE_IN_PLACE=1 routes the resume through the
+// in-place path that skips the ED3 (\x1b[3J) full paint asserted below, so clear
+// them all — dev machines and CI run this suite inside cmux
+// (CMUX_WORKSPACE_ID/CMUX_SURFACE_ID), tmux/screen/zellij, or Warp.
+const DIRECT_TERMINAL_ENV_KEYS = [
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"TERM",
+	"TERM_PROGRAM",
+	"PI_TUI_RESIZE_IN_PLACE",
+] as const;
 
 class LargeCjkContent implements Component {
 	#lines: string[];
@@ -86,7 +104,20 @@ class ManualRenderScheduler implements RenderScheduler {
 }
 
 describe("issue #2115: ConPTY large-session resume truncates at logical lines", () => {
+	let savedTerminalEnv: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		for (const key of DIRECT_TERMINAL_ENV_KEYS) {
+			savedTerminalEnv[key] = Bun.env[key];
+			delete Bun.env[key];
+		}
+	});
 	afterEach(() => {
+		for (const key in savedTerminalEnv) {
+			const value = savedTerminalEnv[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+		savedTerminalEnv = {};
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
 		vi.restoreAllMocks();
 	});

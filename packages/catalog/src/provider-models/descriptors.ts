@@ -144,7 +144,7 @@ export const CATALOG_PROVIDERS = [
 	{
 		id: "fireworks",
 		defaultModel: "kimi-k2.7-code",
-		envVars: ["FIREWORKS_API_KEY", "FIREWORKS_PASS_API_KEY"],
+		envVars: ["FIREWORKS_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => fireworksModelManagerOptions(config),
 		catalogDiscovery: { label: "Fireworks" },
 	},

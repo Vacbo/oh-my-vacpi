@@ -8,14 +8,34 @@ beforeAll(async () => {
 	await initTheme(false);
 });
 
+/**
+ * Mirror the real `Container` lifecycle the controller drives (see tui.ts):
+ * `addChild` appends; `disposeChildren` disposes every child then empties. The
+ * controller spawns a real `Loader` whose `dispose()` stops its spinner timer,
+ * so faithful teardown keeps that interval from leaking into the test run.
+ */
+function createStatusContainer() {
+	const children: Array<{ dispose?: () => void }> = [];
+	return {
+		children,
+		addChild: vi.fn((child: { dispose?: () => void }) => {
+			children.push(child);
+		}),
+		disposeChildren: vi.fn(() => {
+			for (const child of children) child.dispose?.();
+			children.length = 0;
+		}),
+	};
+}
+
 function createContext(compactError: Error) {
 	const showWarning = vi.fn();
 	const showError = vi.fn();
 	const context = {
 		loadingAnimation: undefined,
-		statusContainer: { clear: vi.fn(), addChild: vi.fn() },
+		statusContainer: createStatusContainer(),
 		chatContainer: { addChild: vi.fn() },
-		ui: { requestRender: vi.fn() },
+		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 		editor: { onEscape: undefined as (() => void) | undefined },
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),

@@ -631,7 +631,7 @@ describe("applyNestedPatches", () => {
 		const [committedFiles, statusPorcelain, cachedDiff] = await Promise.all([
 			runGit(nestedDir, ["log", "-1", "--name-only", "--pretty=format:"]),
 			runGit(nestedDir, ["status", "--porcelain=v1"]),
-			runGit(nestedDir, ["diff", "--cached", "--", "other.txt"]),
+			runGit(nestedDir, ["diff", "--no-ext-diff", "--no-textconv", "--cached", "--", "other.txt"]),
 		]);
 		expect(committedFiles.trim()).toBe("file.txt");
 		// Leading "M " (with trailing space) marks an index-only modification —

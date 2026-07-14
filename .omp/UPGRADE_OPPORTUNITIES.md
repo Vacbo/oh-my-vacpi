@@ -41,6 +41,30 @@ git fetch --all --tags
 
 ---
 
+## 2026-07-14 — Merged upstream v16.5.0: prewalk, MCP startup, and fork state synthesized   `[done]` `[high]`
+
+**Merge**: fork `16.4.2` → upstream `v16.5.0`.
+
+**Divergence calls**:
+- **Split the parents' colliding storage schema version instead of choosing one migration.** Both parents had independently claimed schema v6: upstream for the `model_perf` reset/backfill marker and the fork for `slash_command_usage`. The merged database is schema v7. A v5 database runs the upstream v6 transition and then adds slash usage; either parent's existing v6 database advances non-destructively to v7 without purging valid upstream metrics or dropping fork slash-command history.
+- **Kept the fork's model-facing `todo_write` contract while adopting upstream Prewalk and task batching.** Prewalk waits only when `todo_write` is actually callable, then switches after its completed result; the dedicated renderer, static spinner, gallery fixture, and eager/discovery paths all use that wire name. Upstream's task schema is the clean cutover: flat `{ name?, agent?, task, isolated? }`, or batch `{ context, tasks[] }`; stale `role`/`description` fields are stripped rather than retained as a second schema. Temporary Vibe tool slates now preserve MCP and BM25-discovered selections instead of persisting the temporary set.
+- **Synthesized conflict resolution around the fork's path guards.** `<file>:conflict://N` and `<file>:conflict://*` still assert the registered file, workspace boundary, and current conflict identity before mutation. Upstream's per-id bulk directives and clearer exact-marker diagnostics layer on top; path qualification is a safety contract here, not an error to discard.
+- **Adopted upstream's build-time legacy-plugin registry without dropping fork compatibility.** The deleted generated `legacy-pi-bundled-keys.ts` and `legacy-pi-bundled-registry.ts` stay deleted; `omp-legacy-pi-modules` is now the single build-time virtual registry. Legacy package/subpath routing and the fork's default-inactive built-in tool set remain wired through the SDK.
+- **Combined the parents' CLI and autocomplete behavior at the live extension points.** Upstream `--prewalk`/`--prewalk-into`/`--no-prewalk` and plan-yolo parsing coexist with the fork's headless goal flags. TUI skill-token matching uses upstream's shared mid-prompt gate while retaining the fork's MRU boosts and sanitized autocomplete items.
+- **Made MCP JSON discovery canonical before adopting the new startup fields.** Native and standalone JSON loaders now share one unknown-to-`MCPServer` normalizer, including environment expansion and validation for `launchApp`, `connectTimeoutMs`, and `auth.resource`; `connectTimeoutMs: 0` consistently means disabled. Exact stdio exit closures retain their exit code, while generic/SSE closures are no longer mislabeled as subprocess exits. The retired `python.sharedGateway` setting remains removed.
+- **Kept Fire Pass model routing narrow instead of authorizing all Fireworks models.** The fork's `fireworks/routers/...` static seeds and model-specific `FIREWORKS_PASS_API_KEY` resolver remain. The key was removed from provider-wide `fireworks.envVars`, cannot drive `/v1/models` discovery, and only marks the router models available. A dedicated router key beats unrelated stored Fireworks credentials; explicit runtime/config overrides retain precedence. Upstream's separate `firepass` exposure is left intact for now.
+- **Repaired clean-merge seams where each parent was locally correct but their union was not.** `/status` now calls the same append-only capability resolver as runtime; Bash overlay PTY and recorder dimensions share one calculation; snapshot writes are serialized and the final queued terminal data is flushed and persisted before shutdown or restart.
+- **Normalized generated and release-owned files by source of truth.** Fork changelog prefixes remain byte-identical under `## [Unreleased]` → `### oh-my-vacpi (fork)` and every released suffix is byte-identical to `v16.5.0`. `packages/catalog/src/models.json` must be regenerated from the merged descriptor/resolver sources, never hand-resolved.
+
+**Residual levers**:
+- The fork's `fireworks/routers/kimi-k2.6-turbo` model and upstream's `firepass/kimi-k2.6-turbo` model remain two observable entry points. Converge only with an explicit migration of saved model selectors, login/provider semantics, generated seeds, and both test contracts; do not let the generator's previous-model fallback decide this accidentally.
+- Prewalk and plan-yolo flags are parsed by the launch path but are not yet represented in the oclif launch flag table/help output; the fork's goal flags also remain in the manual parser. Move all three families to one declarative surface when the launch command owns their full lifecycle.
+- Task `role` and `description` metadata no longer exist on the wire. Put specialization in `agent` selection and the task text unless a downstream UI demonstrates a separate observable role contract.
+- `omp://` documentation still has four explicit fork-tool exemptions: `context_export`, `tui_observe`, `tui_drive`, and `restart`; `todo_write` deliberately reuses upstream's `todo` page. Replace the exemptions with dedicated pages in an explicit documentation pass rather than silently weakening the all-builtins coverage sweep.
+- Live observability still has three pre-existing async-ordering gaps outside this merge: registry refresh/heartbeat writes can outlive final `stopped` metadata, an unterminated JSONL tail can be consumed before completion, and overlapping SSE polling ticks can duplicate/reorder offsets. A follow-up should serialize and fence these paths, use atomic temp-and-rename metadata replacement, and add delayed-writer/partial-line/concurrent-poll tests in the existing live-session suites.
+
+---
+
 ## 2026-07-11 — Merged upstream v16.4.2: durable OAuth and model-specific delegation synthesized   `[done]` `[high]`
 
 **Merge**: fork `16.4.0` → upstream `v16.4.2`.

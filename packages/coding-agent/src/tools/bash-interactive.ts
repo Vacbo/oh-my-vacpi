@@ -20,6 +20,7 @@ import { type TerminalSnapshot, TerminalSnapshotRecorder } from "../session/term
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
 import { formatStatusIcon, replaceTabs } from "./render-utils";
+import { readTerminalRows, styleTerminalRow } from "./terminal-output";
 
 export interface BashInteractiveResult extends OutputSummary {
 	exitCode: number | undefined;
@@ -105,7 +106,27 @@ function normalizeInputForPty(data: string, applicationCursorKeysMode: boolean):
 	}
 	return data;
 }
-class BashInteractiveOverlayComponent implements Component {
+/** Rows of overlay chrome (title + footer + the two horizontal borders). */
+const OVERLAY_CHROME_ROWS = 4;
+/** The console overlay never grows past this fraction of the host terminal height. */
+const OVERLAY_MAX_HEIGHT_RATIO = 0.8;
+
+/**
+ * The single source of truth for the interactive console overlay's effective
+ * PTY/xterm dimensions at a given host size. The overlay reserves two columns
+ * for its border and caps its height at {@link OVERLAY_MAX_HEIGHT_RATIO} of the
+ * terminal, minus {@link OVERLAY_CHROME_ROWS}. The PTY session, the on-screen
+ * xterm, and the snapshot recorder all track these dimensions so captured
+ * snapshots wrap exactly like the live session.
+ */
+export function overlayPtyDimensions(width: number, terminalRows: number): { cols: number; rows: number } {
+	const cols = Math.max(1, Math.max(20, width) - 2);
+	const maxOverlayRows = Math.max(5, Math.floor(terminalRows * OVERLAY_MAX_HEIGHT_RATIO));
+	const rows = Math.max(1, maxOverlayRows - OVERLAY_CHROME_ROWS);
+	return { cols, rows };
+}
+
+export class BashInteractiveOverlayComponent implements Component {
 	#terminal: XtermTerminalType;
 	#state: "running" | "complete" | "timed_out" | "killed" = "running";
 	#exitCode: number | undefined;
@@ -113,6 +134,7 @@ class BashInteractiveOverlayComponent implements Component {
 	#onDismiss: () => void = () => {};
 	#onDispose: () => void = () => {};
 	#session: PtySession | null = null;
+	#onResize: (cols: number, rows: number) => void = () => {};
 	#lastCols = 0;
 	#lastRows = 0;
 	#writeQueue: string[] = [];
@@ -189,6 +211,15 @@ class BashInteractiveOverlayComponent implements Component {
 		this.#session = session;
 	}
 
+	/**
+	 * Register a listener invoked with the effective PTY dimensions whenever the
+	 * overlay resizes (including the first render). The caller keeps the snapshot
+	 * recorder in lockstep with the live PTY so captured output wraps identically.
+	 */
+	setOnResize(onResize: (cols: number, rows: number) => void): void {
+		this.#onResize = onResize;
+	}
+
 	setComplete(result: { exitCode: number | undefined; cancelled: boolean; timedOut: boolean }): void {
 		this.#exitCode = result.exitCode;
 		if (result.timedOut) {
@@ -227,32 +258,27 @@ class BashInteractiveOverlayComponent implements Component {
 
 	#readViewport(innerWidth: number, maxContentRows: number): string[] {
 		this.#terminal.resize(innerWidth, maxContentRows);
-		const buffer = this.#terminal.buffer.active;
-		const viewportY = buffer.viewportY;
-		const visibleLines: string[] = [];
-		for (let i = 0; i < maxContentRows; i++) {
-			const line = buffer.getLine(viewportY + i)?.translateToString(true) ?? "";
-			visibleLines.push(truncateToWidth(replaceTabs(sanitizeText(line)), innerWidth));
-		}
-		return visibleLines;
+		const viewportY = this.#terminal.buffer.active.viewportY;
+		return readTerminalRows(this.#terminal, viewportY, maxContentRows).map(line =>
+			truncateToWidth(styleTerminalRow(line, this.uiTheme.getFgAnsi("toolOutput")), innerWidth),
+		);
 	}
 	render(width: number): readonly string[] {
-		const safeWidth = Math.max(20, width);
-		const innerWidth = Math.max(1, safeWidth - 2);
-		const maxOverlayRows = Math.max(5, Math.floor(this.getTerminalRows() * 0.8));
-		const chromeRows = 4;
-		const maxContentRows = Math.max(1, maxOverlayRows - chromeRows);
-		// Propagate terminal resize to PTY session
-		const currentCols = innerWidth;
-		const currentRows = maxContentRows;
-		if (this.#session && (currentCols !== this.#lastCols || currentRows !== this.#lastRows)) {
-			this.#lastCols = currentCols;
-			this.#lastRows = currentRows;
-			try {
-				this.#session.resize(currentCols, currentRows);
-			} catch {
-				// Session may have ended
+		const { cols: innerWidth, rows: maxContentRows } = overlayPtyDimensions(width, this.getTerminalRows());
+		// Propagate the effective dimensions to the PTY session and the snapshot
+		// recorder in lockstep (the first render fires this too, since #lastCols/
+		// #lastRows start at 0) so both wrap output at exactly what the user sees.
+		if (innerWidth !== this.#lastCols || maxContentRows !== this.#lastRows) {
+			this.#lastCols = innerWidth;
+			this.#lastRows = maxContentRows;
+			if (this.#session) {
+				try {
+					this.#session.resize(innerWidth, maxContentRows);
+				} catch {
+					// Session may have ended
+				}
 			}
+			this.#onResize(innerWidth, maxContentRows);
 		}
 		const statusIcon =
 			this.#state === "running"
@@ -329,9 +355,13 @@ export async function runInteractiveBashPty(
 				XtermTerminal,
 			);
 			component.setSession(session);
-			const cols = Math.max(20, tui.terminal.columns - 2);
-			const rows = Math.max(5, tui.terminal.rows - 4);
+			// Start the PTY, the on-screen xterm, and the snapshot recorder at the
+			// overlay's effective dimensions so captured output wraps identically to
+			// the live session from the first byte; setOnResize then keeps the
+			// recorder in lockstep with every subsequent overlay resize.
+			const { cols, rows } = overlayPtyDimensions(tui.terminal.columns, tui.terminal.rows);
 			const snapshotRecorder = new TerminalSnapshotRecorder({ path: "", cols, rows });
+			component.setOnResize((nextCols, nextRows) => snapshotRecorder.resize(nextCols, nextRows));
 			let finished = false;
 			const finalize = (run: PtyRunResult) => {
 				if (finished) return;
