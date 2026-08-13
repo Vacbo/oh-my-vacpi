@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseArgs } from "../src/cli/args";
+import { parseArgs, validateToolNames } from "../src/cli/args";
 import { OPTIONAL_VALUE_FLAGS, STRING_VALUE_FLAGS } from "../src/cli/flag-tables";
 import { CliUsageError } from "../src/cli/usage-error";
 
@@ -85,20 +85,34 @@ describe("--session-dir", () => {
 	});
 });
 
-describe("--tools legacy aliases", () => {
+describe("--tools validation", () => {
 	it("maps search and find to grep and glob", () => {
 		const result = parseArgs(["--tools", "search,find,grep"]);
 
 		expect(result.tools).toEqual(["grep", "glob"]);
 	});
 
-	it("rejects tool names that are not built-ins instead of silently narrowing the toolset", () => {
-		// `--tools` selects built-in tools only, and an unknown name used to be
-		// dropped with just a log-file warning — `--tools bash,typo` then ran with
-		// bash alone and no visible notice.
-		expect(() => parseArgs(["--tools", "bash,definitely_unknown_tool"])).toThrow(CliUsageError);
-		expect(() => parseArgs(["--tools", "bash,definitely_unknown_tool"])).toThrow(
-			/Unknown tool in --tools: definitely_unknown_tool/,
+	it("defers unknown-name validation until all session tools are discovered", () => {
+		expect(parseArgs(["--tools", "bash,intercom"]).tools).toEqual(["bash", "intercom"]);
+		expect(parseArgs(["--tools", "read,custom_tool"], new Map()).tools).toEqual(["read", "custom_tool"]);
+	});
+});
+
+describe("--tools discovered-registry validation", () => {
+	it("accepts extension and custom tools after they enter the session registry", () => {
+		expect(() =>
+			validateToolNames(["read", "intercom", "custom_tool"], ["read", "intercom", "custom_tool"]),
+		).not.toThrow();
+	});
+
+	it("rejects names absent from the final registry", () => {
+		// An unknown name used to be dropped with only a log-file warning, so
+		// `--tools bash,typo` silently ran with bash alone. Validation moved
+		// behind tool discovery, but it must still fail loudly — and as a
+		// CliUsageError, so the CLI prints a clean error instead of a stack.
+		expect(() => validateToolNames(["read", "missing"], ["read", "intercom", "custom_tool"])).toThrow(CliUsageError);
+		expect(() => validateToolNames(["read", "missing"], ["read", "intercom", "custom_tool"])).toThrow(
+			/Unknown tool in --tools: missing/,
 		);
 	});
 });

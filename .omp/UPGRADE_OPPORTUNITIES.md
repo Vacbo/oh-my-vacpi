@@ -41,6 +41,22 @@ git fetch --all --tags
 
 ---
 
+## 2026-08-13 — Merged upstream v17.3.1: watcher rewrite adopted, fork updater retained   `[done]` `[high]`
+
+**Merge**: fork `17.3.0` → upstream `v17.3.1`.
+
+**Divergence calls**:
+- **Preserved the fork `omp update` merge-session launcher and dropped upstream's self-replacement changes.** Upstream's unique `.new`/`.bak` paths, stale-artifact sweep, file lock, and concurrent-update regressions protect binary download and replacement code that this fork intentionally does not ship. Porting them would resurrect the unsafe plain-upstream update architecture without adding a reachable contract.
+- **Adopted upstream's branch-resilient Git watcher while retaining the fork's jj subscription.** `StatusLine` now stores upstream's `git.head.watch()` unsubscribe closure, which survives branch switches without binding to the old `HEAD` inode, alongside the independent `jj.headLabel.subscribe()` closure. The deleted `fs.FSWatcher` fields were not resurrected.
+- **Adopted upstream's deferred `--tools` validation.** Extension and custom tool names are validated only after the session registry is complete, while the fork's clean `CliUsageError` contract remains at that final validation boundary.
+- **Regenerated the catalog from merged sources.** Upstream's current computer-use capability metadata and GLM-5.2 pricing replace the stale generated values; fork catalog inputs remain part of the same generation path.
+
+**Residual levers**:
+- `update-cli.ts` remains a standing merge hotspot. Upstream updater reliability fixes are relevant only if upstream grows a source-checkout/jj-aware mode that can replace the fork launcher without downloading or installing upstream artifacts.
+- Keep both status-line subscriptions until Git and jj expose a genuinely shared repository-head abstraction; deleting either currently loses observable branch state in one backend.
+
+---
+
 ## 2026-08-13 — Merged upstream v17.3.0: hub, todo, and xd devices adopted   `[done]` `[high]`
 
 **Merge**: fork `16.5.0` → upstream `v17.3.0`.
