@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-coding-agent",
-  "version": "16.5.0",
+  "version": "17.3.0",
   "description": "Coding agent CLI with read, bash, edit, write tools and session management",
   "homepage": "https://omp.sh",
   "author": "Can Boluk",
@@ -49,11 +49,10 @@
     "bench:guard": "bun scripts/bench-guard.ts"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "catalog:",
     "@babel/parser": "catalog:",
-    "@mozilla/readability": "catalog:",
     "@oh-my-pi/hashline": "catalog:",
     "@oh-my-pi/omp-stats": "catalog:",
+    "@oh-my-pi/omptype": "catalog:",
     "@oh-my-pi/pi-agent-core": "catalog:",
     "@oh-my-pi/pi-ai": "catalog:",
     "@oh-my-pi/pi-catalog": "catalog:",
@@ -64,28 +63,18 @@
     "@oh-my-pi/pi-wire": "catalog:",
     "@oh-my-pi/snapcompact": "catalog:",
     "@opentelemetry/api": "catalog:",
+    "@opentelemetry/api-logs": "catalog:",
     "@opentelemetry/context-async-hooks": "catalog:",
+    "@opentelemetry/exporter-logs-otlp-proto": "catalog:",
+    "@opentelemetry/exporter-metrics-otlp-proto": "catalog:",
     "@opentelemetry/exporter-trace-otlp-proto": "catalog:",
     "@opentelemetry/resources": "catalog:",
+    "@opentelemetry/sdk-logs": "catalog:",
+    "@opentelemetry/sdk-metrics": "catalog:",
     "@opentelemetry/sdk-trace-base": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
-    "@puppeteer/browsers": "catalog:",
-    "@types/turndown": "catalog:",
-    "@xterm/headless": "catalog:",
-    "arktype": "catalog:",
-    "chalk": "catalog:",
-    "diff": "catalog:",
-    "fast-xml-parser": "catalog:",
-    "handlebars": "catalog:",
-    "header-generator": "catalog:",
-    "linkedom": "catalog:",
-    "lru-cache": "catalog:",
-    "mammoth": "catalog:",
     "mupdf": "catalog:",
-    "puppeteer-core": "catalog:",
-    "turndown": "catalog:",
-    "turndown-plugin-gfm": "catalog:",
-    "zod": "catalog:"
+    "puppeteer-core": "catalog:"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "catalog:",
@@ -100,7 +89,13 @@
   "files": [
     "src",
     "dist/cli.js",
+    "dist/docs-index.generated.txt",
+    "dist/CHANGELOG-*.md",
     "dist/*.node",
+    "dist/template-*.css",
+    "dist/template-*.html",
+    "dist/template-*.js",
+    "dist/tool-views.generated-*.js",
     "scripts",
     "examples",
     "README.md",
@@ -536,13 +531,17 @@
       "types": "./src/task/*.ts",
       "import": "./src/task/*.ts"
     },
-    "./tool-discovery/*": {
-      "types": "./src/tool-discovery/*.ts",
-      "import": "./src/tool-discovery/*.ts"
-    },
     "./tools": {
       "types": "./src/tools/index.ts",
       "import": "./src/tools/index.ts"
+    },
+    "./tools/hub": {
+      "types": "./src/tools/hub/index.ts",
+      "import": "./src/tools/hub/index.ts"
+    },
+    "./tools/hub/*": {
+      "types": "./src/tools/hub/*.ts",
+      "import": "./src/tools/hub/*.ts"
     },
     "./tools/*": {
       "types": "./src/tools/*.ts",

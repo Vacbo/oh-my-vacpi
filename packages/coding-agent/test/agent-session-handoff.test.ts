@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Agent, type AgentMessage, type StreamFn } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
@@ -8,11 +9,17 @@ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream"
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { ExtensionRunner, loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import {
+	ExtensionRunner,
+	loadExtensionFromFactory,
+	loadExtensions,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 
@@ -158,7 +165,57 @@ describe("AgentSession handoff", () => {
 		expect(sessionManager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(0);
 	});
 
+	it("clears staged preview state when handoff creates the replacement session", async () => {
+		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue("## Goal\nContinue from here");
+		session.toolChoiceQueue.registerPendingInvoker("old-session-preview", "ast_edit", async () => ({
+			content: [{ type: "text", text: "applied old preview" }],
+		}));
+		expect(session.peekPendingInvoker()).toBeDefined();
+		expect(session.nextToolChoiceDirective()).toBeDefined();
+
+		await session.handoff();
+
+		expect(session.peekPendingInvoker()).toBeUndefined();
+		expect(session.nextToolChoiceDirective()).toBeUndefined();
+	});
+
+	it("carries local:// artifacts into the handed-off session", async () => {
+		// Handoff is a continuity operation: the generated document references
+		// plans/scratch files the old session wrote under its local:// root. The
+		// fresh session mints a new local root, so the artifacts must be copied
+		// forward or every reference the handoff document carries dangles.
+		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue("## Goal\nContinue from here");
+		const localOptions = {
+			getArtifactsDir: () => sessionManager.getArtifactsDir(),
+			getSessionId: () => sessionManager.getSessionId(),
+		};
+		const oldLocalRoot = resolveLocalUrlToPath("local://", localOptions);
+		const oldPlanPath = resolveLocalUrlToPath("local://my-plan.md", localOptions);
+		const oldNestedPath = resolveLocalUrlToPath("local://research/notes.txt", localOptions);
+		await fs.mkdir(path.dirname(oldNestedPath), { recursive: true });
+		await Bun.write(oldPlanPath, "# Plan\n\nbody\n");
+		await Bun.write(oldNestedPath, "scratch notes");
+
+		await session.handoff();
+
+		const newLocalRoot = resolveLocalUrlToPath("local://", localOptions);
+		expect(newLocalRoot).not.toBe(oldLocalRoot);
+		expect(await Bun.file(resolveLocalUrlToPath("local://my-plan.md", localOptions)).text()).toBe("# Plan\n\nbody\n");
+		expect(await Bun.file(resolveLocalUrlToPath("local://research/notes.txt", localOptions)).text()).toBe(
+			"scratch notes",
+		);
+		// The source session's artifacts remain untouched on disk.
+		expect(await Bun.file(oldPlanPath).text()).toBe("# Plan\n\nbody\n");
+	});
+
 	it("emits handoff lifecycle hooks on the outgoing and replacement sessions", async () => {
+		// dispose() is terminal: it closes the manager and releases its in-memory
+		// transcript. Reopen the persisted session file for the replacement
+		// session, as production revival paths do.
+		await session.dispose();
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file");
+		sessionManager = await SessionManager.open(sessionFile, tempDir.path());
 		const extensionsResult = await loadExtensions([], tempDir.path());
 		const extensionRunner = new ExtensionRunner(
 			extensionsResult.extensions,
@@ -193,7 +250,6 @@ describe("AgentSession handoff", () => {
 			return emit(event);
 		});
 
-		await session.dispose();
 		session = new AgentSession({
 			agent: new Agent({
 				initialState: {
@@ -273,6 +329,9 @@ describe("AgentSession handoff", () => {
 			return stream;
 		};
 		await session.dispose();
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file");
+		sessionManager = await SessionManager.open(sessionFile, tempDir.path());
 		session = new AgentSession({
 			agent: new Agent({
 				initialState: {
@@ -643,6 +702,7 @@ describe("AgentSession handoff", () => {
 						}
 					: undefined,
 			),
+			clearManagedTimers: vi.fn(),
 		} as unknown as ExtensionRunner;
 		vi.spyOn(compactionModule, "prepareCompaction").mockReturnValue(fixedPreparation);
 		vi.spyOn(compactionModule, "compact").mockResolvedValue({
@@ -713,6 +773,7 @@ describe("AgentSession handoff", () => {
 						}
 					: undefined,
 			),
+			clearManagedTimers: vi.fn(),
 		} as unknown as ExtensionRunner;
 		vi.spyOn(compactionModule, "prepareCompaction").mockReturnValue(fixedPreparation);
 		const compactSpy = vi.spyOn(compactionModule, "compact").mockResolvedValue({
@@ -723,8 +784,10 @@ describe("AgentSession handoff", () => {
 			details: {},
 			preserveData: { resultState: "keep-result" },
 		});
+		const promptCacheKey = "inherited-parent-cache";
 		const localAgent = new Agent({
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			promptCacheKey,
 		});
 		const localSession = new AgentSession({
 			agent: localAgent,
@@ -741,6 +804,7 @@ describe("AgentSession handoff", () => {
 		try {
 			await localSession.runIdleCompaction();
 			expect(compactSpy).toHaveBeenCalledTimes(1);
+			expect(compactSpy.mock.calls[0]?.[5]?.promptCacheKey).toBe(promptCacheKey);
 			const compactionEntry = localSessionManager.getEntries().find(entry => entry.type === "compaction");
 			if (compactionEntry?.type !== "compaction") throw new Error("Expected persisted compaction entry");
 			expect(compactionEntry.preserveData).toEqual({
@@ -825,6 +889,7 @@ describe("AgentSession handoff", () => {
 		expect(fallbackCandidateKey).toBeDefined();
 		expect(promptSpy).toHaveBeenCalledTimes(1);
 	});
+
 	it("keeps pre-prompt context-full checks aligned with provider-anchored usage", async () => {
 		await session.dispose();
 		authStorage.setRuntimeApiKey("openai", "test-key");
@@ -1489,6 +1554,26 @@ describe("AgentSession handoff", () => {
 			streamFn: mock.stream,
 		});
 
+		const agentEndWillContinue: Array<boolean | undefined> = [];
+		const extensionsResult = await loadExtensions([], tempDir.path());
+		const captureAgentEnd = await loadExtensionFromFactory(
+			pi => {
+				pi.on("agent_end", event => {
+					agentEndWillContinue.push(event.willContinue);
+				});
+			},
+			tempDir.path(),
+			new EventBus(),
+			extensionsResult.runtime,
+			"capture-agent-end",
+		);
+		const extensionRunner = new ExtensionRunner(
+			[captureAgentEnd],
+			extensionsResult.runtime,
+			tempDir.path(),
+			sessionManager,
+			modelRegistry,
+		);
 		session = new AgentSession({
 			agent,
 			sessionManager,
@@ -1499,6 +1584,7 @@ describe("AgentSession handoff", () => {
 				"compaction.thresholdPercent": 1,
 				"contextPromotion.enabled": false,
 			}),
+			extensionRunner,
 			modelRegistry,
 		});
 		session.subscribe(event => {
@@ -1512,6 +1598,7 @@ describe("AgentSession handoff", () => {
 
 		expect(mock.calls).toHaveLength(1);
 		expect(generateHandoffSpy).toHaveBeenCalledTimes(1);
+		expect(agentEndWillContinue).toEqual([undefined]);
 		const endEvents = events.filter(event => event.type === "auto_compaction_end");
 		expect(endEvents).toHaveLength(1);
 		expect(endEvents[0]).toMatchObject({ type: "auto_compaction_end", action: "handoff", aborted: false });
@@ -1693,6 +1780,12 @@ describe("AgentSession handoff", () => {
 			throw new Error("Expected model to be set");
 		}
 
+		// See "emits handoff lifecycle hooks": reopen the persisted transcript
+		// after the terminal dispose before wiring the replacement session.
+		await session.dispose();
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file");
+		sessionManager = await SessionManager.open(sessionFile, tempDir.path());
 		const extensionsResult = await loadExtensions([], tempDir.path());
 		const extensionRunner = new ExtensionRunner(
 			extensionsResult.extensions,
@@ -1706,7 +1799,6 @@ describe("AgentSession handoff", () => {
 			cancel: true,
 		})) as ExtensionRunner["emit"]);
 
-		await session.dispose();
 		session = new AgentSession({
 			agent: new Agent({
 				initialState: {
@@ -1962,5 +2054,59 @@ describe("AgentSession handoff", () => {
 		await expect(handoffPromise).rejects.toThrow("Handoff cancelled");
 		expect(generateHandoffSpy).toHaveBeenCalledTimes(1);
 		expect(generateHandoffSpy.mock.calls[0]?.[2]?.streamOptions?.signal?.aborted).toBe(true);
+	});
+
+	it("surfaces the reason when the harness aborts an in-flight handoff", async () => {
+		const started = Promise.withResolvers<void>();
+		const cancelled = Promise.withResolvers<string>();
+		vi.spyOn(compactionModule, "generateHandoffFromContext").mockImplementation((_context, _model, options) => {
+			started.resolve();
+			options.streamOptions.signal?.addEventListener("abort", () => cancelled.reject(new Error("request aborted")), {
+				once: true,
+			});
+			return cancelled.promise;
+		});
+
+		const handoffPromise = session.handoff();
+		await started.promise;
+		await session.abort({ reason: "Harness stopped the session" });
+
+		await expect(handoffPromise).rejects.toThrow("Harness stopped the session");
+	});
+
+	it("surfaces the real error when generation fails without a user abort", async () => {
+		// Providers throw name==="AbortError" errors on non-user conditions (stalls,
+		// nested resolution failures). The handoff signal is never aborted here, so the
+		// failure must surface verbatim instead of being masked as "Handoff cancelled".
+		const providerError = new Error("Deepseek stream stalled");
+		providerError.name = "AbortError";
+		const generateHandoffSpy = vi
+			.spyOn(compactionModule, "generateHandoffFromContext")
+			.mockRejectedValue(providerError);
+
+		await expect(session.handoff()).rejects.toThrow("Deepseek stream stalled");
+		expect(generateHandoffSpy).toHaveBeenCalledTimes(1);
+		expect(session.isGeneratingHandoff).toBe(false);
+	});
+
+	it("surfaces empty handoff generation as a failure, not a false cancel", async () => {
+		// Regression for #7993: the #7904 fix stopped masking provider errors as
+		// "Handoff cancelled", but an empty/whitespace-only generation still returned
+		// undefined, which the /handoff caller reported as "Handoff cancelled" with no
+		// detail. Empty output is a real failure and must surface as one.
+		const generateHandoffSpy = vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue("   \n  ");
+
+		await expect(session.handoff()).rejects.toThrow("Handoff generation produced no content");
+		expect(generateHandoffSpy).toHaveBeenCalledTimes(1);
+		expect(session.isGeneratingHandoff).toBe(false);
+	});
+
+	it("auto-triggered handoff returns undefined on empty generation for context-full fallback", async () => {
+		// Auto-handoff is best-effort: an empty document must NOT throw so maintenance
+		// can fall back to context-full compaction (see runAutoCompaction).
+		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue("");
+
+		const result = await session.handoff(undefined, { autoTriggered: true });
+		expect(result).toBeUndefined();
 	});
 });

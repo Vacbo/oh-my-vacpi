@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
+import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl, resolveVertexEndpointHost } from "@oh-my-pi/pi-catalog/hosts";
 import {
 	mapEffortToAnthropicAdaptiveEffort,
 	mapEffortToGoogleThinkingLevel,
@@ -15,14 +15,17 @@ import {
 } from "@oh-my-pi/pi-catalog/model-thinking";
 import { CATALOG_PROVIDERS, type ProviderCatalogEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import { CODEX_BASE_URL } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, $pickenv, getConfigRootDir, isEnoent, logger, withExtraCaFetch } from "@oh-my-pi/pi-utils";
+import { $env, $pickenv, getProviderInFlightRoot, isEnoent, logger, withExtraCaFetch } from "@oh-my-pi/pi-utils";
 import { getCustomApi } from "./api-registry";
-import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveRetryKey } from "./auth-retry";
+import { createAuthRetryKeyState, isApiKeyResolver, resolveNextAuthRetryKey } from "./auth-retry";
 import * as AIError from "./error";
 import { ProviderHttpError } from "./error";
-import { isUsageLimitOutcome } from "./error/rate-limit";
+import { isInvalidatedOAuthTokenError } from "./error/auth-classify";
+import { isConcurrencyCapExclusion, isUsageLimitOutcome } from "./error/rate-limit";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
+import type { MessageCreateParamsStreaming } from "./providers/anthropic-wire";
+import { coworkFetch } from "./providers/cowork-fetch";
 import type { CursorOptions } from "./providers/cursor";
 import type { DevinOptions } from "./providers/devin";
 import { isGitLabDuoModel, streamGitLabDuo } from "./providers/gitlab-duo";
@@ -58,7 +61,7 @@ import {
 	streamOpenAIResponses,
 } from "./providers/register-builtins";
 import { isSyntheticModel, streamSynthetic } from "./providers/synthetic";
-import { PROVIDER_REGISTRY } from "./registry";
+import { getProviderDefinition, PROVIDER_REGISTRY } from "./registry";
 import type {
 	Api,
 	AssistantMessage,
@@ -67,17 +70,24 @@ import type {
 	FetchImpl,
 	Model,
 	OptionsForApi,
+	ProviderSessionState,
 	SimpleStreamOptions,
 	StreamOptions,
 	ThinkingBudgets,
 	ToolChoice,
 } from "./types";
+import { resolveCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { isFoundryEnabled } from "./utils/foundry";
 import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
 import { wrapFetchForProxy } from "./utils/proxy";
 import { withRequestDebugFetch } from "./utils/request-debug";
-import { withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
+import { withThinkingLoopGuard } from "./utils/thinking-loop";
+
+function defaultFetchForModel(model: Model<Api>): FetchImpl {
+	if (model.provider === "anthropic" && model.api === "anthropic-messages") return coworkFetch;
+	return globalThis.fetch;
+}
 
 function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 	return (
@@ -104,10 +114,18 @@ function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
  */
 function isLeakedThinkingHealExempt(model: Model<Api>): boolean {
 	switch (model.provider) {
-		case "anthropic":
-			// Mirror resolveAnthropicBaseUrl: Foundry redirects an empty baseUrl to
-			// FOUNDRY_BASE_URL, so exempt only when the effective endpoint is official.
-			return isOfficialAnthropicApiUrl((isFoundryEnabled() && $env.FOUNDRY_BASE_URL?.trim()) || model.baseUrl);
+		case "anthropic": {
+			// Mirror resolveAnthropicBaseUrl's effective endpoint: Foundry redirects
+			// an empty baseUrl to FOUNDRY_BASE_URL; otherwise an explicit non-official
+			// model.baseUrl wins, then the ANTHROPIC_BASE_URL gateway fallback, then
+			// the official default. Exempt only when the effective endpoint is official.
+			if (isFoundryEnabled()) {
+				const foundry = $env.FOUNDRY_BASE_URL?.trim();
+				if (foundry) return isOfficialAnthropicApiUrl(foundry);
+			}
+			if (model.baseUrl && !isOfficialAnthropicApiUrl(model.baseUrl)) return false;
+			return isOfficialAnthropicApiUrl($env.ANTHROPIC_BASE_URL?.trim() || model.baseUrl);
+		}
 		case "openai":
 			return isOfficialOpenAIApiUrl(model.baseUrl);
 		case "openai-codex":
@@ -128,7 +146,7 @@ function isOfficialOpenAIApiUrl(baseUrl: string | undefined): boolean {
 }
 
 /** Strict official-Codex endpoint check; exact origin or a path boundary after {@link CODEX_BASE_URL}. */
-function isOfficialCodexApiUrl(baseUrl: string | undefined): boolean {
+export function isOfficialCodexApiUrl(baseUrl: string | undefined): boolean {
 	if (!baseUrl) return true;
 	const lower = baseUrl.toLowerCase().replace(/\/+$/, "");
 	return lower === CODEX_BASE_URL || lower.startsWith(`${CODEX_BASE_URL}/`);
@@ -145,8 +163,7 @@ function healLeakedThinking(model: Model<Api>, inner: AssistantMessageEventStrea
 
 type ProviderInFlightLease = {
 	path: string;
-	heartbeat: NodeJS.Timeout;
-	flushHeartbeat: () => Promise<void>;
+	stopHeartbeat: () => Promise<void>;
 };
 
 type ProviderInFlightLeaseInfo = {
@@ -161,9 +178,17 @@ const PROVIDER_INFLIGHT_LOCK_STALE_MS = 10_000;
 const PROVIDER_INFLIGHT_LEASE_STALE_MS = 30_000;
 const PROVIDER_INFLIGHT_HEARTBEAT_MS = 5_000;
 const PROVIDER_INFLIGHT_SIGNAL_FALLBACK_MS = 250;
+const PROVIDER_INFLIGHT_HEARTBEAT_FLUSH_TIMEOUT_MS = 1_000;
+const PROVIDER_INFLIGHT_RELEASE_TIMEOUT_MS = 5_000;
 
 let configuredProviderMaxInFlightRequests: Record<string, number> = {};
 let providerInFlightRootOverride: string | undefined;
+let providerInFlightHeartbeatMsOverride: number | undefined;
+let providerInFlightHeartbeatFlushTimeoutMsOverride: number | undefined;
+let providerInFlightHeartbeatWriterOverride:
+	| ((writeProviderInFlightInfo: () => Promise<void>) => Promise<void>)
+	| undefined;
+let providerInFlightLeaseRemoverOverride: ((leasePath: string) => Promise<void>) | undefined;
 
 export function configureProviderMaxInFlightRequests(limits: Record<string, number> | undefined): void {
 	configuredProviderMaxInFlightRequests = limits ?? {};
@@ -181,7 +206,7 @@ function resolveProviderInFlightLimit(
 
 function providerInFlightRoot(): string {
 	if (providerInFlightRootOverride) return providerInFlightRootOverride;
-	return path.join(getConfigRootDir(), "run", "provider-inflight");
+	return getProviderInFlightRoot();
 }
 
 function providerInFlightSegment(provider: string): string {
@@ -230,7 +255,9 @@ async function writeProviderInFlightInfo(dir: string, token: string): Promise<vo
 	const infoPath = path.join(dir, "info.json");
 	const tempPath = path.join(dir, `.info-${process.pid}-${crypto.randomUUID()}.tmp`);
 	try {
-		await Bun.write(tempPath, JSON.stringify(info));
+		// Unlike Bun.write, fs.writeFile does not recreate a lease directory that
+		// was removed while a timed-out heartbeat was still pending.
+		await fs.writeFile(tempPath, JSON.stringify(info), "utf8");
 		await fs.rename(tempPath, infoPath);
 	} catch (error) {
 		await fs.rm(tempPath, { force: true }).catch(() => {});
@@ -410,18 +437,38 @@ async function tryAcquireProviderInFlightLease(
 			await removeProviderInFlightLeaseDir(leaseDir).catch(() => {});
 			throw error;
 		}
+		let heartbeatActive = true;
 		let heartbeatFlush = Promise.resolve();
 		const touchHeartbeat = () => {
+			if (!heartbeatActive) return;
 			heartbeatFlush = heartbeatFlush
-				.then(
-					() => writeProviderInFlightInfo(leaseDir, token),
-					() => writeProviderInFlightInfo(leaseDir, token),
-				)
+				.then(async () => {
+					if (!heartbeatActive) return;
+					const write = () => {
+						if (!heartbeatActive) return Promise.resolve();
+						return writeProviderInFlightInfo(leaseDir, token);
+					};
+					if (providerInFlightHeartbeatWriterOverride) {
+						await providerInFlightHeartbeatWriterOverride(write);
+					} else {
+						await write();
+					}
+				})
 				.catch(() => {});
 		};
-		const heartbeat = setInterval(touchHeartbeat, PROVIDER_INFLIGHT_HEARTBEAT_MS);
+		const heartbeat = setInterval(
+			touchHeartbeat,
+			providerInFlightHeartbeatMsOverride ?? PROVIDER_INFLIGHT_HEARTBEAT_MS,
+		);
 		heartbeat.unref?.();
-		return { path: leaseDir, heartbeat, flushHeartbeat: () => heartbeatFlush };
+		return {
+			path: leaseDir,
+			stopHeartbeat: () => {
+				heartbeatActive = false;
+				clearInterval(heartbeat);
+				return heartbeatFlush;
+			},
+		};
 	} finally {
 		await releaseLock();
 	}
@@ -502,10 +549,37 @@ async function removeProviderInFlightLeaseDir(leasePath: string): Promise<void> 
 // the in-flight root has been repointed (only the test seam does that) must not
 // write `.wakeup` into an unrelated provider directory.
 async function releaseProviderInFlightLease(lease: ProviderInFlightLease): Promise<void> {
-	clearInterval(lease.heartbeat);
-	await lease.flushHeartbeat();
-	await removeProviderInFlightLeaseDir(lease.path);
-	await signalProviderInFlightWaitersInDir(path.dirname(lease.path));
+	const heartbeatFlush = lease.stopHeartbeat();
+	const flushTimeout = Promise.withResolvers<"timeout">();
+	const flushTimer = setTimeout(
+		() => flushTimeout.resolve("timeout"),
+		providerInFlightHeartbeatFlushTimeoutMsOverride ?? PROVIDER_INFLIGHT_HEARTBEAT_FLUSH_TIMEOUT_MS,
+	);
+	flushTimer.unref?.();
+	try {
+		const outcome = await Promise.race([heartbeatFlush.then(() => "flushed" as const), flushTimeout.promise]);
+		if (outcome === "timeout") {
+			logger.warn("Provider in-flight heartbeat flush timed out; forcing lease cleanup", { path: lease.path });
+		}
+	} finally {
+		clearTimeout(flushTimer);
+	}
+
+	const releaseTimeout = Promise.withResolvers<never>();
+	const releaseTimer = setTimeout(
+		() => releaseTimeout.reject(new Error("Provider in-flight lease cleanup timed out")),
+		PROVIDER_INFLIGHT_RELEASE_TIMEOUT_MS,
+	);
+	releaseTimer.unref?.();
+	try {
+		const removeLease = providerInFlightLeaseRemoverOverride ?? removeProviderInFlightLeaseDir;
+		await Promise.race([removeLease(lease.path), releaseTimeout.promise]);
+	} finally {
+		clearTimeout(releaseTimer);
+	}
+	// Wake-up is an optimization: waiters also poll every 250 ms. Do not let a
+	// notification-file stall keep a completed provider request open.
+	void signalProviderInFlightWaitersInDir(path.dirname(lease.path));
 }
 
 async function acquireProviderInFlightSlot(
@@ -530,6 +604,16 @@ async function acquireProviderInFlightSlot(
 export const __providerInFlightForTesting = {
 	setRoot(root: string | undefined): void {
 		providerInFlightRootOverride = root;
+	},
+	setHeartbeatTimings(timings: { heartbeatMs?: number; heartbeatFlushTimeoutMs?: number } | undefined): void {
+		providerInFlightHeartbeatMsOverride = timings?.heartbeatMs;
+		providerInFlightHeartbeatFlushTimeoutMsOverride = timings?.heartbeatFlushTimeoutMs;
+	},
+	setHeartbeatWriter(writer: ((writeProviderInFlightInfo: () => Promise<void>) => Promise<void>) | undefined): void {
+		providerInFlightHeartbeatWriterOverride = writer;
+	},
+	setLeaseRemover(remover: ((leasePath: string) => Promise<void>) | undefined): void {
+		providerInFlightLeaseRemoverOverride = remover;
 	},
 	providerDir(provider: string): string {
 		return providerInFlightDir(provider);
@@ -569,11 +653,26 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 	const outer = new AssistantMessageEventStream();
 	void (async () => {
 		let release: (() => Promise<void>) | undefined;
-		let released = false;
-		const releaseOnce = async () => {
-			if (!release || released) return;
-			released = true;
-			await release();
+		let releasePromise: Promise<void> | undefined;
+		const releaseOnce = () => {
+			if (!release) return Promise.resolve();
+			releasePromise ??= release();
+			return releasePromise;
+		};
+		const releaseBestEffort = async () => {
+			try {
+				await releaseOnce();
+			} catch (releaseError) {
+				// The lease has stopped heartbeating and stale cleanup will reap it
+				// within PROVIDER_INFLIGHT_LEASE_STALE_MS. Until then, its slot may
+				// remain unavailable and waiters rely on the fallback poll.
+				// Never replace a completed response or the provider's original error
+				// with a coordination-directory cleanup failure.
+				logger.warn("Provider in-flight permit release failed", {
+					provider: model.provider,
+					error: String(releaseError),
+				});
+			}
 		};
 		try {
 			const startedWaitingAt = Date.now();
@@ -585,17 +684,29 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 				throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 			}
 			const inner = healLeakedThinking(model, dispatch());
-			try {
-				for await (const event of inner) {
-					outer.push(event);
-					if (outer.done) return;
+			let terminalEvent: AssistantMessageEvent | undefined;
+			for await (const event of inner) {
+				if (event.type === "done" || event.type === "error") {
+					terminalEvent = event;
+					break;
 				}
-				if (!outer.done) outer.end(await inner.result());
-			} finally {
-				await releaseOnce();
+				outer.push(event);
+				if (outer.done) {
+					await releaseBestEffort();
+					return;
+				}
+			}
+			const result = await inner.result();
+			// Releasing the permit is part of request completion. Publishing the
+			// result first lets an immediate follow-up turn contend with its own
+			// still-live lease, which is particularly costly on Windows.
+			await releaseBestEffort();
+			if (!outer.done) {
+				if (terminalEvent) outer.push(terminalEvent);
+				else outer.end(result);
 			}
 		} catch (error) {
-			await releaseOnce();
+			await releaseBestEffort();
 			if (!outer.done) outer.fail(error);
 		}
 	})();
@@ -660,7 +771,7 @@ function resolveVertexRequest(input: string | URL | Request): string | URL | Req
 			url.includes("{location}") ||
 			url.includes("%7Bproject%7D") ||
 			url.includes("%7Blocation%7D");
-		const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+		const host = resolveVertexEndpointHost(location);
 		const rewritten = hasPlaceholder
 			? url
 					.replace("https://{location}-aiplatform.googleapis.com", `https://${host}`)
@@ -686,15 +797,9 @@ function resolveVertexRequest(input: string | URL | Request): string | URL | Req
 
 type KeyResolver = string | (() => string | undefined);
 
-export const FIREWORKS_PASS_MODEL_IDS = new Set([
-	"routers/kimi-k2.6-turbo",
-	"accounts/fireworks/routers/kimi-k2p6-turbo",
-]);
-
 const LEGACY_ENV_KEYS: Record<string, KeyResolver> = {
 	// Non-provider / search-tool keys and API-name keys not modeled as registry provider defs.
 	"azure-openai-responses": "AZURE_OPENAI_API_KEY",
-	exa: "EXA_API_KEY",
 	jina: "JINA_API_KEY",
 	brave: "BRAVE_API_KEY",
 	tinyfish: "TINYFISH_API_KEY",
@@ -738,32 +843,6 @@ export function getEnvApiKey(provider: string): string | undefined {
 }
 
 /**
- * The env key that authenticates a *specific* model when the generic provider
- * env fallback does not — currently the Fire Pass `FIREWORKS_PASS_API_KEY`,
- * which is scoped to the Kimi K2.6 Turbo router models (`FIREWORKS_PASS_MODEL_IDS`)
- * and does NOT authorize the generic `fireworks` `/v1/models` catalog. Returns
- * undefined for every other provider/model so ordinary providers keep their
- * plain generic env precedence.
- */
-export function getModelScopedEnvApiKey(provider: string, modelId: string | undefined): string | undefined {
-	if (provider === "fireworks" && modelId && FIREWORKS_PASS_MODEL_IDS.has(modelId)) {
-		return $env.FIREWORKS_PASS_API_KEY;
-	}
-	return undefined;
-}
-
-/**
- * Env fallback for a specific model: the dedicated model-scoped key when one
- * exists ({@link getModelScopedEnvApiKey}), otherwise the provider's generic
- * env key ({@link getEnvApiKey}). Keeps the Fire Pass router keyed to
- * `FIREWORKS_PASS_API_KEY` while ordinary Fireworks models resolve
- * `FIREWORKS_API_KEY`.
- */
-export function getEnvApiKeyForModel(provider: string, modelId: string | undefined): string | undefined {
-	return getModelScopedEnvApiKey(provider, modelId) ?? getEnvApiKey(provider);
-}
-
-/**
  * Name of the environment variable that backs `getEnvApiKey` for a provider,
  * when that provider maps to a single named variable (e.g. `github-copilot` →
  * `COPILOT_GITHUB_TOKEN`). Returns undefined for providers whose env fallback
@@ -789,7 +868,7 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	return withGeminiThinkingLoopGuard(model, options, opts =>
+	return withThinkingLoopGuard(model, options, opts =>
 		withProviderInFlightLimit(model, opts, () => streamDispatch(model, context, opts)),
 	);
 }
@@ -799,12 +878,14 @@ function streamDispatch<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	const baseOptions = (options || {}) as StreamOptions;
+	const inputOptions = (options || {}) as StreamOptions;
+	const baseOptions = { ...inputOptions, fetch: inputOptions.fetch ?? defaultFetchForModel(model) };
 	const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
 	const requestOptions = {
 		...debugOptions,
-		fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
+		fetch: wrapFetchForProxy(debugOptions.fetch, model.provider),
 	} as OptionsForApi<TApi>;
+	assertExplicitOpenAIResponsesPromptCacheSupport(model, requestOptions);
 
 	// Check custom API registry first (extension-provided APIs like "vertex-claude-api")
 	const customApiProvider = getCustomApi(model.api);
@@ -834,33 +915,37 @@ function streamDispatch<TApi extends Api>(
 		} as GitLabDuoWorkflowOptions);
 	}
 
-	// Vertex AI uses Application Default Credentials, not API keys
+	// Vertex AI and Bedrock Converse authenticate outside the generic API-key path.
 	if (model.api === "google-vertex") {
 		return streamGoogleVertex(model as Model<"google-vertex">, context, requestOptions as GoogleVertexOptions);
-	} else if (model.api === "bedrock-converse-stream") {
-		// Bedrock doesn't have any API keys instead it sources credentials from standard AWS env variables or from given AWS profile.
+	}
+	if (model.api === "bedrock-converse-stream") {
 		return streamBedrock(model as Model<"bedrock-converse-stream">, context, requestOptions as BedrockOptions);
 	}
 
-	const apiKey = requestOptions.apiKey || getEnvApiKeyForModel(model.provider, model.id);
+	const prepareRequest = getProviderDefinition(model.provider)?.prepareRequest;
+	const prepared = prepareRequest?.(model as Model<Api>, requestOptions as StreamOptions);
+	const providerModel = prepared?.model ?? (model as Model<Api>);
+	const preparedOptions = prepared?.options ?? (requestOptions as StreamOptions);
+	const apiKey = preparedOptions.apiKey || getEnvApiKey(providerModel.provider);
 	if (!apiKey) {
-		throw new AIError.MissingApiKeyError(model.provider);
+		throw new AIError.MissingApiKeyError(providerModel.provider);
 	}
-	const providerOptions = isGoogleVertexAuthenticatedModel(model)
+	const providerOptions = isGoogleVertexAuthenticatedModel(providerModel)
 		? {
-				...requestOptions,
+				...preparedOptions,
 				apiKey: "vertex-adc",
-				fetch: createVertexAuthenticatedFetch(requestOptions),
+				fetch: createVertexAuthenticatedFetch(preparedOptions),
 			}
-		: { ...requestOptions, apiKey };
+		: { ...preparedOptions, apiKey };
 
-	const api: Api = model.api;
+	const api: Api = providerModel.api;
 	switch (api) {
 		case "anthropic-messages": {
 			const anthropicOptions = providerOptions as AnthropicOptions;
-			return streamAnthropic(model as Model<"anthropic-messages">, context, {
+			return streamAnthropic(providerModel as Model<"anthropic-messages">, context, {
 				...anthropicOptions,
-				isOAuth: anthropicOptions.isOAuth ?? model.isOAuth,
+				isOAuth: anthropicOptions.isOAuth ?? providerModel.isOAuth,
 			});
 		}
 
@@ -868,13 +953,13 @@ function streamDispatch<TApi extends Api>(
 			const useResponses = $env.PI_OPENROUTER_RESPONSES !== "0";
 			if (useResponses) {
 				return streamOpenAIResponses(
-					model as Model<"openai-responses">,
+					providerModel as Model<"openai-responses">,
 					context,
 					providerOptions as OptionsForApi<"openai-responses">,
 				);
 			}
 			return streamOpenAICompletions(
-				model as Model<"openai-completions">,
+				providerModel as Model<"openai-completions">,
 				context,
 				providerOptions as OptionsForApi<"openai-completions">,
 			);
@@ -882,50 +967,50 @@ function streamDispatch<TApi extends Api>(
 
 		case "openai-completions":
 			return streamOpenAICompletions(
-				model as Model<"openai-completions">,
+				providerModel as Model<"openai-completions">,
 				context,
 				providerOptions as OptionsForApi<"openai-completions">,
 			);
 
 		case "openai-responses":
 			return streamOpenAIResponses(
-				model as Model<"openai-responses">,
+				providerModel as Model<"openai-responses">,
 				context,
 				providerOptions as OptionsForApi<"openai-responses">,
 			);
 
 		case "azure-openai-responses":
 			return streamAzureOpenAIResponses(
-				model as Model<"azure-openai-responses">,
+				providerModel as Model<"azure-openai-responses">,
 				context,
 				providerOptions as OptionsForApi<"azure-openai-responses">,
 			);
 
 		case "openai-codex-responses":
 			return streamOpenAICodexResponses(
-				model as Model<"openai-codex-responses">,
+				providerModel as Model<"openai-codex-responses">,
 				context,
 				providerOptions as OptionsForApi<"openai-codex-responses">,
 			);
 
 		case "google-generative-ai":
-			return streamGoogle(model as Model<"google-generative-ai">, context, providerOptions);
+			return streamGoogle(providerModel as Model<"google-generative-ai">, context, providerOptions);
 
 		case "google-gemini-cli":
 			return streamGoogleGeminiCli(
-				model as Model<"google-gemini-cli">,
+				providerModel as Model<"google-gemini-cli">,
 				context,
 				providerOptions as GoogleGeminiCliOptions,
 			);
 
 		case "ollama-chat":
-			return streamOllama(model as Model<"ollama-chat">, context, providerOptions as OllamaChatOptions);
+			return streamOllama(providerModel as Model<"ollama-chat">, context, providerOptions as OllamaChatOptions);
 
 		case "cursor-agent":
-			return streamCursor(model as Model<"cursor-agent">, context, providerOptions as CursorOptions);
+			return streamCursor(providerModel as Model<"cursor-agent">, context, providerOptions as CursorOptions);
 
 		case "devin-agent":
-			return streamDevin(model as Model<"devin-agent">, context, providerOptions as DevinOptions);
+			return streamDevin(providerModel as Model<"devin-agent">, context, providerOptions as DevinOptions);
 
 		default:
 			throw new AIError.ConfigurationError(`Unhandled API: ${api}`);
@@ -998,28 +1083,35 @@ function extractStatusFromAssistantError(message: AssistantMessage): number | un
 }
 
 function isRetryableUpstreamError(error: unknown, status: number | undefined, message: string | undefined): boolean {
-	// 401 means the credential is bad. Usage-limit phrasing (Codex's
+	// 401 means the credential is bad; 403 is its valid-token twin (access
+	// denied by plan, model policy, or org restriction — a sibling account may
+	// not share it). Explicit account-scoped policy errors such as Codex
+	// `cyber_policy` are likewise rotatable: another account may carry the
+	// required approval. Usage-limit phrasing (Codex's
 	// "You have hit your ChatGPT usage limit", Anthropic's "usage_limit_reached",
 	// Google's "resource_exhausted", OpenAI's "insufficient_quota") and 429s
 	// without transient rate-limit wording mean this account is parked but a
 	// sibling credential can usually pick the request up. Both are rotatable
-	// via `onAuthError` — the auth-gateway maps the former to
-	// `invalidateCredentialMatching` and the latter to
-	// `markUsageLimitReached`. Transient 429s ("Too many requests",
-	// per-minute caps) classify as RATE_LIMIT_EXCEEDED in
-	// `parseRateLimitReason` and stay in the provider's own backoff layer
-	// instead of burning siblings.
-	if (status === 401) return true;
-	void error;
+	// via `onAuthError` — the auth-gateway maps hard auth failures to
+	// `invalidateCredentialMatching` and temporary account constraints to a
+	// credential block. Transient 429s ("Too many requests", per-minute caps)
+	// classify as RATE_LIMIT_EXCEEDED in `parseRateLimitReason` and stay in the
+	// provider's own backoff layer instead of burning siblings.
+	if (AIError.isAccountPolicyError(error)) return true;
+	if (AIError.isUsageLimit(error)) return true;
+	if (isInvalidatedOAuthTokenError(error)) return true;
+	if (status === 401 || (status === 403 && !isConcurrencyCapExclusion(status, message))) return true;
 	return isUsageLimitOutcome(status, message);
 }
 
 function createAssistantAuthError(message: AssistantMessage): Error {
 	const text = message.errorMessage ?? "Provider authentication failed";
 	const status = extractStatusFromAssistantError(message);
-	return status === undefined
-		? new AIError.ProviderResponseError(text, { kind: "runtime" })
-		: new ProviderHttpError(text, status);
+	const error =
+		status === undefined
+			? new AIError.ProviderResponseError(text, { kind: "runtime" })
+			: new ProviderHttpError(text, status);
+	return typeof message.errorId === "number" ? AIError.attach(error, message.errorId) : error;
 }
 
 function emitBufferedEvents(stream: AssistantMessageEventStream, events: AssistantMessageEvent[]): void {
@@ -1028,27 +1120,313 @@ function emitBufferedEvents(stream: AssistantMessageEventStream, events: Assista
 	}
 }
 
+const ANTHROPIC_CACHE_TTL_MS = 5 * 60_000;
+const ANTHROPIC_CACHE_REFRESH_LEAD_MS = 15_000;
+const ANTHROPIC_CACHE_REFRESH_LIMIT = 3;
+const ANTHROPIC_CACHE_REFRESH_STATE_KEY = "anthropic-cache-refresh";
+
+interface AnthropicCacheRefreshPlan {
+	refresh(controller: AbortController): Promise<number | undefined>;
+}
+
+class AnthropicCacheRefreshState implements ProviderSessionState {
+	#controller: AbortController | undefined;
+	#generation = 0;
+	#plan: AnthropicCacheRefreshPlan | undefined;
+	#refreshesRemaining = 0;
+	#timer: NodeJS.Timeout | undefined;
+
+	cancel(): void {
+		this.#generation++;
+		if (this.#timer !== undefined) {
+			clearTimeout(this.#timer);
+			this.#timer = undefined;
+		}
+		this.#controller?.abort();
+		this.#controller = undefined;
+		this.#plan = undefined;
+		this.#refreshesRemaining = 0;
+	}
+
+	arm(plan: AnthropicCacheRefreshPlan, cacheTouchedAtMs: number): void {
+		this.cancel();
+		this.#plan = plan;
+		this.#refreshesRemaining = ANTHROPIC_CACHE_REFRESH_LIMIT;
+		this.#schedule(cacheTouchedAtMs, this.#generation);
+	}
+
+	close(): void {
+		this.cancel();
+	}
+
+	#schedule(cacheTouchedAtMs: number, generation: number): void {
+		const refreshAtMs = cacheTouchedAtMs + ANTHROPIC_CACHE_TTL_MS - ANTHROPIC_CACHE_REFRESH_LEAD_MS;
+		this.#timer = setTimeout(
+			() => {
+				this.#timer = undefined;
+				void this.#refresh(generation);
+			},
+			Math.max(0, refreshAtMs - Date.now()),
+		);
+		this.#timer.unref?.();
+	}
+
+	async #refresh(generation: number): Promise<void> {
+		const plan = this.#plan;
+		if (generation !== this.#generation || !plan || this.#refreshesRemaining <= 0) return;
+
+		const controller = new AbortController();
+		this.#controller = controller;
+		let cacheTouchedAtMs: number | undefined;
+		try {
+			cacheTouchedAtMs = await plan.refresh(controller);
+		} catch (error) {
+			if (generation === this.#generation && !controller.signal.aborted) {
+				logger.debug("Anthropic prompt-cache refresh failed", { error: String(error) });
+			}
+		}
+		if (generation !== this.#generation) return;
+
+		this.#controller = undefined;
+		if (cacheTouchedAtMs === undefined) {
+			this.#plan = undefined;
+			this.#refreshesRemaining = 0;
+			return;
+		}
+
+		this.#refreshesRemaining--;
+		if (this.#refreshesRemaining <= 0) {
+			this.#plan = undefined;
+			return;
+		}
+		this.#schedule(cacheTouchedAtMs, generation);
+	}
+}
+
+function supportsAnthropicCacheRefresh<TApi extends Api>(model: Model<TApi>): boolean {
+	return (
+		model.api === "anthropic-messages" &&
+		model.provider === "anthropic" &&
+		model.transport !== "pi-native" &&
+		isLeakedThinkingHealExempt(model)
+	);
+}
+
+function isAnthropicRefreshPayload(payload: unknown): payload is MessageCreateParamsStreaming {
+	return (
+		typeof payload === "object" &&
+		payload !== null &&
+		"messages" in payload &&
+		Array.isArray(payload.messages) &&
+		"max_tokens" in payload &&
+		typeof payload.max_tokens === "number"
+	);
+}
+
+function isShortAnthropicCacheControl(cacheControl: unknown): boolean {
+	return (
+		typeof cacheControl === "object" &&
+		cacheControl !== null &&
+		"type" in cacheControl &&
+		cacheControl.type === "ephemeral" &&
+		(!("ttl" in cacheControl) || cacheControl.ttl !== "1h")
+	);
+}
+
+function hasShortAnthropicMessageBreakpoint(payload: MessageCreateParamsStreaming): boolean {
+	for (const message of payload.messages) {
+		if (!Array.isArray(message.content)) continue;
+		for (const block of message.content) {
+			if ("cache_control" in block && isShortAnthropicCacheControl(block.cache_control)) return true;
+		}
+	}
+	return false;
+}
+
+function isAnthropicGenerationEvent(event: AssistantMessageEvent): boolean {
+	switch (event.type) {
+		case "text_start":
+		case "thinking_start":
+		case "toolcall_start":
+		case "image_end":
+			return true;
+		case "text_delta":
+		case "thinking_delta":
+		case "toolcall_delta":
+			return event.delta.length > 0;
+		default:
+			return false;
+	}
+}
+
+function isAnthropicThinkingActive(model: Model<Api>, payload: MessageCreateParamsStreaming): boolean {
+	if (payload.thinking) return payload.thinking.type !== "disabled";
+	return model.thinking?.mode === "anthropic-adaptive" && payload.output_config?.effort != null;
+}
+
+function createAnthropicCacheRefreshPlan<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	payload: MessageCreateParamsStreaming,
+): AnthropicCacheRefreshPlan {
+	const thinkingEnabled = isAnthropicThinkingActive(model, payload);
+	return {
+		async refresh(controller) {
+			let cacheRead = 0;
+			let cacheWrite = 0;
+			let cacheTouchedAtMs: number | undefined;
+			let canceledAfterGenerationStarted = false;
+			const response = streamSimpleRequest(model, context, {
+				...options,
+				acceptEmptyResponse: true,
+				anthropicCacheRefreshRequest: !thinkingEnabled,
+				cacheRetention: "short",
+				maxTokens: thinkingEnabled ? options?.maxTokens : 0,
+				onPayload: () => ({
+					...payload,
+					max_tokens: thinkingEnabled ? payload.max_tokens : 0,
+				}),
+				onResponse: () => {
+					cacheTouchedAtMs = Date.now();
+				},
+				onSseEvent: undefined,
+				signal: controller.signal,
+			});
+
+			for await (const event of response) {
+				if ("partial" in event) {
+					cacheRead = event.partial.usage.cacheRead;
+					cacheWrite = event.partial.usage.cacheWrite;
+				}
+				if (event.type === "error") return undefined;
+				if (event.type === "done") {
+					cacheRead = event.message.usage.cacheRead;
+					cacheWrite = event.message.usage.cacheWrite;
+					return cacheTouchedAtMs !== undefined && cacheRead > 0 && cacheWrite === 0
+						? cacheTouchedAtMs
+						: undefined;
+				}
+				if (thinkingEnabled && isAnthropicGenerationEvent(event)) {
+					canceledAfterGenerationStarted = true;
+					controller.abort();
+					break;
+				}
+			}
+
+			if (canceledAfterGenerationStarted) {
+				try {
+					await response.result();
+				} catch (error) {
+					if (!controller.signal.aborted) throw error;
+				}
+			}
+			return cacheTouchedAtMs !== undefined && cacheRead > 0 && cacheWrite === 0 ? cacheTouchedAtMs : undefined;
+		},
+	};
+}
+
+function streamSimpleWithAnthropicCacheRefresh<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+): AssistantMessageEventStream {
+	const providerSessionState = options?.providerSessionState;
+	if (!options?.anthropicCacheRefresh || !providerSessionState) {
+		return streamSimpleRequest(model, context, options);
+	}
+
+	const existingState = providerSessionState.get(ANTHROPIC_CACHE_REFRESH_STATE_KEY);
+	if (existingState instanceof AnthropicCacheRefreshState) {
+		existingState.cancel();
+	} else if (existingState) {
+		return streamSimpleRequest(model, context, options);
+	}
+	if (!supportsAnthropicCacheRefresh(model) || resolveCacheRetention(options.cacheRetention) !== "short") {
+		return streamSimpleRequest(model, context, options);
+	}
+
+	const refreshState = existingState ?? new AnthropicCacheRefreshState();
+	if (!existingState) providerSessionState.set(ANTHROPIC_CACHE_REFRESH_STATE_KEY, refreshState);
+
+	let cacheTouchedAtMs: number | undefined;
+	let capturedPayload: MessageCreateParamsStreaming | undefined;
+	const inner = streamSimpleRequest(model, context, {
+		...options,
+		onPayload: async (payload, payloadModel) => {
+			const replacement = await options?.onPayload?.(payload, payloadModel);
+			const finalPayload = replacement ?? payload;
+			if (isAnthropicRefreshPayload(finalPayload)) capturedPayload = finalPayload;
+			return replacement;
+		},
+		onResponse: async (response, responseModel) => {
+			cacheTouchedAtMs = Date.now();
+			await options?.onResponse?.(response, responseModel);
+		},
+	});
+	const outer = new AssistantMessageEventStream();
+	const armRefresh = (message: AssistantMessage): void => {
+		if (
+			message.stopReason === "error" ||
+			message.stopReason === "aborted" ||
+			message.usage.cacheRead + message.usage.cacheWrite <= 0 ||
+			cacheTouchedAtMs === undefined ||
+			capturedPayload === undefined ||
+			!hasShortAnthropicMessageBreakpoint(capturedPayload)
+		) {
+			return;
+		}
+		refreshState.arm(createAnthropicCacheRefreshPlan(model, context, options, capturedPayload), cacheTouchedAtMs);
+	};
+
+	void (async () => {
+		try {
+			for await (const event of inner) {
+				if (event.type === "done") armRefresh(event.message);
+				outer.push(event);
+				if (outer.done) return;
+			}
+			if (!outer.done) {
+				const result = await inner.result();
+				armRefresh(result);
+				outer.end(result);
+			}
+		} catch (error) {
+			outer.fail(error);
+		}
+	})();
+	return outer;
+}
+
 export function streamSimple<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	const baseOptions = (options || {}) as SimpleStreamOptions;
+	return streamSimpleWithAnthropicCacheRefresh(model, context, options);
+}
+
+function streamSimpleRequest<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: SimpleStreamOptions,
+): AssistantMessageEventStream {
+	const inputOptions = (options || {}) as SimpleStreamOptions;
+	const baseOptions = { ...inputOptions, fetch: inputOptions.fetch ?? defaultFetchForModel(model) };
 	const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
 	const requestOptions = {
 		...debugOptions,
-		fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
+		fetch: wrapFetchForProxy(debugOptions.fetch, model.provider),
 	} as SimpleStreamOptions;
+
 	const apiKeyResolver = isApiKeyResolver(requestOptions?.apiKey) ? requestOptions.apiKey : undefined;
 	if (apiKeyResolver) {
 		const outer = new AssistantMessageEventStream();
 		const signal = requestOptions?.signal;
-		// One inner attempt against a resolved string key. When
-		// `captureAuthFailure` is set, a retryable auth error that arrives before
-		// any replay-unsafe event is buffered and returned (so the caller can
-		// retry with a fresh key) instead of surfaced. The terminal attempt
-		// clears the flag and emits whatever it gets.
-		const runAttempt = async (apiKey: string, captureAuthFailure: boolean): Promise<AuthRetryFailure | undefined> => {
+		// One inner attempt against a resolved key, or against the Bedrock AWS
+		// credential chain when its optional resolver has no stored bearer key.
+		// Retryable auth failures are buffered until replay is safe.
+		const runAttempt = async (apiKey?: string): Promise<AuthRetryFailure | undefined> => {
 			const bufferedEvents: AssistantMessageEvent[] = [];
 			let emittedReplayUnsafeEvent = false;
 			const flushBuffered = (): void => {
@@ -1057,7 +1435,7 @@ export function streamSimple<TApi extends Api>(
 			};
 
 			try {
-				const inner = streamSimple(model, context, { ...requestOptions, apiKey });
+				const inner = streamSimpleRequest(model, context, { ...requestOptions, apiKey });
 				for await (const event of inner) {
 					if (!emittedReplayUnsafeEvent && event.type === "start") {
 						bufferedEvents.push(event);
@@ -1065,7 +1443,6 @@ export function streamSimple<TApi extends Api>(
 					}
 					if (
 						!emittedReplayUnsafeEvent &&
-						captureAuthFailure &&
 						event.type === "error" &&
 						isRetryableUpstreamError(
 							event.error,
@@ -1085,7 +1462,6 @@ export function streamSimple<TApi extends Api>(
 			} catch (error) {
 				if (
 					!emittedReplayUnsafeEvent &&
-					captureAuthFailure &&
 					isRetryableUpstreamError(
 						error,
 						AIError.status(error),
@@ -1124,30 +1500,24 @@ export function streamSimple<TApi extends Api>(
 				return;
 			}
 			if (lastKey === undefined) {
+				if (getProviderDefinition(model.provider)?.allowsMissingApiKey) {
+					const failure = await runAttempt();
+					if (failure) emitFailure(failure);
+					return;
+				}
 				outer.fail(new AIError.MissingApiKeyError(model.provider));
 				return;
 			}
-			let failure = await runAttempt(lastKey, true);
+			const retryState = createAuthRetryKeyState(lastKey);
+			let failure = await runAttempt(lastKey);
 			if (!failure) return;
-			// a/b/c policy: refresh the same account (lastChance=false), then
-			// switch to a sibling (lastChance=true). A step is skipped when the
-			// resolver yields the same key it just tried or `undefined`; the
-			// final step's attempt clears the capture flag so it emits directly.
-			for (let step = 0; step < AUTH_RETRY_STEPS.length; step++) {
+			while (true) {
 				// Caller aborted between attempts: don't mint a fresh token or fire
 				// another doomed request — emit the captured failure instead.
 				if (signal?.aborted) break;
-				const nextKey = await resolveRetryKey(
-					apiKeyResolver,
-					AUTH_RETRY_STEPS[step]!,
-					failure.error,
-					signal,
-					lastKey,
-				);
-				if (nextKey === undefined || nextKey === lastKey) continue;
-				lastKey = nextKey;
-				const isLastStep = step === AUTH_RETRY_STEPS.length - 1;
-				const next = await runAttempt(nextKey, !isLastStep);
+				const nextKey = await resolveNextAuthRetryKey(retryState, apiKeyResolver, failure.error, signal);
+				if (nextKey === undefined) break;
+				const next = await runAttempt(nextKey);
 				if (!next) return;
 				failure = next;
 			}
@@ -1163,7 +1533,7 @@ export function streamSimple<TApi extends Api>(
 	// extension-registered APIs can't accidentally override a configured
 	// pi-native transport.
 	if (model.transport === "pi-native") {
-		return withGeminiThinkingLoopGuard(model, requestOptions, opts =>
+		return withThinkingLoopGuard(model, requestOptions, opts =>
 			withProviderInFlightLimit(model, opts, () => streamPiNative(model, context, opts)),
 		);
 	}
@@ -1171,7 +1541,7 @@ export function streamSimple<TApi extends Api>(
 	// Check custom API registry (extension-provided APIs)
 	const customApiProvider = getCustomApi(model.api);
 	if (customApiProvider) {
-		return withGeminiThinkingLoopGuard(model, requestOptions, opts =>
+		return withThinkingLoopGuard(model, requestOptions, opts =>
 			withProviderInFlightLimit(model, opts, () => customApiProvider.streamSimple(model, context, opts)),
 		);
 	}
@@ -1184,13 +1554,19 @@ export function streamSimple<TApi extends Api>(
 		// Bedrock doesn't have any API keys instead it sources credentials from standard AWS env variables or from given AWS profile.
 		const providerOptions = mapOptionsForApi(model, requestOptions, undefined);
 		return stream(model, context, providerOptions);
+	} else if (getProviderDefinition(model.provider)?.allowsMissingApiKey) {
+		const providerOptions = mapOptionsForApi(
+			model,
+			requestOptions,
+			typeof requestOptions.apiKey === "string" ? requestOptions.apiKey : getEnvApiKey(model.provider),
+		);
+		return stream(model, context, providerOptions);
 	}
 
 	// The resolver form is handled by the wrapper above; only a static string
 	// key reaches this point.
 	const apiKey =
-		(typeof requestOptions?.apiKey === "string" ? requestOptions.apiKey : undefined) ||
-		getEnvApiKeyForModel(model.provider, model.id);
+		(typeof requestOptions?.apiKey === "string" ? requestOptions.apiKey : undefined) || getEnvApiKey(model.provider);
 	if (!apiKey) {
 		throw new AIError.MissingApiKeyError(model.provider);
 	}
@@ -1219,12 +1595,17 @@ export function streamSimple<TApi extends Api>(
 
 	// Kimi Code - route to dedicated handler that wraps OpenAI or Anthropic API
 	if (isKimiModel(model)) {
-		// Pass raw SimpleStreamOptions - streamKimi handles mapping internally
-		return withProviderInFlightLimit(model, requestOptions, () =>
+		// streamKimi handles openai/anthropic format mapping internally, but the
+		// mandatory-reasoning clamp is a request-shaping concern owned here: K3's
+		// `supports_thinking_type: "only"` endpoint rejects disabled/omitted
+		// thinking, so clamp disabled requests to the lowest supported effort
+		// (mirrors the mapOptionsForApi path every other provider takes).
+		const kimiOptions = normalizeMandatoryReasoningOptions(model, requestOptions);
+		return withProviderInFlightLimit(model, kimiOptions, () =>
 			streamKimi(model as Model<"openai-completions">, context, {
-				...requestOptions,
+				...kimiOptions,
 				apiKey,
-				format: requestOptions?.kimiApiFormat ?? "anthropic",
+				format: kimiOptions?.kimiApiFormat,
 			}),
 		);
 	}
@@ -1408,6 +1789,17 @@ function resolveOpenAiReasoningEffort<TApi extends Api>(
 	return requireSupportedEffort(model, reasoning);
 }
 
+function resolveGoogleThinkingOff<TApi extends Api>(model: Model<TApi>): NonNullable<GoogleOptions["thinking"]> {
+	const thinking: NonNullable<GoogleOptions["thinking"]> = { enabled: false };
+	if (!model.reasoning || !model.thinking) return thinking;
+	if (model.thinking.mode === "budget" && (!model.thinking.requiresEffort || model.thinking.suppressWhenOff)) {
+		thinking.budgetTokens = 0;
+	} else if (model.thinking.mode === "google-level" && model.thinking.suppressWhenOff) {
+		thinking.level = "MINIMAL";
+	}
+	return thinking;
+}
+
 const castApi = <TApi extends Api>(api: OptionsForApi<TApi>): OptionsForApi<Api> => api as OptionsForApi<Api>;
 
 /**
@@ -1428,13 +1820,48 @@ function normalizeMandatoryReasoningOptions<TApi extends Api>(
 		!model.reasoning ||
 		!model.thinking?.requiresEffort ||
 		model.thinking.suppressWhenOff ||
-		(options?.reasoning !== undefined && !options.disableReasoning)
+		(options?.reasoning !== undefined && !options.disableReasoning && !options.forceReasoningOff)
 	) {
 		return options;
 	}
 	const floor = minimumSupportedEffort(model);
 	if (floor === undefined) return options;
-	return { ...options, reasoning: floor, disableReasoning: undefined };
+	return { ...options, reasoning: floor, disableReasoning: undefined, forceReasoningOff: undefined };
+}
+
+function supportsExplicitOpenAIResponsesPromptCache(compat: unknown): boolean {
+	return (
+		typeof compat === "object" &&
+		compat !== null &&
+		"supportsPromptCacheBreakpoints" in compat &&
+		compat.supportsPromptCacheBreakpoints === true
+	);
+}
+
+function isOpenAIResponsesPromptCacheSurface<TApi extends Api>(model: Model<TApi>): boolean {
+	return (
+		model.api === "openai-responses" ||
+		model.api === "azure-openai-responses" ||
+		(model.api === "openrouter" && $env.PI_OPENROUTER_RESPONSES !== "0")
+	);
+}
+
+function assertExplicitOpenAIResponsesPromptCacheSupport<TApi extends Api>(
+	model: Model<TApi>,
+	options?: StreamOptions,
+): void {
+	if (
+		model.transport === "pi-native" ||
+		resolveCacheRetention(options?.cacheRetention) === "none" ||
+		options?.promptCache?.mode !== "explicit" ||
+		!isOpenAIResponsesPromptCacheSurface(model) ||
+		supportsExplicitOpenAIResponsesPromptCache(model.compat)
+	) {
+		return;
+	}
+	throw new AIError.ConfigurationError(
+		`OpenAI explicit prompt caching is unsupported for ${model.provider}/${model.id}; enable compat.supportsPromptCacheBreakpoints only for a compatible endpoint.`,
+	);
 }
 
 function mapOptionsForApi<TApi extends Api>(
@@ -1443,6 +1870,7 @@ function mapOptionsForApi<TApi extends Api>(
 	apiKey?: string,
 ): OptionsForApi<TApi> {
 	const options = normalizeMandatoryReasoningOptions(model, rawOptions);
+	const simpleProviderOptions = getProviderDefinition(model.provider)?.mapSimpleOptions?.(options ?? {});
 	const base = {
 		temperature: options?.temperature,
 		topP: options?.topP,
@@ -1463,6 +1891,7 @@ function mapOptionsForApi<TApi extends Api>(
 		promptCacheKey: options?.promptCacheKey,
 		streamFirstEventTimeoutMs: options?.streamFirstEventTimeoutMs,
 		streamIdleTimeoutMs: options?.streamIdleTimeoutMs,
+		codexSseMaxAttempts: options?.codexSseMaxAttempts,
 		providerSessionState: options?.providerSessionState,
 		maxInFlightRequests: options?.maxInFlightRequests,
 		onPayload: options?.onPayload,
@@ -1471,13 +1900,20 @@ function mapOptionsForApi<TApi extends Api>(
 		execHandlers: options?.execHandlers,
 		fetch: options?.fetch,
 		fallbacks: options?.fallbacks,
+		acceptEmptyResponse: options?.acceptEmptyResponse,
+		anthropicCacheRefreshRequest: options?.anthropicCacheRefreshRequest,
+		...simpleProviderOptions,
 	};
 
 	switch (model.api) {
 		case "anthropic-messages": {
-			// Explicitly disable thinking when reasoning is not specified or model doesn't support it
+			// Explicitly disable thinking when reasoning is not specified, the caller
+			// disabled it, an external scratchpad replaces it, or the model doesn't
+			// support it. These SimpleStreamOptions flags never reach AnthropicOptions
+			// on their own, so fold them into thinkingEnabled here (mandatory-reasoning
+			// models already clamp them away in normalizeMandatoryReasoningOptions).
 			const reasoning = options?.reasoning;
-			if (!reasoning || !model.reasoning) {
+			if (!reasoning || !model.reasoning || options?.disableReasoning || options?.forceReasoningOff) {
 				return castApi<"anthropic-messages">({
 					...base,
 					requestModelId: resolveWireModelId(model, undefined),
@@ -1611,6 +2047,8 @@ function mapOptionsForApi<TApi extends Api>(
 					maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 					disableReasoning: options?.disableReasoning,
 					textVerbosity: options?.textVerbosity,
+					promptCache: options?.promptCache,
+					statefulResponses: options?.statefulResponses,
 				});
 			}
 			return castApi<"openai-completions">({
@@ -1621,6 +2059,7 @@ function mapOptionsForApi<TApi extends Api>(
 				serviceTier: options?.serviceTier,
 				openrouterVariant: options?.openrouterVariant,
 				maxTokensExplicit: rawOptions?.maxTokens !== undefined,
+				promptCache: options?.promptCache,
 			});
 		}
 
@@ -1633,6 +2072,7 @@ function mapOptionsForApi<TApi extends Api>(
 				serviceTier: options?.serviceTier,
 				openrouterVariant: options?.openrouterVariant,
 				maxTokensExplicit: rawOptions?.maxTokens !== undefined,
+				promptCache: options?.promptCache,
 			});
 
 		case "openai-responses":
@@ -1645,7 +2085,10 @@ function mapOptionsForApi<TApi extends Api>(
 				openrouterVariant: options?.openrouterVariant,
 				maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 				disableReasoning: options?.disableReasoning,
+				forceReasoningOff: options?.forceReasoningOff,
 				textVerbosity: options?.textVerbosity,
+				promptCache: options?.promptCache,
+				statefulResponses: options?.statefulResponses,
 			});
 
 		case "azure-openai-responses":
@@ -1655,6 +2098,10 @@ function mapOptionsForApi<TApi extends Api>(
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				reasoningSummary: options?.hideThinkingSummary ? null : undefined,
+				promptCache: options?.promptCache,
+				statefulResponses: options?.statefulResponses,
+				disableReasoning: options?.disableReasoning || options?.forceReasoningOff,
+				forceReasoningOff: options?.forceReasoningOff,
 			});
 
 		case "openai-codex-responses":
@@ -1665,20 +2112,22 @@ function mapOptionsForApi<TApi extends Api>(
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
 				codexCompaction: options?.codexCompaction,
-				reasoningSummary: options?.hideThinkingSummary ? null : "detailed",
+				reasoningSummary: options?.hideThinkingSummary ? null : undefined,
 				textVerbosity: options?.textVerbosity,
+				forceReasoningOff: options?.forceReasoningOff,
 			});
 
 		case "google-generative-ai": {
-			// Explicitly disable thinking when reasoning is not specified or model doesn't support it
-			// This is needed because Gemini has "dynamic thinking" enabled by default
+			// Explicitly disable thinking when reasoning is absent, unsupported, or
+			// replaced by the caller's external scratchpad. Gemini defaults thinking on.
 			const reasoning = options?.reasoning;
-			if (!reasoning || !model.reasoning) {
+			if (!reasoning || !model.reasoning || options?.disableReasoning || options?.forceReasoningOff) {
 				return castApi<"google-generative-ai">({
 					...base,
 					serviceTier: options?.serviceTier,
-					thinking: { enabled: false },
+					thinking: resolveGoogleThinkingOff(model),
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
+					cachedContent: options?.cachedContent,
 				});
 			}
 
@@ -1697,10 +2146,11 @@ function mapOptionsForApi<TApi extends Api>(
 					},
 					hideThinkingSummary: options?.hideThinkingSummary,
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
+					cachedContent: options?.cachedContent,
 				});
 			}
 
-			return castApi<"google-gemini-cli">({
+			return castApi<"google-generative-ai">({
 				...base,
 				thinking: {
 					enabled: true,
@@ -1708,13 +2158,14 @@ function mapOptionsForApi<TApi extends Api>(
 				},
 				hideThinkingSummary: options?.hideThinkingSummary,
 				toolChoice: mapGoogleToolChoice(options?.toolChoice),
+				cachedContent: options?.cachedContent,
 			});
 		}
 
 		case "google-gemini-cli": {
 			const reasoning = options?.reasoning;
 			const toolChoice = mapGoogleToolChoice(options?.toolChoice);
-			if (reasoning && model.reasoning) {
+			if (reasoning && model.reasoning && !options?.disableReasoning && !options?.forceReasoningOff) {
 				const effort = requireSupportedEffort(model, reasoning);
 
 				// Gemini 3+ models use thinkingLevel instead of thinkingBudget
@@ -1773,14 +2224,16 @@ function mapOptionsForApi<TApi extends Api>(
 		}
 
 		case "google-vertex": {
-			// Explicitly disable thinking when reasoning is not specified or model doesn't support it
+			// Explicitly disable thinking when reasoning is absent, unsupported, or
+			// replaced by the caller's external scratchpad.
 			const reasoning = options?.reasoning;
-			if (!reasoning || !model.reasoning) {
+			if (!reasoning || !model.reasoning || options?.disableReasoning || options?.forceReasoningOff) {
 				return castApi<"google-vertex">({
 					...base,
 					serviceTier: options?.serviceTier,
-					thinking: { enabled: false },
+					thinking: resolveGoogleThinkingOff(model),
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
+					cachedContent: options?.cachedContent,
 				});
 			}
 
@@ -1798,6 +2251,7 @@ function mapOptionsForApi<TApi extends Api>(
 					},
 					hideThinkingSummary: options?.hideThinkingSummary,
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
+					cachedContent: options?.cachedContent,
 				});
 			}
 
@@ -1810,6 +2264,7 @@ function mapOptionsForApi<TApi extends Api>(
 				},
 				hideThinkingSummary: options?.hideThinkingSummary,
 				toolChoice: mapGoogleToolChoice(options?.toolChoice),
+				cachedContent: options?.cachedContent,
 			});
 		}
 

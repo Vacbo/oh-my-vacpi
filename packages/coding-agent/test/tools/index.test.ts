@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import {
+	BUILTIN_TOOLS,
+	createTools,
+	HIDDEN_TOOLS,
+	isMountableUnderXdev,
+	SshTool,
+	type ToolSession,
+} from "@oh-my-pi/pi-coding-agent/tools";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
 
@@ -40,32 +48,15 @@ function createActiveGoalState() {
 	};
 }
 
-function createDiscoverySessionHooks(): Partial<ToolSession> {
-	const selected: string[] = [];
-	return {
-		isMCPDiscoveryEnabled: () => true,
-		getDiscoverableTools: () => [],
-		getSelectedMCPToolNames: () => [...selected],
-		activateDiscoveredMCPTools: async toolNames => {
-			const activated: string[] = [];
-			for (const name of toolNames) {
-				if (!selected.includes(name)) {
-					selected.push(name);
-					activated.push(name);
-				}
-			}
-			return activated;
-		},
-	};
-}
-
 describe("createTools", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
 
 	it("creates all builtin tools by default", async () => {
-		const session = createTestSession();
+		// xdev mounting (default-on) would unmount discoverables like lsp and
+		// web_search into xd://; disable it to assert the full builtin set.
+		const session = createTestSession({ settings: createSettingsWithOverrides({ "tools.xdev": false }) });
 		const tools = await createTools(session);
 		const names = tools.map(t => t.name);
 
@@ -79,9 +70,8 @@ describe("createTools", () => {
 		expect(names).toContain("glob");
 		expect(names).toContain("lsp");
 		expect(names).toContain("task");
-		expect(names).toContain("todo_write");
+		expect(names).toContain("todo");
 		expect(names).toContain("web_search");
-		expect(names).toContain("resolve");
 		expect(names).not.toContain("fetch");
 		expect(names).not.toContain("vim");
 	});
@@ -95,7 +85,6 @@ describe("createTools", () => {
 
 		expect(names.filter(name => name === "grep")).toHaveLength(1);
 		expect(names).toContain("glob");
-		expect(names).toContain("resolve");
 		expect(names).not.toContain("search");
 		expect(names).not.toContain("find");
 	});
@@ -141,7 +130,6 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toContain("eval");
-		expect(names).toContain("resolve");
 	});
 
 	it("excludes lsp tool when session disables LSP", async () => {
@@ -149,7 +137,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read", "lsp", "write"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "write", "context_export", "resolve"]);
+		expect(names).toEqual(["read", "write", "context_export"]);
 	});
 
 	it("excludes lsp tool when disabled", async () => {
@@ -165,7 +153,27 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read", "write"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "write", "context_export", "resolve"]);
+		expect(names).toEqual(["read", "write", "context_export"]);
+	});
+
+	it("creates xd:// presentation state without remounting explicitly requested built-ins", async () => {
+		const session = createTestSession();
+		const tools = await createTools(session, ["read", "lsp", "write"]);
+
+		expect(session.xdev).toBeDefined();
+		expect(session.xdev?.mountedNames.size).toBe(0);
+		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp", "write", "context_export"]);
+	});
+
+	it("skips xd:// state entirely when the session grants no write tool", async () => {
+		// The xd:// transport rides `write xd://<tool>`; without a granted write
+		// tool nothing can dispatch a device, so no state is allocated and later
+		// SDK assembly exposes custom/MCP tools top-level instead.
+		const session = createTestSession();
+		const tools = await createTools(session, ["read", "lsp"]);
+
+		expect(session.xdev).toBeUndefined();
+		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp", "context_export"]);
 	});
 
 	it("lowercases requested tool subset", async () => {
@@ -173,15 +181,15 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["Read", "Write"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "write", "context_export", "resolve"]);
+		expect(names).toEqual(["read", "write", "context_export"]);
 	});
 
 	it("includes hidden tools when explicitly requested", async () => {
 		const session = createTestSession();
-		const tools = await createTools(session, ["report_finding"]);
+		const tools = await createTools(session, ["yield"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["report_finding", "context_export", "resolve"]);
+		expect(names).toEqual(["yield", "context_export"]);
 	});
 
 	it("includes yield tool when required", async () => {
@@ -190,6 +198,16 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toContain("yield");
+	});
+	it("excludes todo from yield sessions unless prewalk is armed", async () => {
+		// Subagents (requireYieldTool) never get todo — except when the spawn is
+		// prewalk-armed: the prewalk plan nudge + todo gate need the child to
+		// commit its own todo list before the model hand-off.
+		const subagent = await createTools(createTestSession({ requireYieldTool: true }));
+		expect(subagent.map(t => t.name)).not.toContain("todo");
+
+		const prewalkSubagent = await createTools(createTestSession({ requireYieldTool: true, prewalkArmed: true }));
+		expect(prewalkSubagent.map(t => t.name)).toContain("todo");
 	});
 
 	it("excludes ask tool when hasUI is false", async () => {
@@ -216,8 +234,14 @@ describe("createTools", () => {
 		const tools = await createTools(session);
 		expect(tools.map(t => t.name)).not.toContain("ask");
 
-		const requested = await createTools(session, ["ask", "read"]);
-		expect(requested.map(t => t.name)).toEqual(["read", "context_export", "resolve"]);
+		const requested = await createTools(
+			createTestSession({
+				hasUI: true,
+				settings: createSettingsWithOverrides({ "ask.enabled": false }),
+			}),
+			["ask", "read"],
+		);
+		expect(requested.map(t => t.name)).toEqual(["read", "context_export"]);
 	});
 
 	it("includes ask tool when ask.enabled is true and hasUI is true", async () => {
@@ -237,7 +261,6 @@ describe("createTools", () => {
 				"astGrep.enabled": false,
 				"astEdit.enabled": false,
 				"bash.enabled": false,
-				"launch.enabled": false,
 				"web_search.enabled": false,
 				"browser.enabled": false,
 				"inspect_image.enabled": false,
@@ -247,7 +270,6 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).not.toContain("bash");
-		expect(names).not.toContain("launch");
 		expect(names).not.toContain("glob");
 		expect(names).not.toContain("grep");
 		expect(names).not.toContain("ast_grep");
@@ -256,24 +278,10 @@ describe("createTools", () => {
 		expect(names).not.toContain("browser");
 		expect(names).not.toContain("inspect_image");
 
-		const requestedTools = await createTools(session, ["bash", "read"]);
-		expect(requestedTools.map(t => t.name)).toEqual(["read", "context_export", "resolve"]);
+		const requestedTools = await createTools(createTestSession({ settings: session.settings }), ["bash", "read"]);
+		expect(requestedTools.map(t => t.name)).toEqual(["read", "context_export"]);
 	});
 
-	it("always includes resolve regardless of plan-mode setting", async () => {
-		const session = createTestSession({
-			settings: createSettingsWithOverrides({
-				"plan.enabled": false,
-			}),
-		});
-
-		const defaultTools = await createTools(session);
-		expect(defaultTools.map(t => t.name)).toContain("resolve");
-		expect(defaultTools.map(t => t.name)).not.toContain("exit_plan_mode");
-
-		const requestedTools = await createTools(session, ["read"]);
-		expect(requestedTools.map(t => t.name)).toEqual(["read", "context_export", "resolve"]);
-	});
 	it("auto-includes goal when goal mode is active", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({
@@ -284,7 +292,21 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "goal", "context_export", "resolve"]);
+		expect(names).toEqual(["read", "goal", "context_export"]);
+	});
+
+	it("does not widen a restricted explicit tool list for an active goal", async () => {
+		const session = createTestSession({
+			restrictToolNames: true,
+			settings: createSettingsWithOverrides({
+				"goal.enabled": true,
+			}),
+			getGoalModeState: () => createActiveGoalState(),
+		});
+
+		const tools = await createTools(session, ["read", "write"]);
+
+		expect(tools.map(tool => tool.name)).toEqual(["read", "write"]);
 	});
 
 	it("records active tools on the original session object", async () => {
@@ -312,6 +334,18 @@ describe("createTools", () => {
 		expect(requestedSession.isToolActive?.("context_export")).toBe(true);
 	});
 
+	it("keeps a registry-only built-in inactive when an explicit request skips xd:// mounting", async () => {
+		// An explicit tool list keeps built-ins top-level, so the registry-only
+		// entry survives in the returned set; it must still stay out of the active
+		// set, or its schema reaches the request it was excluded from.
+		const session = createTestSession();
+		const tools = await createTools(session, ["read", "write"]);
+
+		expect(tools.map(t => t.name)).toContain("context_export");
+		expect(session.isToolActive?.("read")).toBe(true);
+		expect(session.isToolActive?.("context_export")).toBe(false);
+	});
+
 	it("renders bash guidance from the live active tool predicate", async () => {
 		const activeToolNames = new Set<string>();
 		const session = createTestSession({
@@ -334,26 +368,152 @@ describe("createTools", () => {
 		expect(bash?.description).not.toContain("`find` → the `glob` tool");
 	});
 
-	it("includes search_tool_bm25 when MCP tool discovery is enabled and executable", async () => {
-		const session = createTestSession({
-			settings: createSettingsWithOverrides({
-				"mcp.discoveryMode": true,
-			}),
-			...createDiscoverySessionHooks(),
-		});
-		const tools = await createTools(session);
-		const names = tools.map(t => t.name);
+	it("registers search_skills only under skill search discovery", async () => {
+		const inlineSkills = await createTools(createTestSession());
+		expect(inlineSkills.map(t => t.name)).not.toContain("search_skills");
 
-		expect(names).toContain("search_tool_bm25");
+		const searchSession = createTestSession({
+			settings: createSettingsWithOverrides({ "skills.discoveryMode": "search" }),
+		});
+		const searching = await createTools(searchSession);
+
+		expect(searching.map(t => t.name)).toContain("search_skills");
+		// Skill search is essential, not a discoverable device: hiding the search
+		// callable behind `xd://` would make the skills it indexes unreachable.
+		expect(searchSession.xdev?.mountedNames.has("search_skills")).toBe(false);
 	});
 
-	it("HIDDEN_TOOLS contains review tools and goal", () => {
-		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual([
-			"goal",
-			"report_finding",
-			"report_tool_issue",
-			"resolve",
-			"yield",
-		]);
+	it("exposes remote execution as an xd:// device instead of a built-in tool", async () => {
+		// Remote command execution is loaded from SSH host discovery and registered
+		// by the SDK, never by createTools, and it mounts as a device.
+		const session = createTestSession();
+		const tools = await createTools(session);
+
+		expect(tools.map(t => t.name)).not.toContain("ssh");
+		expect(Object.keys(BUILTIN_TOOLS)).not.toContain("ssh");
+
+		const host: SSHHost = {
+			name: "prod",
+			host: "203.0.113.9",
+			_source: { provider: "ssh-config", providerName: "SSH Config", path: "/dev/null", level: "user" },
+		};
+		const sshTool = new SshTool(session, [host.name], new Map([[host.name, host]]), "SSH");
+
+		expect(isMountableUnderXdev(sshTool)).toBe(true);
+	});
+
+	it("allows checkpoint/rewind in subagent when explicitly requested and enabled", async () => {
+		const names = (
+			await createTools(
+				createTestSession({
+					taskDepth: 1,
+					settings: createSettingsWithOverrides({ "checkpoint.enabled": true }),
+				}),
+				["checkpoint", "rewind"],
+			)
+		).map(t => t.name);
+		expect(names).toContain("checkpoint");
+		expect(names).toContain("rewind");
+	});
+
+	it("excludes checkpoint/rewind from subagent when not explicitly requested", async () => {
+		const names = (
+			await createTools(
+				createTestSession({
+					taskDepth: 1,
+					settings: createSettingsWithOverrides({ "checkpoint.enabled": true }),
+				}),
+			)
+		).map(t => t.name);
+		expect(names).not.toContain("checkpoint");
+		expect(names).not.toContain("rewind");
+	});
+
+	it("excludes checkpoint/rewind from subagent when disabled even if explicitly requested", async () => {
+		const names = (
+			await createTools(
+				createTestSession({
+					taskDepth: 1,
+					settings: createSettingsWithOverrides({ "checkpoint.enabled": false }),
+				}),
+				["checkpoint", "rewind"],
+			)
+		).map(t => t.name);
+		expect(names).not.toContain("checkpoint");
+		expect(names).not.toContain("rewind");
+	});
+
+	it("allows checkpoint/rewind at top level when enabled and explicitly requested", async () => {
+		const names = (
+			await createTools(
+				createTestSession({
+					settings: createSettingsWithOverrides({ "checkpoint.enabled": true }),
+				}),
+				["checkpoint", "rewind"],
+			)
+		).map(t => t.name);
+		expect(names).toContain("checkpoint");
+		expect(names).toContain("rewind");
+	});
+
+	it("auto-includes rewind when only checkpoint is in the explicit list", async () => {
+		const names = (
+			await createTools(
+				createTestSession({
+					taskDepth: 1,
+					settings: createSettingsWithOverrides({ "checkpoint.enabled": true }),
+				}),
+				["checkpoint"],
+			)
+		).map(t => t.name);
+		expect(names).toContain("checkpoint");
+		expect(names).toContain("rewind");
+	});
+
+	it("auto-includes checkpoint when only rewind is in the explicit list", async () => {
+		const names = (
+			await createTools(
+				createTestSession({
+					taskDepth: 1,
+					settings: createSettingsWithOverrides({ "checkpoint.enabled": true }),
+				}),
+				["rewind"],
+			)
+		).map(t => t.name);
+		expect(names).toContain("checkpoint");
+		expect(names).toContain("rewind");
+	});
+
+	it("does not auto-include checkpoint/rewind when neither is requested", async () => {
+		const names = (
+			await createTools(
+				createTestSession({
+					taskDepth: 1,
+					settings: createSettingsWithOverrides({ "checkpoint.enabled": true }),
+				}),
+				["read"],
+			)
+		).map(t => t.name);
+		expect(names).not.toContain("checkpoint");
+		expect(names).not.toContain("rewind");
+	});
+
+	it("auto-pairs checkpoint/rewind in a restricted subagent with one-sided list", async () => {
+		const names = (
+			await createTools(
+				createTestSession({
+					taskDepth: 1,
+					restrictToolNames: true,
+					settings: createSettingsWithOverrides({ "checkpoint.enabled": true }),
+				}),
+				["checkpoint"],
+			)
+		).map(t => t.name);
+		expect(names).toContain("checkpoint");
+		expect(names).toContain("rewind");
+	});
+
+	it("HIDDEN_TOOLS contains yield, goal, and think", () => {
+		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual(["goal", "think", "yield"]);
 	});
 });

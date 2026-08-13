@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, MessageAttribution, ServiceTierByFamily, TextContent } from "@oh-my-pi/pi-ai";
+import type { StructuredSubagentSchemaMode } from "../task/types";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -31,7 +32,15 @@ export interface SessionHeader {
 	titleSource?: SessionTitleSource;
 	timestamp: string;
 	cwd: string;
+	/**
+	 * Additional workspace directories beyond `cwd` (multi-root workspace).
+	 * Absolute, normalized, deduplicated. Absent on legacy single-cwd sessions.
+	 * See {@link SessionWorkspace} in `./session-workspace`.
+	 */
+	additionalDirectories?: string[];
 	parentSession?: string;
+	/** Prior absolute JSONL locations recorded by successful session moves. */
+	previousSessionFiles?: string[];
 	/** Provider prompt-cache identity inherited by exact-route full forks. */
 	providerPromptCacheKey?: string;
 }
@@ -42,6 +51,8 @@ export interface NewSessionOptions {
 	providerPromptCacheKey?: string;
 	/** Skip flushing the current session and delete it instead of saving. */
 	drop?: boolean;
+	/** Additional workspace directories to seed on the new session. */
+	additionalDirectories?: string[];
 }
 
 export interface SessionEntryBase {
@@ -73,6 +84,8 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	model: string;
 	/** Role: "default", "smol", "slow", etc. Undefined treated as "default" */
 	role?: string;
+	/** True when this transition selected a retry-fallback model rather than the configured model. */
+	resolvedModelIsFallback?: boolean;
 }
 
 export interface ServiceTierChangeEntry extends SessionEntryBase {
@@ -111,6 +124,18 @@ export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
 }
 
 /**
+ * Pure marker entry recorded by `/clear` (resetSessionContext). It carries no
+ * payload — its presence on the branch is a durable boundary the collapsed
+ * live transcript and the model-context rebuild start emission after, so a
+ * rebuild (theme change, focus attach, /shake, resume) does not resurrect the
+ * pre-reset conversation. The on-disk record and the plain `transcript:true`
+ * export path keep the full pre-reset history.
+ */
+export interface ResetBoundaryEntry extends SessionEntryBase {
+	type: "reset_boundary";
+}
+
+/**
  * Custom entry for extensions to store extension-specific data in the session.
  * Use customType to identify your extension's entries.
  *
@@ -145,6 +170,8 @@ export interface TitleChangeEntry extends SessionEntryBase {
 declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
 	interface CustomCompactionSessionEntries {
 		titleChange: TitleChangeEntry;
+		credentialPin: CredentialPinEntry;
+		resetBoundary: ResetBoundaryEntry;
 	}
 }
 
@@ -155,11 +182,22 @@ export interface TtsrInjectionEntry extends SessionEntryBase {
 	injectedRules: string[];
 }
 
-/** Persisted MCP discovery selection state for a session branch. */
-export interface MCPToolSelectionEntry extends SessionEntryBase {
-	type: "mcp_tool_selection";
-	/** MCP tool names selected for visibility in discovery mode. */
-	selectedToolNames: string[];
+/**
+ * Records which OAuth account served this session's requests for a provider.
+ *
+ * Provider prompt caches (Anthropic in particular) are account-scoped, and the
+ * auth store's session-sticky routing is process-local under a remote auth
+ * broker, so resume must re-pin the same account to reuse the warm cache
+ * prefix. Stores a sha-256 of the account + billing-scope tuple instead of
+ * the raw email/uuid/org; note an unsalted digest of a guessable email is
+ * still linkable, so exported sessions are pseudonymous, not anonymous.
+ */
+export interface CredentialPinEntry extends SessionEntryBase {
+	type: "credential_pin";
+	/** Provider id the pin applies to (e.g. "anthropic"). */
+	provider: string;
+	/** `credentialPinHash()` of the serving account's identity + scope tuple. */
+	hash: string;
 }
 
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
@@ -171,12 +209,26 @@ export interface SessionInitEntry extends SessionEntryBase {
 	task: string;
 	/** Tools available to the agent */
 	tools: string[];
-	/** Output schema if structured output was requested */
+	/** Agent definition name (for example `scout` or `reviewer`). */
+	agent?: string;
+	/** Semantic model role declared by the agent, retained even after concrete model resolution. */
+	modelRole?: string;
+	/** Initially resolved provider/model selector for historical display. */
+	resolvedModel?: string;
+	/** Whether the agent definition is read-only, allowing an exact zero-LoC attribution. */
+	readOnly?: boolean;
+	/** Output schema if structured output was requested. */
 	outputSchema?: unknown;
+	/** Enforcement policy recorded with the output schema for faithful revival. */
+	outputSchemaMode?: StructuredSubagentSchemaMode;
+	/** Whether revival must retain only the explicitly persisted tool names. */
+	restrictToolNames?: boolean;
 	/** Spawn allowlist the subagent ran with ("" = none, "*" = any, else CSV); absent on pre-spawns files. */
 	spawns?: string;
 	/** The agent's `readSummarize` setting (`false` = read summarization disabled); absent uses the session default. */
 	readSummarize?: boolean;
+	/** Effective advisor for this subagent: `"on"` = advisor-role model, else an explicit model pattern; absent = unadvised. */
+	advisor?: string;
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */
@@ -223,9 +275,10 @@ export type SessionEntry =
 	| LabelEntry
 	| TitleChangeEntry
 	| TtsrInjectionEntry
-	| MCPToolSelectionEntry
 	| SessionInitEntry
-	| ModeChangeEntry;
+	| ModeChangeEntry
+	| CredentialPinEntry
+	| ResetBoundaryEntry;
 
 /** Raw logical file entry after loaders strip any fixed-width title slot. */
 export type FileEntry = SessionHeader | SessionEntry;

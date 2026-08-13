@@ -7,7 +7,7 @@ import {
 	overlayPtyDimensions,
 } from "@oh-my-pi/pi-coding-agent/tools/bash-interactive";
 import type { PtySession } from "@oh-my-pi/pi-natives";
-import xterm from "@xterm/headless";
+import { Terminal } from "@oh-my-pi/pi-utils/vterm";
 
 /** Fake PTY recording the dimensions each overlay resize forwards to it. */
 class RecordingPtySession {
@@ -25,7 +25,7 @@ describe("interactive bash overlay snapshot dimensions", () => {
 
 	it("keeps the PTY and snapshot recorder at identical effective dimensions across resizes", async () => {
 		let terminalRows = 40;
-		const component = new BashInteractiveOverlayComponent("cat wide.txt", theme, () => terminalRows, xterm.Terminal);
+		const component = new BashInteractiveOverlayComponent("cat wide.txt", theme, () => terminalRows, Terminal);
 		const pty = new RecordingPtySession();
 		component.setSession(pty as unknown as PtySession);
 		// Deliberately construct the recorder at the wrong size: only the resize

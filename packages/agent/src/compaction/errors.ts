@@ -11,7 +11,7 @@
  */
 
 export class CompactionCancelledError extends Error {
-	readonly name = "CompactionCancelledError" as const;
+	override readonly name = "CompactionCancelledError" as const;
 
 	constructor(message = "Compaction cancelled") {
 		super(message);
@@ -27,10 +27,26 @@ export class CompactionCancelledError extends Error {
  * error.
  */
 export class NothingToCompactError extends Error {
-	readonly name = "NothingToCompactError" as const;
+	override readonly name = "NothingToCompactError" as const;
 
 	constructor(message = "Nothing to compact") {
 		super(message);
+	}
+}
+
+/**
+ * A provider-native compaction request failed after every native protocol
+ * available for the selected model was exhausted.
+ *
+ * The cause stays attached so AI error classification can still recognize
+ * authentication failures. Non-auth failures remain distinguishable from
+ * ordinary summarization errors and must not fall through to another provider.
+ */
+export class NativeCompactionError extends Error {
+	override readonly name = "NativeCompactionError" as const;
+
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
 	}
 }
 

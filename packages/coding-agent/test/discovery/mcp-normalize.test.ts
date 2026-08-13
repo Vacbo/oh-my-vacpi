@@ -2,9 +2,10 @@
  * The two canonical MCP JSON shapes — native `<cwd>/.omp/mcp.json` and the
  * standalone `<cwd>/mcp.json` fallback — share one `unknown → MCPServer`
  * normalizer. These tests prove both loaders round-trip the documented
- * `launchApp` (incl. the `foreground` flag), `connectTimeoutMs`, and
- * `auth.resource` fields into runtime config, produce identical canonical
- * output, and surface real per-value validation warnings.
+ * `launchApp` (incl. the `foreground` flag), `connectTimeoutMs`,
+ * `requestIdFormat`, and `auth.resource` fields into runtime config, expand env
+ * vars across nested values, produce identical canonical output, and surface
+ * real per-value validation warnings.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
@@ -36,6 +37,7 @@ const FULL_CONFIG = {
 			args: ["--serve"],
 			timeout: 60000,
 			connectTimeoutMs: 5000,
+			requestIdFormat: "string",
 			launchApp: { path: "Repo Prompt", foreground: true },
 			auth: {
 				type: "oauth",
@@ -99,6 +101,7 @@ describe("shared MCP normalizer preserves documented fields across both JSON sha
 			expect(server).toBeDefined();
 			expect(server?.name).toBe("repo");
 			expect(server?.connectTimeoutMs).toBe(5000);
+			expect(server?.requestIdFormat).toBe("string");
 			expect(server?.launchApp).toEqual({ path: "Repo Prompt", foreground: true });
 			expect(server?.auth).toEqual({
 				type: "oauth",
@@ -138,6 +141,7 @@ describe("shared MCP normalizer preserves documented fields across both JSON sha
 			expect(config).toBeDefined();
 			expect(config.type).toBe("stdio");
 			expect(config.connectTimeoutMs).toBe(5000);
+			expect(config.requestIdFormat).toBe("string");
 			expect(config.launchApp).toEqual({ path: "Repo Prompt", foreground: true });
 			expect(config.auth).toEqual({
 				type: "oauth",
@@ -158,6 +162,58 @@ describe("shared MCP normalizer preserves documented fields across both JSON sha
 		expect(validateServerConfig("zero", configs.zero as MCPServerConfig)).toEqual([]);
 	});
 
+	test("expands env vars in nested values, not just top-level command/args", async () => {
+		process.env.OMP_TEST_MCP_APP = "Repo Prompt";
+		process.env.OMP_TEST_MCP_RESOURCE = "https://mcp.example/resource";
+		try {
+			await writeConfig(cwd, NATIVE_REL, {
+				mcpServers: {
+					deep: {
+						command: "repo-cli",
+						args: [`--app=${"${OMP_TEST_MCP_APP}"}`],
+						launchApp: { path: `${"${OMP_TEST_MCP_APP}"}`, foreground: true },
+						headers: { "X-App": `${"${OMP_TEST_MCP_APP}"}` },
+						auth: { type: "oauth", resource: `${"${OMP_TEST_MCP_RESOURCE}"}` },
+					},
+				},
+			});
+			clearFsCache();
+
+			const [server] = await loadCanonical("native", cwd);
+
+			expect(server?.args).toEqual(["--app=Repo Prompt"]);
+			expect(server?.launchApp).toEqual({ path: "Repo Prompt", foreground: true });
+			expect(server?.headers).toEqual({ "X-App": "Repo Prompt" });
+			expect(server?.auth?.resource).toBe("https://mcp.example/resource");
+		} finally {
+			delete process.env.OMP_TEST_MCP_APP;
+			delete process.env.OMP_TEST_MCP_RESOURCE;
+		}
+	});
+
+	test("launchApp keeps two otherwise-identical aliases as separate connections", async () => {
+		// Equivalence dedup collapses aliases that describe the same endpoint.
+		// launchApp decides whether the backing macOS app is started first, so
+		// an alias without it must not shadow the entry that sets it.
+		await writeConfig(cwd, NATIVE_REL, {
+			mcpServers: {
+				"repo-app": { command: "repo-cli", args: ["--serve"], launchApp: "Repo Prompt" },
+				"repo-plain": { command: "repo-cli", args: ["--serve"] },
+			},
+		});
+		clearFsCache();
+
+		const { configs } = await loadAllMCPConfigs(cwd);
+
+		expect(
+			Object.keys(configs)
+				.filter(name => name.startsWith("repo-"))
+				.sort(),
+		).toEqual(["repo-app", "repo-plain"]);
+		expect((configs["repo-app"] as MCPStdioServerConfig).launchApp).toBe("Repo Prompt");
+		expect((configs["repo-plain"] as MCPStdioServerConfig).launchApp).toBeUndefined();
+	});
+
 	test("surfaces validation warnings for invalid documented values", async () => {
 		await writeConfig(cwd, NATIVE_REL, {
 			mcpServers: {
@@ -165,6 +221,7 @@ describe("shared MCP normalizer preserves documented fields across both JSON sha
 					command: "x",
 					launchApp: { path: "App", foreground: "yes" },
 					connectTimeoutMs: -5,
+					requestIdFormat: "integer",
 				},
 			},
 		});
@@ -176,10 +233,13 @@ describe("shared MCP normalizer preserves documented fields across both JSON sha
 		// Non-boolean foreground is dropped but the valid path descriptor survives.
 		expect(server?.launchApp).toEqual({ path: "App" });
 		expect(server?.connectTimeoutMs).toBeUndefined();
+		// An unusable encoding degrades to the allocator's integer default.
+		expect(server?.requestIdFormat).toBeUndefined();
 
 		const warnings = result.warnings.join("\n");
 		expect(warnings).toContain("launchApp.foreground must be a boolean");
 		expect(warnings).toContain("invalid connectTimeoutMs");
+		expect(warnings).toContain(`invalid requestIdFormat "integer"`);
 	});
 
 	test("warns when mcpServers is not an object map", async () => {

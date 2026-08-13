@@ -114,6 +114,22 @@ export async function registerLiveSession(options: RegisterLiveSessionOptions): 
 	interval.unref?.();
 
 	let disposed = false;
+	// All metadata/heartbeat writes go through one FIFO chain. `refresh()` is
+	// fire-and-forget, so an unchained write could still be in flight when
+	// dispose() writes `stopped` and land afterwards — resurrecting a `running`
+	// entry for a session that already exited (a stale row `listLiveSessions`
+	// reports as live until the heartbeat ages out). A rejected link is swallowed
+	// so one failed write cannot poison the final `stopped` write.
+	let pendingWrite: Promise<void> = Promise.resolve();
+	const queueWrite = (snapshot: LiveSessionMetadata): Promise<void> => {
+		pendingWrite = pendingWrite
+			.catch(() => {})
+			.then(async () => {
+				await writeJson(metadataPath, snapshot);
+				await writeHeartbeat(heartbeatPath, now);
+			});
+		return pendingWrite;
+	};
 	const refresh = (
 		extra: Partial<Pick<LiveSessionMetadata, "model" | "sessionFile" | "sessionId" | "status">> = {},
 	) => {
@@ -123,11 +139,8 @@ export async function registerLiveSession(options: RegisterLiveSessionOptions): 
 			...sanitizeMetadataPatch(extra),
 			updatedAt: now().toISOString(),
 		};
-		void writeJson(metadataPath, metadata).catch(error => {
+		void queueWrite(metadata).catch(error => {
 			logger.warn("Failed to update live session metadata", { error: String(error), path: metadataPath });
-		});
-		void writeHeartbeat(heartbeatPath, now).catch(error => {
-			logger.warn("Failed to refresh live session heartbeat", { error: String(error), path: heartbeatPath });
 		});
 	};
 
@@ -148,6 +161,8 @@ export async function registerLiveSession(options: RegisterLiveSessionOptions): 
 			disposed = true;
 			clearInterval(interval);
 			await eventStream.flush();
+			// Drain queued refresh writes first so `stopped` is the LAST state on disk.
+			await pendingWrite.catch(() => {});
 			metadata = { ...metadata, status, updatedAt: now().toISOString() };
 			await writeJson(metadataPath, metadata);
 			await writeHeartbeat(heartbeatPath, now);

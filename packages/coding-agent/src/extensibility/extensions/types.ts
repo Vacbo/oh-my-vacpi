@@ -7,12 +7,17 @@
  * - Register commands, keyboard shortcuts, and CLI flags
  * - Interact with the user via UI primitives
  */
+
+import type { type as ArkType } from "@oh-my-pi/omptype";
+import type * as TypeBox from "@oh-my-pi/omptype/typebox";
+import type * as zod from "@oh-my-pi/omptype/zod";
 import type {
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ThinkingLevel,
 	ToolApproval,
+	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
@@ -24,16 +29,26 @@ import type {
 	Model,
 	ModelSpec,
 	ProviderResponseMetadata,
+	ServiceTier,
+	ServiceTierByFamily,
+	ServiceTierFamily,
 	SimpleStreamOptions,
 	Static,
 	TextContent,
 	TSchema,
 } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
-import type { AutocompleteItem, AutocompleteProvider, Component, EditorTheme, KeyId, TUI } from "@oh-my-pi/pi-tui";
+import type {
+	AutocompleteItem,
+	AutocompleteProvider,
+	Component,
+	EditorTheme,
+	KeyId,
+	OverlayHandle,
+	OverlayOptions,
+	TUI,
+} from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
-import type { Type as arktype } from "arktype";
-import type * as zod from "zod/v4";
 import type { KeybindingsManager } from "../../config/keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "../../edit";
@@ -41,9 +56,11 @@ import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type * as PiCodingAgent from "../../index";
+import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { Theme } from "../../modes/theme/theme";
+import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { CompactMode } from "../../session/compact-modes";
 import type { CustomMessage, CustomMessagePayload } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
@@ -69,6 +86,8 @@ import type {
 	AutoRetryStartEvent,
 	ContextEvent,
 	GoalUpdatedEvent,
+	RetryFallbackAppliedEvent,
+	RetryFallbackSucceededEvent,
 	SessionBeforeBranchEvent,
 	SessionBeforeBranchResult,
 	SessionBeforeCompactEvent,
@@ -96,8 +115,8 @@ import type {
 	TurnStartEvent,
 } from "../shared-events";
 import type { SlashCommandInfo } from "../slash-commands";
-import type * as TypeBox from "../typebox";
 
+export type { OverlayHandle, OverlayOptions } from "@oh-my-pi/pi-tui";
 export type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 export type { ExecOptions, ExecResult } from "../../exec/exec";
 export type { AgentToolResult, AgentToolUpdateCallback };
@@ -207,6 +226,16 @@ export type ExtensionUiComponent = Component & { dispose?(): void };
 export type ExtensionUiComponentFactory = (tui: TUI, theme: Theme) => ExtensionUiComponent;
 export type ExtensionWidgetContent = string[] | ExtensionUiComponentFactory | undefined;
 
+/** Options for `ExtensionUIContext.custom()` (overlay rendering of a custom component). */
+export interface ExtensionCustomOptions {
+	/** Render the component as an overlay over the transcript instead of replacing the editor area. */
+	overlay?: boolean;
+	/** Static or lazily resolved overlay positioning/sizing options forwarded to `showOverlay`. */
+	overlayOptions?: OverlayOptions | (() => OverlayOptions);
+	/** Invoked with the overlay handle once the overlay is created (overlay mode only). */
+	onHandle?: (handle: OverlayHandle) => void;
+}
+
 /** Wrap the current autocomplete provider with additional behavior (pi-compatible). */
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 
@@ -273,7 +302,7 @@ export interface ExtensionUIContext {
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
 		) => ExtensionUiComponent | Promise<ExtensionUiComponent>,
-		options?: { overlay?: boolean },
+		options?: ExtensionCustomOptions,
 	): Promise<T>;
 
 	/** Set the text in the core input editor. */
@@ -415,6 +444,8 @@ export interface ExtensionContext {
 	ui: ExtensionUIContext;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
+	/** Get a read-only snapshot of async jobs owned by this session. */
+	getAsyncJobSnapshot(): AsyncJobSnapshot | null;
 	/** Compact the session context (interactive mode shows UI). */
 	compact(instructionsOrOptions?: string | CompactOptions): Promise<void>;
 	/** Whether UI is available (false in print/RPC mode) */
@@ -425,6 +456,8 @@ export interface ExtensionContext {
 	sessionManager: ReadonlySessionManager;
 	/** Model registry for API key resolution */
 	modelRegistry: ModelRegistry;
+	/** Calling session's `local://` root mapping for external tool bridges. */
+	localProtocolOptions?: LocalProtocolOptions;
 	/** Current model (may be undefined) */
 	model: Model | undefined;
 	/** Read-only model query facade: list / current / resolve / family. */
@@ -441,6 +474,39 @@ export interface ExtensionContext {
 	getSystemPrompt(): string[];
 	/** Structured memory runtime for status/search/save across the configured backend. */
 	memory?: MemoryRuntimeContext;
+	/**
+	 * Schedule a repeating callback whose throws are contained. Unlike raw
+	 * `setInterval`, a synchronous throw or rejected promise from `callback` is
+	 * logged and surfaced through the extension error channel instead of
+	 * escaping as a process-fatal `uncaughtException` — one misbehaving timer
+	 * can no longer take down the whole session. The handle is `unref`'d and
+	 * cleared automatically on `session_shutdown`. Prefer this over raw
+	 * `setInterval` for any extension background work.
+	 */
+	setInterval(callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]): Timer;
+	/**
+	 * Schedule a one-shot callback whose throws are contained, mirroring
+	 * {@link setInterval}. Cleared automatically on `session_shutdown` if it has
+	 * not yet fired.
+	 */
+	setTimeout(callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]): Timer;
+	/** Clear a timer scheduled via {@link setInterval} or {@link setTimeout}. */
+	clearTimer(timer: Timer): void;
+	/**
+	 * Run the NATIVE built-in implementation of the tool this handler re-registered, with `params`,
+	 * and return its result. Lets a tool that re-registers a built-in (e.g. wrapping `write` to add
+	 * logging or a policy check) delegate to the original instead of reimplementing it — the native
+	 * tool performs its own side effects and internal bookkeeping.
+	 *
+	 * Delegation is same-tool only: it invokes the built-in of the SAME name as the registering tool,
+	 * never an arbitrary target, so it cannot escalate past the approval already granted for this
+	 * call. Present only when a native built-in of that name exists (undefined otherwise, e.g. for a
+	 * net-new tool that shadows no built-in). Recursion is depth-guarded per call chain.
+	 */
+	invokeTool?<TDetails = unknown>(
+		params: Record<string, unknown>,
+		options?: { signal?: AbortSignal; onUpdate?: AgentToolUpdateCallback<TDetails> },
+	): Promise<AgentToolResult<TDetails>>;
 }
 
 /**
@@ -519,11 +585,16 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	/** If true, tool is registered but not auto-included in the initial active set.
 	 *  The registering extension is responsible for activating/deactivating it via setActiveTools(). */
 	defaultInactive?: boolean;
+	/** How this tool is presented when enabled. See {@link ToolLoadMode}. Extension tools default to `"discoverable"`; set `"essential"` to stay top-level. */
+	loadMode?: ToolLoadMode;
 	/** If true, tool may stage deferred changes that require explicit resolve/discard. */
 	deferrable?: boolean;
 	/** Tool approval tier. Defaults to `"exec"` when omitted.
 	 *  `"read"`: read-only operations. `"write"`: mutations. `"exec"`: code execution. */
 	approval?: ToolApproval;
+	/** Structured-output strict grammar opt-in/out. `false` is meaningful: OpenAI-family
+	 *  serializers preserve an explicit `strict: false` on the wire (#4336/#4340). */
+	strict?: boolean;
 	/** MCP server name for discovery/search metadata when this tool fronts an MCP server. */
 	mcpServerName?: string;
 	/** Original MCP tool name for discovery/search metadata. */
@@ -550,6 +621,36 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 		theme: Theme,
 		args?: Static<TParams>,
 	) => Component;
+}
+
+/** Whether a tool's source is scoped to the user, the project, or a transient runtime session. */
+export type SourceScope = "user" | "project" | "temporary";
+
+/** Whether a tool's source came from an installed package or a top-level (loose) file. */
+export type SourceOrigin = "package" | "top-level";
+
+/**
+ * Provenance metadata describing where a registered tool came from. Mirrors the
+ * `@earendil-works/pi-coding-agent` `SourceInfo` contract so extensions authored
+ * against upstream pi (e.g. gentle-pi) can read `sourceInfo.source` unchanged.
+ */
+export interface SourceInfo {
+	/** Synthetic or on-disk identifier for the tool's origin (e.g. `<builtin:read>`). */
+	path: string;
+	/** Origin class: `"builtin"`, `"sdk"`, `"mcp"`, or `"extension"`. */
+	source: string;
+	scope: SourceScope;
+	origin: SourceOrigin;
+	baseDir?: string;
+}
+
+/** Tool metadata returned by {@link ExtensionAPI.getAllTools}: identity, schema, and source provenance. */
+export interface ToolInfo {
+	name: string;
+	description: string;
+	parameters: TSchema;
+	promptGuidelines?: string[];
+	sourceInfo: SourceInfo;
 }
 
 // ============================================================================
@@ -637,7 +738,10 @@ export interface MessageUpdateEvent {
 	assistantMessageEvent: AssistantMessageEvent;
 }
 
-/** Fired when a message ends */
+/**
+ * Fired when a message ends. Notification-only: the message is a detached
+ * snapshot, so in-place changes do not rewrite agent or provider context.
+ */
 export interface MessageEndEvent {
 	type: "message_end";
 	message: AgentMessage;
@@ -675,6 +779,8 @@ export type {
 	AutoCompactionStartEvent,
 	AutoRetryEndEvent,
 	AutoRetryStartEvent,
+	RetryFallbackAppliedEvent,
+	RetryFallbackSucceededEvent,
 	TodoReminderEvent,
 	TtsrTriggeredEvent,
 } from "../shared-events";
@@ -686,6 +792,31 @@ export interface CredentialDisabledEvent {
 	provider: string;
 	/** Verbatim error captured for forensics (truncated upstream). */
 	disabledCause: string;
+}
+
+// ============================================================================
+// MCP Events
+// ============================================================================
+
+/**
+ * Fired for every JSON-RPC notification received from a connected MCP server,
+ * AFTER the runtime's own handling of known list/update methods. Unknown or
+ * server-custom methods are delivered too — extensions can bridge them into
+ * session behavior by inspecting `method`/`params` and injecting a follow-up
+ * via `pi.sendMessage(..., { deliverAs })` or `pi.sendUserMessage(...)`.
+ */
+export interface McpNotificationEvent {
+	type: "mcp_notification";
+	/**
+	 * Server name as declared in the MCP config (raw, unsanitized). Note this
+	 * differs from the sanitized prefix used in `mcp__<sanitized_server>_<tool>`
+	 * tool names — filter by this raw name, not by tool-name prefix matching.
+	 */
+	server: string;
+	/** JSON-RPC method (e.g. `notifications/tools/list_changed`, or server-custom). */
+	method: string;
+	/** JSON-RPC params, opaque to the runtime. */
+	params: unknown;
 }
 
 // ============================================================================
@@ -912,10 +1043,13 @@ export type ExtensionEvent =
 	| AutoCompactionEndEvent
 	| AutoRetryStartEvent
 	| AutoRetryEndEvent
+	| RetryFallbackAppliedEvent
+	| RetryFallbackSucceededEvent
 	| TtsrTriggeredEvent
 	| TodoReminderEvent
 	| GoalUpdatedEvent
 	| CredentialDisabledEvent
+	| McpNotificationEvent
 	| UserBashEvent
 	| UserPythonEvent
 	| InputEvent
@@ -1019,8 +1153,14 @@ export interface RegisteredCommand {
 // ============================================================================
 
 /** Handler function type for events */
-// biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
 export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
+
+/** Service tiers accepted by each provider family. */
+export type ExtensionServiceTier<Family extends ServiceTierFamily> = Family extends "anthropic"
+	? "priority"
+	: Family extends "google"
+		? "flex" | "priority"
+		: ServiceTier;
 
 /**
  * ExtensionAPI passed to extension factory functions.
@@ -1033,12 +1173,13 @@ export interface ExtensionAPI {
 	/** File logger for error/warning/debug messages */
 	logger: typeof PiLogger;
 
-	/** Injected zod-backed typebox shim for legacy `Type.Object(...)` parameter authoring. */
+	/** Injected TypeBox shim for legacy `Type.Object(...)` parameter authoring. */
 	typebox: typeof TypeBox;
 
-	/** Injected arktype module for arktype-authored extension tools (canonical going forward). */
-	arktype: typeof arktype;
-	/** Injected zod/v4 module for canonical extension tool parameter schemas. */
+	/** Injected omptype schema builder for extension tools. */
+	arktype: typeof ArkType;
+
+	/** Injected Zod-compatible omptype builder for extension tools. */
 	zod: typeof zod;
 
 	/** Injected pi-coding-agent exports for accessing SDK utilities */
@@ -1091,6 +1232,8 @@ export interface ExtensionAPI {
 	on(event: "auto_compaction_end", handler: ExtensionHandler<AutoCompactionEndEvent>): void;
 	on(event: "auto_retry_start", handler: ExtensionHandler<AutoRetryStartEvent>): void;
 	on(event: "auto_retry_end", handler: ExtensionHandler<AutoRetryEndEvent>): void;
+	on(event: "retry_fallback_applied", handler: ExtensionHandler<RetryFallbackAppliedEvent>): void;
+	on(event: "retry_fallback_succeeded", handler: ExtensionHandler<RetryFallbackSucceededEvent>): void;
 	on(event: "ttsr_triggered", handler: ExtensionHandler<TtsrTriggeredEvent>): void;
 	on(event: "todo_reminder", handler: ExtensionHandler<TodoReminderEvent>): void;
 	on(event: "goal_updated", handler: ExtensionHandler<GoalUpdatedEvent>): void;
@@ -1102,6 +1245,7 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
+	on(event: "mcp_notification", handler: ExtensionHandler<McpNotificationEvent>): void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1190,8 +1334,8 @@ export interface ExtensionAPI {
 	/** Get the list of currently active tool names. */
 	getActiveTools(): string[];
 
-	/** Get all configured tools (built-in + extension tools). */
-	getAllTools(): string[];
+	/** Get all configured tools (built-in + extension tools) with schema and source metadata. */
+	getAllTools(): ToolInfo[];
 
 	/** Set the active tools by name. */
 	setActiveTools(toolNames: string[]): Promise<void>;
@@ -1207,6 +1351,18 @@ export interface ExtensionAPI {
 
 	/** Set thinking level for the current session. */
 	setThinkingLevel(level: ThinkingLevel): void;
+
+	/** Get a snapshot of the current session's per-family service tiers. */
+	getServiceTiers(): Readonly<ServiceTierByFamily>;
+
+	/**
+	 * Set one provider family's service tier for subsequent requests, or clear
+	 * its session override with `undefined`.
+	 */
+	setServiceTier<Family extends ServiceTierFamily>(
+		family: Family,
+		tier: ExtensionServiceTier<Family> | undefined,
+	): void;
 
 	/** Get the current session name. */
 	getSessionName(): string | undefined;
@@ -1252,6 +1408,14 @@ export interface ExtensionAPI {
 	 * });
 	 */
 	registerProvider(name: string, config: ProviderConfig): void;
+
+	/**
+	 * Unregister a provider previously registered by an extension.
+	 *
+	 * Removes extension-provided models and restores overridden built-in models.
+	 * Has no effect when the provider is not registered.
+	 */
+	unregisterProvider(name: string): void;
 
 	/** Shared event bus for extension communication. */
 	events: EventBus;
@@ -1339,6 +1503,9 @@ export interface RegisteredTool<TParams extends TSchema = TSchema, TDetails = un
 	extensionPath: string;
 }
 
+/** Internal observer invoked when an already-loaded extension registers or replaces a tool. */
+export type ToolRegistrationListener = (toolName: string) => void;
+
 export interface ExtensionFlag {
 	name: string;
 	description?: string;
@@ -1375,7 +1542,7 @@ export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => 
 
 export type GetActiveToolsHandler = () => string[];
 
-export type GetAllToolsHandler = () => string[];
+export type GetAllToolsHandler = () => ToolInfo[];
 
 export type GetCommandsHandler = () => SlashCommandInfo[];
 
@@ -1387,11 +1554,19 @@ export type GetThinkingLevelHandler = () => ThinkingLevel | undefined;
 
 export type SetThinkingLevelHandler = (level: ThinkingLevel, persist?: boolean) => void;
 
+export type GetServiceTiersHandler = () => ServiceTierByFamily;
+
+export type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTier | undefined) => void;
+
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed during session initialization */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }>;
+	/** Queue a provider registration until initialization, then apply it immediately. */
+	registerProvider(name: string, config: ProviderConfig, sourceId: string): void;
+	/** Remove a queued or initialized provider registration. */
+	unregisterProvider(name: string, sourceId: string): void;
 }
 
 /** Action implementations for ExtensionAPI methods. */
@@ -1407,6 +1582,8 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	getServiceTiers?: GetServiceTiersHandler;
+	setServiceTier?: SetServiceTierHandler;
 	getSessionName: () => string | undefined;
 	setSessionName: (name: string) => Promise<void>;
 }
@@ -1438,8 +1615,11 @@ export interface ExtensionCommandContextActions {
 	reload: () => Promise<void>;
 }
 
-/** Full runtime = state + actions. */
-export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {}
+/** Full runtime = state + actions, including host-compatible service-tier fallbacks. */
+export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {
+	getServiceTiers: GetServiceTiersHandler;
+	setServiceTier: SetServiceTierHandler;
+}
 
 /** Loaded extension with all registered items. */
 export interface Extension {
@@ -1448,6 +1628,7 @@ export interface Extension {
 	label?: string;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool<any, any>>;
+	toolRegistrationListeners?: Set<ToolRegistrationListener>;
 	assistantThinkingRenderers: AssistantThinkingRenderer[];
 	messageRenderers: Map<string, MessageRenderer>;
 	commands: Map<string, RegisteredCommand>;

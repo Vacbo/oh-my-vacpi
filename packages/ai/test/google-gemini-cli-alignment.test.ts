@@ -154,6 +154,7 @@ describe("Google Gemini CLI alignment", () => {
 		expect(shouldRefreshGeminiCliCredentials).toBe(geminiCliProvider.shouldRefreshGeminiCliCredentials);
 		expect(Object.hasOwn(geminiCliProvider, "refreshGeminiCliCredentialsIfNeeded")).toBe(false);
 	});
+
 	it("omits antigravity-only metadata in non-antigravity request payloads", () => {
 		const model = createModel("google-gemini-cli");
 		const payload = buildRequest(model, createContext(), "proj-123", {}, false) as {
@@ -367,7 +368,6 @@ describe("Google Gemini CLI alignment", () => {
 		}).result();
 
 		expect(result.stopReason).toBe("error");
-		expect(requestHeaders).toBeDefined();
 		expect(requestHeaders!.get("anthropic-beta")).toBe("interleaved-thinking-2025-05-14");
 		expect(requestHeaders!.get("X-Goog-Api-Client")).toBeNull();
 		expect(requestHeaders!.get("Client-Metadata")).toBeNull();
@@ -386,7 +386,6 @@ describe("Google Gemini CLI alignment", () => {
 			fetch: fetchMock,
 		}).result();
 
-		expect(requestHeaders).toBeDefined();
 		expect(requestHeaders!.get("User-Agent")).toMatch(/^antigravity\/hub\/[0-9.]+ /);
 	});
 
@@ -557,18 +556,26 @@ describe("Google Gemini CLI alignment", () => {
 	});
 
 	describe("planning leak interception", () => {
-		it("intercepts fragmented planning leak and discards it", async () => {
+		it("intercepts a fragmented planning leak and retries after discarding it", async () => {
 			const sseChunks = [
 				'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"{\\n"}]}}]}}\n\n',
 				'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"  \\"thought\\": \\"let us do something\\",\\n"}]}}]}}\n\n',
 				'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"  \\"call\\": \\"read\\",\\n  \\"paths\\": [\\"src/main.ts\\"]\\n}"}]},"finishReason":"STOP"}]}}\n\n',
 			];
 
+			let fetchCalls = 0;
 			const fetchMock: FetchImpl = async () => {
+				fetchCalls += 1;
+				const chunks =
+					fetchCalls === 1
+						? sseChunks
+						: [
+								'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Recovered."}]},"finishReason":"STOP"}]}}\n\n',
+							];
 				const stream = new ReadableStream({
 					async start(controller) {
 						const encoder = new TextEncoder();
-						for (const chunk of sseChunks) {
+						for (const chunk of chunks) {
 							controller.enqueue(encoder.encode(chunk));
 							await Bun.sleep(5);
 						}
@@ -596,13 +603,13 @@ describe("Google Gemini CLI alignment", () => {
 			}
 			const result = await stream.result();
 
-			// A fully-discarded planning leak leaves no residual content — no empty
-			// text block survives (the central healing wrapper strips empties too).
-			expect(result.content).toHaveLength(0);
+			expect(fetchCalls).toBe(2);
+			expect(result.content).toEqual([{ type: "text", text: "Recovered." }]);
 			expect(result.stopReason).toBe("stop");
 
 			const textDeltaEvents = events.filter(e => e.type === "text_delta");
-			expect(textDeltaEvents).toHaveLength(0);
+			expect(textDeltaEvents).toHaveLength(1);
+			expect(textDeltaEvents[0].delta).toBe("Recovered.");
 		});
 
 		it("does not intercept normal JSON starting with { and releases it", async () => {

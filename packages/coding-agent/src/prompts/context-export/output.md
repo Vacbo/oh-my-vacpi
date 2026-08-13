@@ -47,7 +47,6 @@ These files matched the selection but were excluded mechanically.
 {{#each paths}}
 - {{this}}
 {{/each}}
-
 {{/each}}
 {{/if}}
 ## Repository content
@@ -59,7 +58,6 @@ Lines: {{lineCount}}. Terminal newline in source: {{endsWithNewline}}.
 
 {{fence}}{{language}}
 {{bodyBlock}}{{fence}}
-
 {{/each}}
 {{#each slicedFiles}}
 ### File {{pathJson}} (partial — {{lineCount}} lines in source)
@@ -69,7 +67,6 @@ Lines {{start}}-{{end}}{{note}}:
 
 {{fence}}{{language}}
 {{bodyBlock}}{{fence}}
-
 {{/each}}
 {{/each}}
 ## Before uploading — review

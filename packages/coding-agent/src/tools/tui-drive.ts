@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -12,7 +13,6 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { encodeKey, type KeyId } from "@oh-my-pi/pi-tui";
 import { $which, getAgentDir, isEnoent, prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
 import tuiDriveDescription from "../prompts/tools/tui-drive.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import {
@@ -283,67 +283,45 @@ async function resolveOmpRunId(session: DriveSession): Promise<string> {
 	}
 }
 
-const tuiDriveSchema = z.object({
-	action: z
-		.enum(["start", "input", "wait", "screen", "scrollback", "screenshot", "diff", "resize", "kill", "list", "cast"])
+const tuiDriveSchema = type({
+	action: type(
+		"'start' | 'input' | 'wait' | 'screen' | 'scrollback' | 'screenshot' | 'diff' | 'resize' | 'kill' | 'list' | 'cast'",
+	)
 		.default("screen")
 		.describe("Drive action. Defaults to reading the current screen."),
-	session: z.string().optional().describe("Drive session id from `start`/`list`. Defaults to the only live session."),
-	command: z.string().optional().describe("For start: shell command to spawn in the PTY (required)."),
-	cwd: z.string().optional().describe("For start: working directory. Defaults to the agent's cwd."),
-	cols: z.number().int().optional().describe(`PTY columns for start (default ${DEFAULT_COLS}) or resize (required).`),
-	rows: z.number().int().optional().describe(`PTY rows for start (default ${DEFAULT_ROWS}) or resize (required).`),
-	env: z.record(z.string(), z.string()).optional().describe("For start: extra environment variables (caller wins)."),
-	text: z
-		.string()
-		.optional()
-		.describe('For input: literal text to type. Every "\\n" is sent as Enter (carriage return).'),
-	keys: z
-		.array(z.string())
-		.optional()
-		.describe('For input: key names sent after text, e.g. ["enter", "ctrl+c", "up", "shift+tab"].'),
-	waitText: z.string().optional().describe("For wait: regex tested against the rendered screen text."),
-	timeoutMs: z
-		.number()
-		.int()
-		.positive()
-		.optional()
-		.describe(
-			`For wait: deadline (default ${DEFAULT_WAIT_TIMEOUT_MS}, max ${MAX_WAIT_TIMEOUT_MS}). For start: session lifetime (default ${DEFAULT_LIFETIME_MS}).`,
-		),
-	debounceMs: z
-		.number()
-		.int()
-		.positive()
-		.optional()
-		.describe(
-			`Output-idle window before returning the screen (default ${DEFAULT_DEBOUNCE_MS}, max ${MAX_DEBOUNCE_MS}).`,
-		),
-	limit: z
-		.number()
-		.int()
-		.positive()
-		.optional()
-		.describe(`For scrollback: last N logical lines to return (default ${DEFAULT_SCROLLBACK_LINES}).`),
-	record: z.boolean().optional().describe("For start: record the PTY session to an asciicast v2 .cast file."),
-	castPath: z
-		.string()
-		.optional()
-		.describe(
-			"For start: .cast destination (parent dir auto-created; defaults to a temp file). For cast: read frames from this .cast file directly (e.g. after kill) instead of the session's recording.",
-		),
-	at: z.number().optional().describe("For cast: reconstruct the screen at this time (seconds) into the recording."),
-	frames: z
-		.number()
-		.int()
-		.positive()
-		.optional()
-		.describe("For cast: sample this many frames evenly; the last is the final screen."),
-	render: z.boolean().optional().describe("For cast: also render the recording to a GIF via the agg binary."),
+	"session?": type("string").describe("Drive session id from `start`/`list`. Defaults to the only live session."),
+	"command?": type("string").describe("For start: shell command to spawn in the PTY (required)."),
+	"cwd?": type("string").describe("For start: working directory. Defaults to the agent's cwd."),
+	"cols?": type("number.integer").describe(`PTY columns for start (default ${DEFAULT_COLS}) or resize (required).`),
+	"rows?": type("number.integer").describe(`PTY rows for start (default ${DEFAULT_ROWS}) or resize (required).`),
+	"env?": type({ "[string]": "string" }).describe("For start: extra environment variables (caller wins)."),
+	"text?": type("string").describe('For input: literal text to type. Every "\\n" is sent as Enter (carriage return).'),
+	"keys?": type("string[]").describe(
+		'For input: key names sent after text, e.g. ["enter", "ctrl+c", "up", "shift+tab"].',
+	),
+	"waitText?": type("string").describe("For wait: regex tested against the rendered screen text."),
+	"timeoutMs?": type("number.integer > 0").describe(
+		`For wait: deadline (default ${DEFAULT_WAIT_TIMEOUT_MS}, max ${MAX_WAIT_TIMEOUT_MS}). For start: session lifetime (default ${DEFAULT_LIFETIME_MS}).`,
+	),
+	"debounceMs?": type("number.integer > 0").describe(
+		`Output-idle window before returning the screen (default ${DEFAULT_DEBOUNCE_MS}, max ${MAX_DEBOUNCE_MS}).`,
+	),
+	"limit?": type("number.integer > 0").describe(
+		`For scrollback: last N logical lines to return (default ${DEFAULT_SCROLLBACK_LINES}).`,
+	),
+	"record?": type("boolean").describe("For start: record the PTY session to an asciicast v2 .cast file."),
+	"castPath?": type("string").describe(
+		"For start: .cast destination (parent dir auto-created; defaults to a temp file). For cast: read frames from this .cast file directly (e.g. after kill) instead of the session's recording.",
+	),
+	"at?": type("number").describe("For cast: reconstruct the screen at this time (seconds) into the recording."),
+	"frames?": type("number.integer > 0").describe(
+		"For cast: sample this many frames evenly; the last is the final screen.",
+	),
+	"render?": type("boolean").describe("For cast: also render the recording to a GIF via the agg binary."),
 });
 
 /** Input schema for the tui_drive tool. */
-export type TuiDriveParams = z.infer<typeof tuiDriveSchema>;
+export type TuiDriveParams = typeof tuiDriveSchema.infer;
 
 export interface TuiDriveDetails {
 	action: TuiDriveParams["action"];
@@ -380,9 +358,9 @@ export class TuiDriveTool implements AgentTool<typeof tuiDriveSchema, TuiDriveDe
 		_toolCallId: string,
 		params: TuiDriveParams,
 		signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<TuiDriveDetails>,
+		_onUpdate?: AgentToolUpdateCallback<TuiDriveDetails, typeof tuiDriveSchema>,
 		_ctx?: AgentToolContext,
-	): Promise<AgentToolResult<TuiDriveDetails>> {
+	): Promise<AgentToolResult<TuiDriveDetails, typeof tuiDriveSchema>> {
 		switch (params.action) {
 			case "start":
 				return await this.#start(params);

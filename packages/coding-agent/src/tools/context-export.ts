@@ -1,7 +1,13 @@
 import * as crypto from "node:crypto";
-import type { AgentTool, AgentToolResult, ToolTier } from "@oh-my-pi/pi-agent-core";
+import { type } from "@oh-my-pi/omptype";
+import type {
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	ToolTier,
+} from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import {
 	CONTEXT_EXPORT_TASK_MAX_LENGTH,
 	CONTEXT_EXPORT_TASK_TOO_LONG_MESSAGE,
@@ -127,7 +133,9 @@ export class ContextExportTool implements AgentTool<typeof contextExportSchema, 
 		_toolCallId: string,
 		params: ContextExportParams,
 		signal?: AbortSignal,
-	): Promise<AgentToolResult<ContextExportToolDetails>> {
+		_onUpdate?: AgentToolUpdateCallback<ContextExportToolDetails, typeof contextExportSchema>,
+		_context?: AgentToolContext,
+	): Promise<AgentToolResult<ContextExportToolDetails, typeof contextExportSchema>> {
 		if (!this.#workflowId || this.#task === null) {
 			throw new Error(CONTEXT_EXPORT_WORKFLOW_NOT_FOUND_MESSAGE);
 		}

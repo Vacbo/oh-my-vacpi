@@ -18,10 +18,7 @@ describe("CombinedAutocompleteProvider", () => {
 
 			const result = await provider.getForceFileSuggestions(lines, cursorLine, cursorCol);
 
-			expect(result).not.toBeNull();
-			if (result) {
-				expect(result.prefix).toBe("/");
-			}
+			expect(result?.prefix).toBe("/");
 		});
 
 		it("extracts /A from '/A' when forced", async () => {
@@ -58,10 +55,7 @@ describe("CombinedAutocompleteProvider", () => {
 
 			const result = await provider.getForceFileSuggestions(lines, cursorLine, cursorCol);
 
-			expect(result).not.toBeNull();
-			if (result) {
-				expect(result.prefix).toBe("/");
-			}
+			expect(result?.prefix).toBe("/");
 		});
 	});
 
@@ -109,19 +103,22 @@ describe("CombinedAutocompleteProvider", () => {
 			expect(result).toBeNull();
 		});
 
-		it("falls back to path suggestions for an unmatched mid-prompt slash token", async () => {
-			const provider = new CombinedAutocompleteProvider(
-				[{ name: "skill:security-scan", description: "Security scan" }],
-				"/tmp",
-			);
-			const line = "see /tmp";
+		// Requires a real `/tmp` directory at the filesystem root.
+		it.skipIf(process.platform === "win32")(
+			"falls back to path suggestions for an unmatched mid-prompt slash token",
+			async () => {
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "skill:security-scan", description: "Security scan" }],
+					"/tmp",
+				);
+				const line = "see /tmp";
 
-			const result = await provider.getSuggestions([line], 0, line.length);
+				const result = await provider.getSuggestions([line], 0, line.length);
 
-			expect(result).not.toBeNull();
-			expect(result?.prefix).toBe("/tmp");
-			expect(result?.items.map(item => item.value)).toContain("/tmp/");
-		});
+				expect(result?.prefix).toBe("/tmp");
+				expect(result?.items.map(item => item.value)).toContain("/tmp/");
+			},
+		);
 
 		it("returns nothing for a prose token that only fuzzy-matches skill text", async () => {
 			const provider = new CombinedAutocompleteProvider(
@@ -203,7 +200,7 @@ describe("CombinedAutocompleteProvider", () => {
 			}
 		});
 
-		it("treats @ file-reference tokens as literal text inside slash command arguments without completions", async () => {
+		it("returns @ file-reference completions inside slash command arguments without command completions", async () => {
 			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-rename-args-"));
 			try {
 				fs.writeFileSync(path.join(baseDir, "copy-target.ts"), "export {};\n");
@@ -214,7 +211,8 @@ describe("CombinedAutocompleteProvider", () => {
 				const line = "/rename repro @";
 				const result = await provider.getSuggestions([line], 0, line.length);
 
-				expect(result).toBeNull();
+				expect(result?.prefix).toBe("@");
+				expect(result?.items.map(item => item.value)).toContain("@copy-target.ts");
 			} finally {
 				fs.rmSync(baseDir, { recursive: true, force: true });
 			}
@@ -267,6 +265,69 @@ describe("CombinedAutocompleteProvider", () => {
 				fs.rmSync(baseDir, { recursive: true, force: true });
 			}
 		});
+
+		it("falls back to path completions when slash command argument completions have no match", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-rename-path-"));
+			try {
+				fs.mkdirSync(path.join(baseDir, "src"));
+				fs.writeFileSync(path.join(baseDir, "src", "app.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[
+						{
+							name: "btw",
+							description: "Ask a side question",
+							allowArgs: true,
+							getArgumentCompletions(argumentPrefix) {
+								if (argumentPrefix === "option") {
+									return [{ value: "option", label: "option" }];
+								}
+								return null;
+							},
+						},
+					],
+					baseDir,
+				);
+				const line = "/btw ./src/ap";
+				const result = await provider.getSuggestions([line], 0, line.length);
+
+				expect(result?.prefix).toBe("./src/ap");
+				expect(result?.items.map(item => item.value)).toContain("./src/app.ts");
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("natural file completion triggers", () => {
+		it("uses only explicit path contexts during automatic updates", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-natural-trigger-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, ".secret"), "secret\n");
+				fs.mkdirSync(path.join(baseDir, "src"));
+				fs.writeFileSync(path.join(baseDir, "src", "index.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "model", description: "Switch model" }],
+					baseDir,
+				);
+
+				for (const line of [".", "Sentence .", "Sentence ", "use src/in", "/tmp"]) {
+					expect(await provider.getSuggestions([line], 0, line.length)).toBeNull();
+				}
+
+				const explicitPath = "./src/in";
+				expect(
+					(await provider.getSuggestions([explicitPath], 0, explicitPath.length))?.items.map(item => item.value),
+				).toContain("./src/index.ts");
+				const forcedPath = "use src/in";
+				expect(
+					(await provider.getForceFileSuggestions([forcedPath], 0, forcedPath.length))?.items.map(
+						item => item.value,
+					),
+				).toContain("src/index.ts");
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
 	});
 
 	describe("absolute path completion", () => {
@@ -302,6 +363,25 @@ describe("CombinedAutocompleteProvider", () => {
 
 			expect(result?.prefix).toBe(prefix);
 			expect(result?.items.map(item => item.value)).toContain(`${normalizedBaseDir}/alpha.ts`);
+		});
+
+		it("triggers automatic completion for a drive-letter path token on every platform", async () => {
+			// On Windows `C:/` is a real drive root; on POSIX it is a relative
+			// directory literally named `C:`, created here so the same drive-style
+			// token exercises the trigger without platform branching downstream.
+			if (process.platform !== "win32") {
+				fs.mkdirSync(path.join(baseDir, "C:"));
+				fs.writeFileSync(path.join(baseDir, "C:", "alpha.ts"), "export {};\n");
+			}
+			const provider = new CombinedAutocompleteProvider([{ name: "model", description: "Switch model" }], baseDir);
+			const line = "see C:/";
+
+			const result = await provider.getSuggestions([line], 0, line.length);
+
+			expect(result?.prefix).toBe("C:/");
+			if (process.platform !== "win32") {
+				expect(result?.items.map(item => item.value)).toContain("C:/alpha.ts");
+			}
 		});
 
 		it("keeps slash command matches ahead of file suggestions", async () => {
@@ -503,7 +583,6 @@ describe("CombinedAutocompleteProvider", () => {
 			const line = "@controller";
 			const result = await provider.getSuggestions([line], 0, line.length);
 
-			expect(result).not.toBeNull();
 			const values = result?.items.map(item => item.value) ?? [];
 			expect(values.length).toBeGreaterThan(20);
 			expect(values.length).toBeGreaterThanOrEqual(total);
@@ -616,7 +695,6 @@ describe("CombinedAutocompleteProvider", () => {
 			const provider = new CombinedAutocompleteProvider([], baseDir);
 			const line = "./up";
 			const result = await provider.getForceFileSuggestions([line], 0, line.length);
-			expect(result).not.toBeNull();
 			const values = result?.items.map(item => item.value) ?? [];
 			expect(values).toContain("./update.sh");
 		});
@@ -627,7 +705,6 @@ describe("CombinedAutocompleteProvider", () => {
 			const provider = new CombinedAutocompleteProvider([], baseDir);
 			const line = "./sr";
 			const result = await provider.getForceFileSuggestions([line], 0, line.length);
-			expect(result).not.toBeNull();
 			const values = result?.items.map(item => item.value) ?? [];
 			expect(values).toContain("./src/");
 		});
@@ -664,7 +741,6 @@ describe("trySyncSlashCompletion", () => {
 			"/tmp",
 		);
 		const result = provider.trySyncSlashCompletion("/mo");
-		expect(result).not.toBeNull();
 		expect(result!.prefix).toBe("/mo");
 		expect(result!.items.map(i => i.value)).toEqual(["model"]);
 	});
@@ -675,12 +751,11 @@ describe("trySyncSlashCompletion", () => {
 			"/tmp",
 		);
 		const result = provider.trySyncSlashCompletion("  /mo");
-		expect(result).not.toBeNull();
 		expect(result!.prefix).toBe("  /mo");
 		expect(result!.items.map(i => i.value)).toEqual(["model"]);
 	});
 
-	it("matches multiple commands and sorts by relevance", () => {
+	it("matches multiple commands and excludes non-matches", () => {
 		const provider = new CombinedAutocompleteProvider(
 			[
 				{ name: "model", description: "Switch AI model", value: "model" },
@@ -690,19 +765,11 @@ describe("trySyncSlashCompletion", () => {
 			"/tmp",
 		);
 		const result = provider.trySyncSlashCompletion("/mo");
-		expect(result).not.toBeNull();
 		const values = result!.items.map(i => i.value);
 		// /model and /mode should match; /help should not
 		expect(values).toContain("model");
 		expect(values).toContain("mode");
 		expect(values).not.toContain("help");
-		// The better name match should come first (higher score)
-		const modelIdx = values.indexOf("model");
-		const modeIdx = values.indexOf("mode");
-		// model matches 3/5 chars, mode matches 3/4 chars — mode has higher match ratio
-		// Both should be present; order depends on fuzzyScore internals
-		expect(modelIdx).not.toBe(-1);
-		expect(modeIdx).not.toBe(-1);
 	});
 
 	it("matches case-insensitively", () => {
@@ -711,7 +778,6 @@ describe("trySyncSlashCompletion", () => {
 			"/tmp",
 		);
 		const result = provider.trySyncSlashCompletion("/MOD");
-		expect(result).not.toBeNull();
 		expect(result!.items.map(i => i.value)).toContain("Model");
 	});
 
@@ -721,7 +787,6 @@ describe("trySyncSlashCompletion", () => {
 			"/tmp",
 		);
 		const result = provider.trySyncSlashCompletion("/model");
-		expect(result).not.toBeNull();
 		expect(result!.items.map(i => i.value)).toContain("md");
 	});
 
@@ -759,7 +824,6 @@ describe("trySyncSlashCompletion", () => {
 	it("handles AutocompleteItem-shaped commands (no 'name' property)", () => {
 		const provider = new CombinedAutocompleteProvider([{ value: "model", label: "Switch model" }], "/tmp");
 		const result = provider.trySyncSlashCompletion("/mod");
-		expect(result).not.toBeNull();
 		expect(result!.items.map(i => i.value)).toEqual(["model"]);
 	});
 
@@ -772,8 +836,16 @@ describe("trySyncSlashCompletion", () => {
 			"/tmp",
 		);
 		const result = await provider.getSuggestions(["/"], 0, 1);
-		expect(result).not.toBeNull();
 		expect(result!.items.map(i => i.value)).toEqual(["setup", "usage"]);
+	});
+
+	it("does not list an alias separately when the primary name also matches", async () => {
+		const provider = new CombinedAutocompleteProvider(
+			[{ name: "model", aliases: ["models"], description: "Switch model" }],
+			"/tmp",
+		);
+		const result = await provider.getSuggestions(["/mod"], 0, 4);
+		expect(result!.items.map(i => i.value)).toEqual(["model"]);
 	});
 
 	it("keeps registry order for same-prefix commands so /set still applies settings", () => {
@@ -785,7 +857,6 @@ describe("trySyncSlashCompletion", () => {
 			"/tmp",
 		);
 		const result = provider.trySyncSlashCompletion("/set");
-		expect(result).not.toBeNull();
 		// The sync-completion path applies items[0] on Enter; the shorter `setup`
 		// must not jump ahead of the earlier-registered `settings`.
 		expect(result!.items[0]?.value).toBe("settings");
@@ -800,8 +871,23 @@ describe("trySyncSlashCompletion", () => {
 			"/tmp",
 		);
 		const result = provider.trySyncSlashCompletion("/providers");
-		expect(result).not.toBeNull();
 		expect(result!.items[0]?.value).toBe("providers");
+	});
+
+	it("prefers an exact alias over an earlier same-prefix command (/q -> quit, not queue)", () => {
+		const provider = new CombinedAutocompleteProvider(
+			[
+				{ name: "queue", description: "Queue a message for after the agent yields" },
+				{ name: "quit", aliases: ["q"], description: "Quit the application" },
+			],
+			"/tmp",
+		);
+		const result = provider.trySyncSlashCompletion("/q");
+		// The sync-completion path applies items[0] on Enter. Even though `queue`
+		// is registered first and shares the `q` prefix, the exact `q` alias on
+		// `quit` must win (score 1000 > 900) so /q + Enter dispatches the `q`
+		// alias, which resolves to `quit` (#5335).
+		expect(result!.items[0]?.value).toBe("q");
 	});
 
 	it("uses aliases when completing slash command arguments", async () => {

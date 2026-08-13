@@ -41,6 +41,26 @@ git fetch --all --tags
 
 ---
 
+## 2026-08-13 — Merged upstream v17.3.0: hub, todo, and xd devices adopted   `[done]` `[high]`
+
+**Merge**: fork `16.5.0` → upstream `v17.3.0`.
+
+**Divergence calls**:
+- **Adopted the upstream callable tool names and orchestration model.** `todo`, `hub`, and `yield` are canonical. `todo_write` survives only when loading or rendering old sessions, and settings migrate both `todo_write` and `search_tool_bm25` without installing callable aliases. Reviewer findings now use structured `yield` sections instead of `report_finding`.
+- **Adopted xd devices as the discovery and execution layer.** MCP tools, dynamic tools, and SSH mount under `xd://` when read and write are available. The fork's `context_export` remains registered but inactive until `/context-export` explicitly enables it, and retained `restart`, `tui_observe`, and `tui_drive` declarations use the same provider-compatible schema path as upstream tools.
+- **Combined upstream MCP lifecycle ownership with the fork's startup controls.** Initial connections, reconnects, and tool-list refreshes honor bounded `connectTimeoutMs`; zero disables the timeout. `launchApp`, classified diagnostics, environment expansion, and deferred UI discovery remain available through the canonical MCP manager.
+- **Re-homed in-place restart behind the interactive session boundary.** The tool records a restart request, waits until its tool result is finalized, then hands the rendered confirmation to `InteractiveMode` for relaunch. Print, ACP, SDK-only, and subagent sessions expose no restart rail.
+- **Migrated the old Fire Pass selector to the canonical provider.** Persisted `fireworks/routers/kimi-k2.6-turbo` selectors become `firepass/kimi-k2.6-turbo`, including thinking suffixes, while current Fire Pass authentication and the fork's model-aware credential selection stay intact.
+- **Kept fork control surfaces at upstream extension points.** The jj-aware status line, source-checkout updater, headless goal flow, compact no-op behavior, slash-command frecency, external-diff and conflict-path guards, full context export, TUI observability, and live SSH refresh remain wired without reviving deleted upstream architecture.
+- **Normalized generated and release-owned artifacts by source of truth.** Package changelogs keep fork entries under `## [Unreleased]`; upstream `17.3.0` release sections come from the tag. `packages/catalog/src/models.json` was regenerated from the merged generator, descriptor, resolver, identity, and thinking-policy sources.
+
+**Residual levers**:
+- Historical `todo_write` support is intentionally limited to persisted-session replay, rendering, and settings migration. New prompts, tool choices, and registrations must use `todo`.
+- `context_export` is registry-only at startup. Any new prompt or xd mount path must preserve that boundary so the command workflow controls when its schema reaches the model.
+- SSH is capability-discovered rather than part of `BUILTIN_TOOLS`. Keep its startup allowlist check and live `/ssh add` or `/ssh remove` refresh behavior together when tool activation changes.
+
+---
+
 ## 2026-07-14 — Merged upstream v16.5.0: prewalk, MCP startup, and fork state synthesized   `[done]` `[high]`
 
 **Merge**: fork `16.4.2` → upstream `v16.5.0`.

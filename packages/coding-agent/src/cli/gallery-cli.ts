@@ -153,7 +153,7 @@ export async function renderGalleryState(
 	const component = new ToolExecutionComponent(
 		componentName,
 		streamingArgs,
-		{ showImages: false },
+		{ showImages: false, useBuiltInRenderer: !fixture.customRendered },
 		tool,
 		ui,
 		getProjectDir(),
@@ -242,9 +242,8 @@ export async function runGalleryCommand(args: GalleryCommandArgs): Promise<void>
 	const expanded = args.expanded ?? false;
 	const states = args.states && args.states.length > 0 ? args.states : [...GALLERY_STATES];
 
-	// Renderer-registry tools plus fixture-only tools (no dedicated renderer,
-	// e.g. `report_tool_issue` / custom extension tools) so the gallery covers
-	// the generic fallback + custom-tool branches too.
+	// Renderer-registry tools plus fixture-only custom extension tools so the
+	// gallery covers the generic fallback + custom-tool branches too.
 	const allNames = Array.from(new Set([...Object.keys(toolRenderers), ...Object.keys(galleryFixtures)])).sort();
 	const names = args.tool ? allNames.filter(name => name === args.tool) : allNames;
 	if (args.tool && names.length === 0) {

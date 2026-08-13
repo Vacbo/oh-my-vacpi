@@ -277,6 +277,8 @@ export interface MCPOAuthConfig {
 	authorizationUrl: string;
 	/** Token endpoint URL */
 	tokenUrl: string;
+	/** Dynamic client registration endpoint advertised by the authorization server. */
+	registrationUrl?: string;
 	/** Client ID (optional when already embedded in authorization URL) */
 	clientId?: string;
 	/** Client secret (optional for PKCE flows) */
@@ -383,6 +385,13 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 	async generateAuthUrl(state: string, redirectUri: string): Promise<{ url: string; instructions?: string }> {
 		if (!this.#resolvedClientId) {
 			await this.#tryRegisterClient(redirectUri);
+			// `unapproved_client` explicitly establishes that registration cannot
+			// produce the required client id. Other DCR failures stay on the
+			// clientless probe path because they may be transient or caused by
+			// unrelated registration metadata.
+			if (!this.#resolvedClientId && this.#isDefinitiveRegistrationRejection()) {
+				throw this.#missingClientIdError();
+			}
 		}
 
 		const authUrl = new URL(this.config.authorizationUrl);
@@ -480,11 +489,21 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 		}
 
 		const data = (await response.json()) as {
-			access_token: string;
+			access_token?: string;
 			refresh_token?: string;
 			expires_in?: number;
 			token_type?: string;
+			error?: string;
+			error_description?: string;
 		};
+
+		// Some providers (e.g. the Slack Web API) signal failure with HTTP 200 and
+		// an `{ ok: false, error }` body. Accepting such a response would store an
+		// empty access token and only surface `invalid_token` on a later request.
+		if (typeof data.access_token !== "string" || data.access_token.length === 0) {
+			const providerError = data.error_description ?? data.error;
+			throw new Error(`Token exchange returned no access token${providerError ? `: ${providerError}` : ""}`);
+		}
 
 		// Calculate expiry timestamp
 		const expiresIn = data.expires_in ?? 3600; // Default to 1 hour
@@ -561,7 +580,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 	 * accept the later authorize request for the same scope set.
 	 */
 	async #tryRegisterClient(redirectUri: string): Promise<void> {
-		const registrationEndpoint = await this.#resolveRegistrationEndpoint();
+		const registrationEndpoint = this.config.registrationUrl ?? (await this.#resolveRegistrationEndpoint());
 		if (!registrationEndpoint) return;
 
 		try {
@@ -687,6 +706,19 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 			}
 			// Ignore network/probe failures to avoid blocking flows that still work.
 		}
+	}
+
+	/**
+	 * Whether the provider explicitly rejected this client as unapproved.
+	 *
+	 * HTTP status alone is insufficient: payload errors such as
+	 * `invalid_client_metadata` and `invalid_redirect_uri` do not establish that
+	 * the authorization endpoint requires a client id. Keep those on the
+	 * clientless probe path.
+	 */
+	#isDefinitiveRegistrationRejection(): boolean {
+		const failure = this.#registrationFailure;
+		return failure?.status === 403 && /\bunapproved_client\b/i.test(failure.detail ?? "");
 	}
 
 	/**

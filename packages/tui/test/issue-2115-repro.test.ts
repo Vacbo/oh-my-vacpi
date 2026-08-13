@@ -13,6 +13,7 @@ import { VirtualTerminal } from "./virtual-terminal";
 // replay crossed ~1-2 MiB.
 
 const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+const ORIGINAL_HERDR_ENV = Bun.env.HERDR_ENV;
 
 // Multiplexer / terminal-identity signals and overrides, read fresh from Bun.env
 // on every render (isInsideTerminalMultiplexer + reportsSizeOnAltScreenToggle).
@@ -103,6 +104,10 @@ class ManualRenderScheduler implements RenderScheduler {
 	}
 }
 
+beforeEach(() => {
+	delete Bun.env.HERDR_ENV;
+});
+
 describe("issue #2115: ConPTY large-session resume truncates at logical lines", () => {
 	let savedTerminalEnv: Record<string, string | undefined> = {};
 	beforeEach(() => {
@@ -119,6 +124,8 @@ describe("issue #2115: ConPTY large-session resume truncates at logical lines", 
 		}
 		savedTerminalEnv = {};
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
+		if (ORIGINAL_HERDR_ENV === undefined) delete Bun.env.HERDR_ENV;
+		else Bun.env.HERDR_ENV = ORIGINAL_HERDR_ENV;
 		vi.restoreAllMocks();
 	});
 

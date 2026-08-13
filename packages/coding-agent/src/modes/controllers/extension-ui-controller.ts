@@ -10,6 +10,7 @@ import type {
 	ExtensionAskDialogResultItem,
 	ExtensionCommandContextActions,
 	ExtensionContextActions,
+	ExtensionCustomOptions,
 	ExtensionError,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -21,7 +22,6 @@ import type {
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
-import { createExtensionModelQuery } from "../../extensibility/extensions/model-api";
 import { AskDialogComponent, boundPromptTitle } from "../../modes/components/ask-dialog";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
@@ -29,7 +29,7 @@ import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/comp
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
 import { normalizeCustomMessagePayload, USER_INTERRUPT_LABEL } from "../../session/messages";
-import { setSessionTerminalTitle, setTerminalTitle } from "../../utils/title-generator";
+import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
 
 const MAX_WIDGET_LINES = 10;
 const ASK_OTHER_OPTION = "Other (type your own)";
@@ -71,6 +71,12 @@ export class ExtensionUiController {
 	// the rest queue. See `#presentDialog`.
 	#dialogActive = false;
 	#dialogQueue: Array<() => void> = [];
+	/**
+	 * Built once in `initHooksAndCustomTools()`. Reused directly by `/tree`
+	 * `ask` re-answer (issue #5642) to drive a standalone `AskTool.execute()`
+	 * call with the same picker/dialog primitives a live tool call would get.
+	 */
+	#toolUIContext: ExtensionUIContext | undefined;
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
@@ -81,7 +87,7 @@ export class ExtensionUiController {
 		const uiContext: ExtensionUIContext = {
 			timeoutStartsOnPresentation: true,
 			select: (title, options, dialogOptions) => this.showCollabAwareSelector(title, options, dialogOptions),
-			confirm: (title, message, _dialogOptions) => this.showHookConfirm(title, message),
+			confirm: (title, message, dialogOptions) => this.showHookConfirm(title, message, dialogOptions),
 			input: (title, placeholder, dialogOptions) => this.showHookInput(title, placeholder, dialogOptions),
 			askDialog: (questions, dialogOptions) => this.showAskDialog(questions, dialogOptions),
 			notify: (message, type) => this.showHookNotify(message, type),
@@ -89,7 +95,7 @@ export class ExtensionUiController {
 			setStatus: (key, text) => this.setHookStatus(key, text),
 			setWorkingMessage: message => this.ctx.setWorkingMessage(message),
 			setWidget: (key, content, options) => this.setHookWidget(key, content, options),
-			setTitle: title => setTerminalTitle(title),
+			setTitle: title => setExtensionTerminalTitle(title),
 			custom: (factory, options) => this.showHookCustom(factory, options),
 			setEditorText: text => {
 				this.ctx.editor.setText(text);
@@ -122,6 +128,18 @@ export class ExtensionUiController {
 			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
 		};
 		this.ctx.setToolUIContext(uiContext, true);
+		this.#toolUIContext = uiContext;
+		this.ctx.session.setUsageFallbackConfirmer?.((confirmation, signal) => {
+			const reserve =
+				confirmation.remainingPercent === undefined
+					? "inside the configured reserve margin"
+					: `${confirmation.remainingPercent.toFixed(1)}% remaining`;
+			return this.showHookConfirm(
+				"Coding-plan reserve reached",
+				`${confirmation.from} has ${reserve}. Switch to ${confirmation.to}? Choose No to keep using the current plan.`,
+				{ signal },
+			);
+		});
 
 		const extensionRunner = this.ctx.session.extensionRunner;
 		if (!extensionRunner) {
@@ -148,8 +166,8 @@ export class ExtensionUiController {
 			setLabel: (targetId, label) => {
 				this.ctx.sessionManager.appendLabelChange(targetId, label);
 			},
-			getActiveTools: () => this.ctx.session.getActiveToolNames(),
-			getAllTools: () => this.ctx.session.getAllToolNames(),
+			getActiveTools: () => this.ctx.session.getEnabledToolNames(),
+			getAllTools: () => this.ctx.session.getAllToolInfos(),
 			setActiveTools: toolNames => this.ctx.session.setActiveToolsByName(toolNames),
 			setModel: async model => {
 				const key = await this.ctx.session.modelRegistry.getApiKey(model);
@@ -159,6 +177,8 @@ export class ExtensionUiController {
 			},
 			getThinkingLevel: () => this.ctx.session.thinkingLevel,
 			setThinkingLevel: level => this.ctx.session.setThinkingLevel(level),
+			getServiceTiers: () => this.ctx.session.serviceTierByFamily,
+			setServiceTier: (family, tier) => this.ctx.session.setServiceTierFamily(family, tier),
 			getCommands: () => getSessionSlashCommands(this.ctx.session),
 			getSessionName: () => this.ctx.sessionManager.getSessionName(),
 			setSessionName: name => this.#updateSessionName(name),
@@ -183,7 +203,7 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
@@ -226,9 +246,9 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
-				this.ctx.editor.setText(result.selectedText);
+				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 				this.ctx.showStatus("Branched to new session");
 
 				return { cancelled: false };
@@ -240,10 +260,10 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
-					this.ctx.editor.setText(result.editorText);
+					this.ctx.editor.setDraft(result.editorText, result.editorImages);
 				}
 				this.ctx.showStatus("Navigated to selected point");
 
@@ -257,7 +277,7 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
 			},
@@ -274,6 +294,17 @@ export class ExtensionUiController {
 		await extensionRunner.emit({
 			type: "session_start",
 		});
+	}
+
+	/**
+	 * The `ExtensionUIContext` built in `initHooksAndCustomTools()` — the same
+	 * picker/dialog primitives passed as `context.ui` for every live tool
+	 * call. `/tree` `ask` re-answer (issue #5642) reuses this to drive a
+	 * standalone `AskTool.execute()` call outside a normal agent turn.
+	 * `undefined` before hooks have initialized.
+	 */
+	getToolUIContext(): ExtensionUIContext | undefined {
+		return this.#toolUIContext;
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {
@@ -368,8 +399,8 @@ export class ExtensionUiController {
 			setLabel: (targetId, label) => {
 				this.ctx.sessionManager.appendLabelChange(targetId, label);
 			},
-			getActiveTools: () => this.ctx.session.getActiveToolNames(),
-			getAllTools: () => this.ctx.session.getAllToolNames(),
+			getActiveTools: () => this.ctx.session.getEnabledToolNames(),
+			getAllTools: () => this.ctx.session.getAllToolInfos(),
 			setActiveTools: toolNames => this.ctx.session.setActiveToolsByName(toolNames),
 			setModel: async model => {
 				const key = await this.ctx.session.modelRegistry.getApiKey(model);
@@ -379,6 +410,8 @@ export class ExtensionUiController {
 			},
 			getThinkingLevel: () => this.ctx.session.thinkingLevel,
 			setThinkingLevel: (level, persist) => this.ctx.session.setThinkingLevel(level, persist),
+			getServiceTiers: () => this.ctx.session.serviceTierByFamily,
+			setServiceTier: (family, tier) => this.ctx.session.setServiceTierFamily(family, tier),
 			getCommands: () => getSessionSlashCommands(this.ctx.session),
 			getSessionName: () => this.ctx.sessionManager.getSessionName(),
 			setSessionName: name => this.#updateSessionName(name),
@@ -403,7 +436,7 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
@@ -443,9 +476,9 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
-				this.ctx.editor.setText(result.selectedText);
+				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 				this.ctx.showStatus("Branched to new session");
 
 				return { cancelled: false };
@@ -457,10 +490,10 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
-					this.ctx.editor.setText(result.editorText);
+					this.ctx.editor.setDraft(result.editorText, result.editorImages);
 				}
 				this.ctx.showStatus("Navigated to selected point");
 
@@ -473,7 +506,7 @@ export class ExtensionUiController {
 				if (!result) {
 					return { cancelled: true };
 				}
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
 			},
@@ -494,32 +527,15 @@ export class ExtensionUiController {
 		if (!uiContext) {
 			return;
 		}
-		for (const registeredTool of this.ctx.session.extensionRunner?.getAllRegisteredTools() ?? []) {
+		const runner = this.ctx.session.extensionRunner;
+		for (const registeredTool of runner?.getAllRegisteredTools() ?? []) {
 			if (registeredTool.definition.onSession) {
 				try {
 					await registeredTool.definition.onSession(event, {
+						...runner!.createContext(),
 						ui: uiContext,
-						getContextUsage: () => this.ctx.session.getContextUsage(),
-						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 						hasUI: true,
-						cwd: this.ctx.sessionManager.getCwd(),
-						sessionManager: this.ctx.session.sessionManager,
-						modelRegistry: this.ctx.session.modelRegistry,
-						model: this.ctx.session.model,
-						models: createExtensionModelQuery(
-							this.ctx.session.modelRegistry,
-							this.ctx.session.settings,
-							() => this.ctx.session.model,
-						),
-						isIdle: () => !this.ctx.session.isStreaming,
-						hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
-						abort: () => {
-							this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
-						},
-						shutdown: () => {
-							// Signal shutdown request
-						},
-						getSystemPrompt: () => this.ctx.session.systemPrompt,
+						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 					});
 				} catch (err) {
 					this.showToolError(registeredTool.definition.name, err instanceof Error ? err.message : String(err));
@@ -532,7 +548,7 @@ export class ExtensionUiController {
 	 * Show a tool error in the chat.
 	 */
 	showToolError(toolName: string, error: string): void {
-		const errorText = new Text(theme.fg("error", `Tool "${toolName}" error: ${error}`), 1, 0);
+		const errorText = new Text(`Tool "${toolName}" error: ${error}`, 1, 0).setStyleFn(t => theme.fg("error", t));
 		this.ctx.present(errorText);
 	}
 
@@ -609,11 +625,30 @@ export class ExtensionUiController {
 			let promptEditor: HookEditorComponent | undefined;
 			let promptResolve: ((value: string | undefined) => void) | undefined;
 			let closed = false;
+			const draftEditor = this.ctx.editor;
+			const inputGuard =
+				draftEditor.getText().length > 0
+					? {
+							isBlocked: () => draftEditor.getText().length > 0,
+							handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
+							hint: "Finish or clear the current prompt to answer",
+							// Show the draft's insertion cursor while it owns input; drop it
+							// once the draft clears and the ask controls take over.
+							syncPresentation: () => {
+								draftEditor.focused = draftEditor.getText().length > 0;
+							},
+						}
+					: undefined;
 
 			const restoreAskDialog = (): void => {
 				if (closed || !askDialog) return;
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(askDialog);
+				// Keep the draft editor mounted beneath the restored ask, matching the
+				// initial presentation: the guard re-blocks whenever the draft is
+				// non-empty (e.g. a failed submit restored its text while a nested
+				// prompt was open), and routed input must land on a visible surface.
+				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 				this.ctx.ui.setFocus(askDialog);
 				this.ctx.ui.requestRender();
 			};
@@ -656,10 +691,12 @@ export class ExtensionUiController {
 					timeout: dialogOptions?.timeout,
 					onTimeout: dialogOptions?.onTimeout,
 					tui: this.ctx.ui,
+					inputGuard,
 				},
 			);
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(askDialog);
+			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(askDialog);
 			this.ctx.ui.requestRender();
 
@@ -906,8 +943,8 @@ export class ExtensionUiController {
 	/**
 	 * Show a confirmation dialog for hooks.
 	 */
-	async showHookConfirm(title: string, message: string): Promise<boolean> {
-		const result = await this.showHookSelector(`${title}\n${message}`, ["Yes", "No"]);
+	async showHookConfirm(title: string, message: string, dialogOptions?: ExtensionUIDialogOptions): Promise<boolean> {
+		const result = await this.showHookSelector(`${title}\n${message}`, ["Yes", "No"], dialogOptions);
 		return result === "Yes";
 	}
 
@@ -1011,7 +1048,7 @@ export class ExtensionUiController {
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
 		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
-		options?: { overlay?: boolean },
+		options?: ExtensionCustomOptions,
 	): Promise<T> {
 		const savedText = this.ctx.editor.getText();
 		const keybindings = KeybindingsManager.inMemory();
@@ -1044,12 +1081,18 @@ export class ExtensionUiController {
 			}
 			component = c;
 			if (options?.overlay) {
-				overlayHandle = this.ctx.ui.showOverlay(component, {
-					anchor: "bottom-center",
-					width: "100%",
-					maxHeight: "100%",
-					margin: 0,
-				});
+				const overlayOptions =
+					typeof options.overlayOptions === "function" ? options.overlayOptions() : options.overlayOptions;
+				overlayHandle = this.ctx.ui.showOverlay(
+					component,
+					overlayOptions ?? {
+						anchor: "bottom-center",
+						width: "100%",
+						maxHeight: "100%",
+						margin: 0,
+					},
+				);
+				options.onHandle?.(overlayHandle);
 				return;
 			}
 			this.ctx.editorContainer.clear();
@@ -1092,7 +1135,9 @@ export class ExtensionUiController {
 	}
 
 	showExtensionError(extensionPath: string, error: string): void {
-		const errorText = new Text(theme.fg("error", `Extension "${extensionPath}" error: ${error}`), 1, 0);
+		const errorText = new Text(`Extension "${extensionPath}" error: ${error}`, 1, 0).setStyleFn(t =>
+			theme.fg("error", t),
+		);
 		this.ctx.present(errorText);
 	}
 	async #handleInteractiveCompact(instructionsOrOptions: string | CompactOptions | undefined): Promise<void> {

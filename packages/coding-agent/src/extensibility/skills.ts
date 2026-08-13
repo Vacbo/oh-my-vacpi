@@ -14,8 +14,8 @@ import { compareSkillOrder, scanSkillsFromDir } from "../discovery/helpers";
 import autoloadTemplate from "../prompts/skills/autoload.md" with { type: "text" };
 import userInvocationTemplate from "../prompts/skills/user-invocation.md" with { type: "text" };
 import type { SkillPromptDetails } from "../session/messages";
-import type { DiscoverableTool } from "../tool-discovery/tool-index";
 import { expandTilde } from "../tools/path-utils";
+import type { SkillSearchEntry } from "./skill-search";
 export interface Skill {
 	name: string;
 	description: string;
@@ -33,6 +33,11 @@ export interface Skill {
 	 * Populated at load time when `skills.discoveryMode === "search"`; never rendered.
 	 */
 	searchText?: string;
+	/**
+	 * Filesystem-resolved plugin root for Agent Plugin skills (spec §4.1):
+	 * every `skill://` resource access must realpath-resolve within it.
+	 */
+	containRoot?: string;
 	/** Source metadata for display */
 	_source?: SourceMeta;
 }
@@ -110,6 +115,7 @@ export async function loadSkillsFromDir(options: LoadSkillsFromDirOptions): Prom
 			filePath: capSkill.path,
 			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 			source: options.source,
+			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 			_source: capSkill._source,
 		})),
@@ -258,6 +264,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 				filePath: capSkill.path,
 				baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 				source: `${capSkill._source.provider}:${capSkill.level}`,
+				...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 				hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 				searchText: skillSearchText(capSkill.content, discoveryMode),
 				_source: capSkill._source,
@@ -296,6 +303,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 					filePath: capSkill.path,
 					baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 					source: "custom:user",
+					...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 					hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 					searchText: skillSearchText(capSkill.content, discoveryMode),
 					_source: { ...capSkill._source, providerName: "Custom" },
@@ -323,6 +331,17 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 
 		const existing = skillMap.get(skill.name);
 		if (existing) {
+			// A skill name claimed by a DEFAULT-path provider (e.g.
+			// ~/.claude/skills/<name>) yields to the explicitly configured
+			// skills.customDirectories entry — the user's custom dir is the
+			// higher-priority source (issue #7190). Only same-source custom
+			// duplicates keep first-wins.
+			const isCustomExisting = existing.source.startsWith("custom:");
+			if (!isCustomExisting) {
+				skillMap.set(skill.name, skill);
+				realPathSet.add(resolvedPath);
+				continue;
+			}
 			collisionWarnings.push({
 				skillPath: skill.filePath,
 				message: `name collision: "${skill.name}" already loaded from ${existing.filePath}, skipping this one`,
@@ -386,7 +405,9 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 			filePath: capSkill.path,
 			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 			source: `${capSkill._source.provider}:${capSkill.level}`,
+			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
+			searchText: skillSearchText(capSkill.content, discoveryMode),
 			_source: capSkill._source,
 		});
 		realPathSet.add(resolvedPath);
@@ -404,7 +425,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 export interface SkillPromptPartition {
 	/** Skills rendered as summary lines in the system prompt `<skills>` listing. */
 	listed: Skill[];
-	/** Skills hidden from the listing but indexed in the `search_tool_bm25` BM25 corpus. */
+	/** Skills hidden from the listing but indexed in the `search_skills` corpus. */
 	discoverable: Skill[];
 }
 
@@ -434,26 +455,18 @@ export function partitionSkillsForPrompt(
 	return { listed, discoverable };
 }
 
-/** Corpus entry name for a discoverable skill (mirrors the `/skill:<name>` command naming). */
-export function discoverableSkillEntryName(skillName: string): string {
-	return `skill:${skillName}`;
-}
-
 /**
- * Map discovery-hidden skills to BM25 corpus entries for `search_tool_bm25`.
- * Skill matches are never "activated": the search result carries the `skill://<name>`
+ * Map discovery-hidden skills to `search_skills` corpus entries.
+ * A skill match is never "activated": the search result carries the `skill://<name>`
  * URI and the model reads it directly; no toolset mutation, no persisted state.
  */
 export function collectDiscoverableSkillEntries(
 	skills: readonly Skill[],
 	settings: SkillsSettings | undefined,
-): DiscoverableTool[] {
+): SkillSearchEntry[] {
 	return partitionSkillsForPrompt(skills, settings, true).discoverable.map(skill => ({
-		name: discoverableSkillEntryName(skill.name),
-		label: skill.name,
-		summary: skill.description,
-		source: "skill",
-		schemaKeys: [],
+		name: skill.name,
+		description: skill.description,
 		searchText: skill.searchText,
 	}));
 }

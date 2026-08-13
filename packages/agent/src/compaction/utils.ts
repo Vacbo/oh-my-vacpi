@@ -4,6 +4,7 @@
 
 import type { Message, ToolCall } from "@oh-my-pi/pi-ai";
 import { type Dialect, getDialectDefinition } from "@oh-my-pi/pi-ai/dialect";
+import { escapeHarmonyControlTokens } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { formatGroupedPaths, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "../types";
 import fileOperationsTemplate from "./prompts/file-operations.md" with { type: "text" };
@@ -208,8 +209,16 @@ export function truncateToolResultForSummary(text: string): string {
 }
 
 /**
- * Serialize LLM messages to text for summarization.
- * This prevents the model from treating it as a conversation to continue.
+ * Serialize LLM messages as plain summary input without provider control tokens.
+ */
+export function serializeConversationForSummary(messages: Message[], dialect?: Dialect): string {
+	const conversation = serializeConversation(messages, dialect);
+	if (dialect !== "harmony") return conversation;
+	return escapeHarmonyControlTokens(conversation);
+}
+
+/**
+ * Serialize LLM messages to transcript text.
  * Call convertToLlm() first to handle custom message types.
  */
 export function serializeConversation(messages: Message[], dialect?: Dialect): string {
@@ -224,10 +233,21 @@ export function serializeConversation(messages: Message[], dialect?: Dialect): s
 		}
 	}
 	if (dialect) {
+		// Claude's classifier refuses inputs that reproduce the model's own
+		// reasoning as text ("reasoning_extraction"), and the anthropic dialect
+		// otherwise renders thinking verbatim inside <thinking> tags. Reasoning is
+		// ephemeral and low-signal for a summary, so drop it from Anthropic-target
+		// summary input. Other dialects (e.g. Harmony) carry reasoning natively in
+		// their transcript format and keep it.
+		const dropThinking = dialect === "anthropic";
 		const processed: Message[] = [];
 		for (const msg of messages) {
 			if (msg.role === "assistant") {
-				const content = msg.content.filter(block => block.type !== "toolCall" || !uselessCallIds.has(block.id));
+				const content = msg.content.filter(
+					block =>
+						(block.type !== "toolCall" || !uselessCallIds.has(block.id)) &&
+						(!dropThinking || block.type !== "thinking"),
+				);
 				if (content.length > 0) processed.push(content.length === msg.content.length ? msg : { ...msg, content });
 				continue;
 			}

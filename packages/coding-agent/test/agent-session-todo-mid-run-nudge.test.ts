@@ -156,7 +156,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			"compaction.enabled": false,
 			"todo.enabled": true,
 			"todo.reminders": true,
-			"todo.reminders.max": 3,
+			"todo.remindersMax": 3,
 		});
 		const toolSession: ToolSession = {
 			cwd: tempDir.path(),
@@ -268,9 +268,9 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(await drainNudges()).toEqual([]);
 	});
 
-	it("does not nudge when a `todo_write` call has reset the counter mid-window", async () => {
+	it("does not nudge when a `todo` call has reset the counter mid-window", async () => {
 		for (let i = 0; i < THRESHOLD - 1; i++) emitToolResult("write");
-		emitToolResult("todo_write");
+		emitToolResult("todo");
 		for (let i = 0; i < THRESHOLD - 1; i++) emitToolResult("write");
 
 		await settle();
@@ -308,13 +308,13 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(nudges.length).toBe(1);
 	});
 
-	it("stays silent when `todo_write` is not in the active-tool list, even if `todo.enabled` is still on", async () => {
+	it("stays silent when `todo` is not in the active-tool list, even if `todo.enabled` is still on", async () => {
 		// An explicit active-tool list (or discovery-mode filtering) can drop
-		// `todo_write` from the slate while the setting flag stays true. Asking the
+		// `todo` from the slate while the setting flag stays true. Asking the
 		// model to call a tool that is not in its schema would produce
 		// fabricated/unknown tool calls. Mirror {@link #createEagerTodoPrelude}.
 		await session.setActiveToolsByName([]);
-		expect(session.getActiveToolNames()).not.toContain("todo_write");
+		expect(session.getActiveToolNames()).not.toContain("todo");
 
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		await settle();

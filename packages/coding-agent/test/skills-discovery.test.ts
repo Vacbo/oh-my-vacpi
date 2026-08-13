@@ -3,6 +3,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	buildSkillSearchIndex,
+	SKILL_SEARCH_TOOL_NAME,
+	searchSkills,
+} from "@oh-my-pi/pi-coding-agent/extensibility/skill-search";
+import {
 	collectDiscoverableSkillEntries,
 	loadSkills,
 	partitionSkillsForPrompt,
@@ -19,10 +24,6 @@ import { TextInputSubmenu } from "@oh-my-pi/pi-coding-agent/modes/components/set
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SystemPromptToolMetadata } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
-import {
-	buildDiscoverableToolSearchIndex,
-	searchDiscoverableTools,
-} from "@oh-my-pi/pi-coding-agent/tool-discovery/tool-index";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
 function skill(name: string, overrides: Partial<Skill> = {}): Skill {
@@ -75,11 +76,9 @@ describe("collectDiscoverableSkillEntries", () => {
 		);
 		expect(entries).toEqual([
 			{
-				name: "skill:caveman",
-				label: "caveman",
-				summary: "Ultra-compressed communication mode",
-				source: "skill",
-				schemaKeys: [],
+				name: "caveman",
+				description: "Ultra-compressed communication mode",
+				searchText: undefined,
 			},
 		]);
 	});
@@ -106,7 +105,7 @@ describe("system prompt skill discovery roster", () => {
 
 	const promptTools = new Map<string, SystemPromptToolMetadata>([
 		["read", { label: "Read", description: "Read files" }],
-		["search_tool_bm25", { label: "SearchTools", description: "Discover hidden tools" }],
+		[SKILL_SEARCH_TOOL_NAME, { label: "SearchSkills", description: "Find a loaded skill" }],
 	]);
 
 	it("collapses unpinned skills into a roster line under search mode", async () => {
@@ -117,7 +116,7 @@ describe("system prompt skill discovery roster", () => {
 			skillsSettings: { discoveryMode: "search", pinnedSkills: ["pinned-*"] },
 			rules: [],
 			tools: promptTools,
-			toolNames: ["read", "search_tool_bm25"],
+			toolNames: ["read", SKILL_SEARCH_TOOL_NAME],
 			workspaceTree: { rootPath: tempDir, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
 		});
 		const rendered = systemPrompt.join("\n\n");
@@ -136,7 +135,7 @@ describe("system prompt skill discovery roster", () => {
 			skillsSettings: {},
 			rules: [],
 			tools: promptTools,
-			toolNames: ["read", "search_tool_bm25"],
+			toolNames: ["read", SKILL_SEARCH_TOOL_NAME],
 			workspaceTree: { rootPath: tempDir, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
 		});
 		const rendered = systemPrompt.join("\n\n");
@@ -204,9 +203,9 @@ ${"filler ".repeat(600)}
 			],
 			{ discoveryMode: "search" },
 		);
-		const index = buildDiscoverableToolSearchIndex(entries);
-		const top = searchDiscoverableTools(index, "robotic ai phrasing", 1);
-		expect(top[0]?.tool.name).toBe("skill:humanizer");
+		const index = buildSkillSearchIndex(entries);
+		const top = searchSkills(index, "robotic ai phrasing", 1);
+		expect(top[0]?.entry.name).toBe("humanizer");
 	});
 });
 
@@ -276,7 +275,7 @@ describe("TextInputSubmenu suggestions", () => {
 	const noop = () => {};
 
 	function submenu(initial = ""): TextInputSubmenu {
-		return new TextInputSubmenu("Pinned Skills", "", initial, noop, noop, { pool, noun: "skills" });
+		return new TextInputSubmenu("Pinned Skills", "", initial, false, noop, noop, { pool, noun: "skills" });
 	}
 
 	it("accepts the top suggestion with Tab and resets the list", () => {
@@ -299,7 +298,7 @@ describe("TextInputSubmenu suggestions", () => {
 	});
 
 	it("keeps plain text settings free of suggestions", () => {
-		const input = new TextInputSubmenu("Path", "", "", noop, noop);
+		const input = new TextInputSubmenu("Path", "", "", false, noop, noop);
 		for (const ch of "cave") input.handleInput(ch);
 		expect(input.suggestions).toEqual([]);
 		expect(input.getValue()).toBe("cave");

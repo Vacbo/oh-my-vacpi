@@ -5,6 +5,7 @@ import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
+import { fileHyperlink } from "../../../tui/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
@@ -116,9 +117,10 @@ const modelSegment: StatusLineSegment = {
 					: `${theme.thinking.autoPending} auto`;
 			} else {
 				const level = state.thinkingLevel ?? ThinkingLevel.Off;
-				if (level !== ThinkingLevel.Off) {
-					thinkingDisplay = theme.thinking[level as keyof typeof theme.thinking] ?? "";
-				}
+				thinkingDisplay =
+					level === ThinkingLevel.Off
+						? `${theme.status.disabled} off`
+						: (theme.thinking[level as keyof typeof theme.thinking] ?? level);
 			}
 		}
 
@@ -129,9 +131,9 @@ const modelSegment: StatusLineSegment = {
 
 		// Fast-mode icon and thinking-level suffix trail the model name and are
 		// colored together with it as `statusLineModel`. The advisor "++" badge
-		// sits between the name and that tail in `accent`, so it reads as a
-		// distinct marker. theme.fg resets only the fg, so the spans are
-		// concatenated (not nested) to keep each color intact.
+		// sits between the name and that tail, so it reads as a distinct marker.
+		// theme.fg resets only the fg, so the spans are concatenated (not
+		// nested) to keep each color intact.
 		let tail = "";
 		if (ctx.session.isFastModeActive() && theme.icon.fast) {
 			tail += ` ${theme.icon.fast}`;
@@ -141,10 +143,25 @@ const modelSegment: StatusLineSegment = {
 		}
 
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
-		// uses `success` to stay visibly distinct from the model name color.
+		// uses status colors to stay visibly distinct from the model name color.
 		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
-		if (ctx.session.isAdvisorActive()) {
-			content += theme.fg("success", "++");
+		// Advisor "++" badge, colored by the worst status in the roster:
+		// success = all running, warning = quota-exhausted, error = failed,
+		// dim = everything paused/no-model. Per-advisor detail lives in
+		// `/advisor status`.
+		// Optional chaining: lightweight session doubles (test mocks) that don't
+		// implement getAdvisorStatusOverview skip the badge instead of crashing.
+		const advisorStats = ctx.session.getAdvisorStatusOverview?.();
+		if (advisorStats?.configured && advisorStats.advisors.length > 0) {
+			const statuses = advisorStats.advisors.map(a => a.status);
+			const badgeColor = statuses.includes("error")
+				? "error"
+				: statuses.includes("quota_exhausted")
+					? "warning"
+					: statuses.includes("running")
+						? "success"
+						: "dim";
+			content += theme.fg(badgeColor, "++");
 		}
 		if (tail) {
 			content += theme.fg("statusLineModel", tail);
@@ -195,6 +212,19 @@ function renderGoalMode(ctx: SegmentContext, mode: { enabled: boolean; paused: b
 	return { content: theme.fg(color, parts.join(" ")), visible: true };
 }
 
+function formatLoopLimit(limit: NonNullable<SegmentContext["loopMode"]>["limit"]): string | undefined {
+	if (!limit) return undefined;
+	if (limit.kind === "iterations") return `${limit.remaining}/${limit.initial}`;
+
+	const totalSeconds = Math.max(0, Math.ceil((limit.deadlineMs - Date.now()) / 1_000));
+	const hours = Math.floor(totalSeconds / 3_600);
+	const minutes = Math.floor((totalSeconds % 3_600) / 60);
+	const seconds = totalSeconds % 60;
+	if (hours > 0) return `${hours}h${minutes > 0 ? `${minutes}m` : ""} left`;
+	if (minutes > 0) return `${minutes}m${seconds > 0 ? `${seconds}s` : ""} left`;
+	return `${seconds}s left`;
+}
+
 const modeSegment: StatusLineSegment = {
 	id: "mode",
 	render(ctx) {
@@ -226,9 +256,13 @@ const modeSegment: StatusLineSegment = {
 		}
 
 		const loop = ctx.loopMode;
-		if (loop?.enabled) {
-			const content = withIcon(theme.icon.loop, "Loop");
-			return { content: theme.fg("customMessageLabel", content), visible: true };
+		if (loop) {
+			const icon = loop.state === "paused" ? theme.icon.pause || theme.icon.loop : theme.icon.loop;
+			const color: ThemeColor = loop.state === "paused" ? "warning" : "customMessageLabel";
+			const parts = [withIcon(icon, `Loop ${loop.state}`)];
+			const limit = formatLoopLimit(loop.limit);
+			if (limit) parts.push(limit);
+			return { content: theme.fg(color, parts.join(" ")), visible: true };
 		}
 
 		return { content: "", visible: false };
@@ -248,7 +282,8 @@ const pathSegment: StatusLineSegment = {
 		if (stripPrefix && ctx.worktree) {
 			const { projectName, worktreeName } = ctx.worktree;
 			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
-			const content = withIcon(theme.icon.worktree, clampPathLength(label, opts.maxLength ?? 40));
+			const text = fileHyperlink(getProjectDir(), clampPathLength(label, opts.maxLength ?? 40));
+			const content = withIcon(theme.icon.worktree, text);
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
 
@@ -269,13 +304,10 @@ const pathSegment: StatusLineSegment = {
 		}
 
 		pwd = clampPathLength(pwd, opts.maxLength ?? 40);
-		if (repoSuffix) {
-			pwd = `${pwd}${repoSuffix}`;
-		}
 
 		const showScratchIcon = scratch && stripPrefix;
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
-		const content = withIcon(icon, pwd);
+		const content = withIcon(icon, `${fileHyperlink(projectDir, pwd)}${repoSuffix}`);
 		return { content: theme.fg("statusLinePath", content), visible: true };
 	},
 };
@@ -401,11 +433,12 @@ const costSegment: StatusLineSegment = {
 	id: "cost",
 	render(ctx) {
 		const { cost, premiumRequests } = ctx.usageStats;
+		const advisorCost = ctx.session.getAdvisorCost?.() ?? 0;
 		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests);
 		const state = ctx.session.state;
 		const usingSubscription = state.model ? ctx.session.modelRegistry.isUsingOAuth(state.model) : false;
 
-		if (!cost && !usingSubscription && !normalizedPremiumRequests) {
+		if (!cost && !advisorCost && !usingSubscription && !normalizedPremiumRequests) {
 			return { content: "", visible: false };
 		}
 
@@ -413,6 +446,7 @@ const costSegment: StatusLineSegment = {
 		if (cost) billingParts.push(`$${cost.toFixed(2)}`);
 		if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
 		if (usingSubscription) billingParts.push("(sub)");
+		if (advisorCost) billingParts.push(`${billingParts.length ? "+ " : ""}$${advisorCost.toFixed(2)} (adv)`);
 
 		return { content: theme.fg("statusLineCost", billingParts.join(" ")), visible: true };
 	},
@@ -558,10 +592,12 @@ const sessionNameSegment: StatusLineSegment = {
 		const name = sessionManager?.getSessionName();
 		if (!name) return { content: "", visible: false };
 
-		const ansi =
-			getSessionAccentAnsi(
-				getSessionAccentHex(name, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance),
-			) ?? theme.getFgAnsi("accent");
+		const accentEnabled = ctx.sessionAccent !== false;
+		const ansi = accentEnabled
+			? (getSessionAccentAnsi(
+					getSessionAccentHex(name, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance),
+				) ?? theme.getFgAnsi("accent"))
+			: theme.getFgAnsi("accent");
 		return { content: `${ansi}${sanitizeStatusText(name)}\x1b[39m`, visible: true };
 	},
 };
@@ -603,7 +639,7 @@ const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
 		const u = ctx.usage;
-		if (!u || (!u.fiveHour && !u.sevenDay)) {
+		if (!u || (!u.fiveHour && !u.sevenDay && !u.monthly)) {
 			return { content: "", visible: false };
 		}
 		const parts: string[] = [];
@@ -628,6 +664,18 @@ const usageSegment: StatusLineSegment = {
 					? theme.fg("muted", ` (${formatUsageReset(u.sevenDay.resetHours, "h")})`)
 					: "";
 			parts.push(`7d ${pctText}${reset}`);
+		}
+		if (u.monthly) {
+			const pct = u.monthly.percent;
+			// Cursor and OpenCode Go (normalize gates monthly to those providers).
+			// Both floor used percents upstream (Cursor's dashboard shows 1.88 →
+			// "1% used"; OpenCode's endpoint already emits floored integers).
+			const pctText = theme.fg(pickUsageColor(pct), `${Math.floor(pct)}%`);
+			const reset =
+				u.monthly.resetHours !== undefined
+					? theme.fg("muted", ` (${formatUsageReset(u.monthly.resetHours, "h")})`)
+					: "";
+			parts.push(`mo ${pctText}${reset}`);
 		}
 		const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
 		return { content, visible: true };

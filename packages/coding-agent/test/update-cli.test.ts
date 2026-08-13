@@ -11,7 +11,6 @@ const settingsWithSlowRole = {
 		return role === "slow" ? "anthropic/claude-opus-4-5" : undefined;
 	},
 };
-
 const TEST_CONFIG: CliConfig = {
 	bin: "omp",
 	version: "0.0.0-test",

@@ -8,6 +8,7 @@ import type { KeybindingsManager } from "../config/keybindings";
 import type { Settings } from "../config/settings";
 import type {
 	AutocompleteProviderFactory,
+	ExtensionCustomOptions,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
@@ -20,6 +21,7 @@ import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
+import type { ForeignSessionSource } from "../session/foreign-session-store";
 import type { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
@@ -71,7 +73,7 @@ export type SubmittedUserInput = {
 	started: boolean;
 };
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 export type TodoItem = {
 	content: string;
@@ -92,6 +94,14 @@ export interface InteractiveModeInitOptions {
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
+export interface RenderSessionContextOptions {
+	updateFooter?: boolean;
+	populateHistory?: boolean;
+	reuseSettledComponents?: boolean;
+	/** Tool calls whose existing live component remains the sole render owner across a rebuild. */
+	preservedLiveToolCallIds?: ReadonlySet<string>;
+}
+
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
@@ -104,6 +114,7 @@ export interface InteractiveModeContext {
 	omfgContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
+	deferredCommandContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
 	hookWidgetContainerAbove: Container;
@@ -153,12 +164,14 @@ export interface InteractiveModeContext {
 	initialChatRendered: boolean;
 	isBashMode: boolean;
 	toolOutputExpanded: boolean;
+	hideToolActivity: boolean;
 	todoExpanded: boolean;
 	planModeEnabled: boolean;
 	vibeModeEnabled: boolean;
 	goalModeEnabled: boolean;
 	goalModePaused: boolean;
 	loopModeEnabled: boolean;
+	loopModePaused: boolean;
 	loopPrompt?: string;
 	loopLimit?: LoopLimitRuntime;
 	planModePlanFilePath?: string;
@@ -177,6 +190,8 @@ export interface InteractiveModeContext {
 	noteDisplayableThinkingContent(message: AgentMessage): boolean;
 	proseOnlyThinking: boolean;
 	compactionQueuedMessages: CompactionQueuedMessage[];
+	/** Settled user/assistant components reusable across post-compaction transcript rebuilds. */
+	transcriptMessageComponents: WeakMap<AgentMessage, Component>;
 	pendingTools: Map<string, ToolExecutionHandle>;
 	pendingBashComponents: BashExecutionComponent[];
 	bashComponent: BashExecutionComponent | undefined;
@@ -241,6 +256,14 @@ export interface InteractiveModeContext {
 	 */
 	present(content: Component | readonly Component[]): void;
 	/**
+	 * Mount command output immediately while idle, or defer it until the active
+	 * agent turn ends so a growing live block cannot push duplicate rows into
+	 * native scrollback.
+	 */
+	presentCommandOutput(content: Component | readonly Component[]): void;
+	/** Mount command output deferred by {@link presentCommandOutput}. */
+	flushPendingCommandOutput(): void;
+	/**
 	 * Dispose every live block in the transcript (stopping timers/subscriptions)
 	 * and clear it. Used before a full rebuild so animated/streaming blocks do not
 	 * leak.
@@ -251,8 +274,8 @@ export interface InteractiveModeContext {
 	showError(message: string): void;
 	showPinnedError(message: string): void;
 	clearPinnedError(): void;
-	showWarning(message: string): void;
-	showNewVersionNotification(newVersion: string): void;
+	showWarning(message: string, options?: { hideWithToolActivity?: boolean }): void;
+	showUpstreamMergeAvailableNotification(upstreamVersion: string): void;
 	clearEditor(): void;
 	updatePendingMessagesDisplay(): void;
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
@@ -296,20 +319,27 @@ export interface InteractiveModeContext {
 	isKnownSlashCommand(text: string): boolean;
 	addMessageToChat(
 		message: AgentMessage,
-		options?: { populateHistory?: boolean; imageLinks?: readonly (string | undefined)[] },
+		options?: {
+			populateHistory?: boolean;
+			imageLinks?: readonly (string | undefined)[];
+			reuseSettledComponent?: boolean;
+		},
 	): Component[];
-	renderSessionContext(
+	renderSessionContext(sessionContext: SessionContext, options?: RenderSessionContextOptions): void;
+	/** Render a session context in bounded chunks so terminal input runs between transcript paints. */
+	renderSessionContextIncrementally(
 		sessionContext: SessionContext,
-		options?: { updateFooter?: boolean; populateHistory?: boolean },
-	): void;
-	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): void;
+		options: RenderSessionContextOptions,
+		renderChunk?: () => void,
+	): Promise<void>;
+	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): Promise<void>;
 	getUserMessageText(message: Message): string;
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	extractAssistantText(message: AssistantMessage): string;
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
-	rebuildChatFromMessages(): void;
+	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
 	toggleTodoExpansion(): void;
@@ -331,25 +361,34 @@ export interface InteractiveModeContext {
 	handleDebugTranscriptCommand(): Promise<void>;
 	handleClearCommand(): Promise<void>;
 	handleFreshCommand(): Promise<void>;
+	handleResetContextCommand(): Promise<void>;
 	handleDropCommand(): Promise<void>;
 	handleForkCommand(): Promise<void>;
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void>;
 	handleMCPCommand(text: string): Promise<void>;
 	handleSSHCommand(text: string): Promise<void>;
-	handleCompactCommand(customInstructions?: string, mode?: CompactMode): Promise<CompactionOutcome>;
+	handleCompactCommand(
+		customInstructions?: string,
+		mode?: CompactMode,
+		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+	): Promise<CompactionOutcome>;
 	handleHandoffCommand(customInstructions?: string): Promise<void>;
 	handleShakeCommand(mode: ShakeMode): Promise<void>;
 	handleMoveCommand(targetPath?: string): Promise<void>;
 	handleRenameCommand(title: string): Promise<void>;
 	handleMemoryCommand(text: string): Promise<void>;
 	handleSTTToggle(): Promise<void>;
+	/** Start or stop the Codex-backed realtime voice session. */
+	handleLiveCommand(): Promise<void>;
 	executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto?: boolean,
 	): Promise<CompactionOutcome>;
 	openInBrowser(urlOrPath: string): void;
 	refreshSlashCommandState(cwd?: string): Promise<void>;
+	/** Reload session skills and derived `/skill:<name>` commands. */
+	refreshSkillState(): Promise<void>;
 	applyCwdChange(newCwd: string): Promise<void>;
 
 	// Selector handling
@@ -363,21 +402,24 @@ export interface InteractiveModeContext {
 	showUserMessageSelector(): void;
 	showCopySelector(): void;
 	showTreeSelector(): void;
-	showSessionSelector(): void;
+	showSessionSelector(source?: ForeignSessionSource): void;
 	handleResumeSession(sessionPath: string): Promise<void>;
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void>;
+	showSessionPinSelector(): Promise<void>;
 	showResetUsageSelector(): Promise<void>;
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
-	showAgentHub(options?: { requireContent?: boolean }): void;
+	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
 	resetObserverRegistry(): void;
 
 	// Input handling
 	handleCtrlC(): void;
 	handleCtrlD(): void;
 	handleCtrlZ(): void;
+	/** Re-query terminal appearance for an explicit display reset, then immediately replay the display. */
+	resetDisplayAfterAppearanceRefresh(): void;
 	handleDequeue(): void;
 	handleImagePaste(): Promise<boolean>;
 	/** Queue a message for delivery only after the active agent turn would stop. */
@@ -388,9 +430,15 @@ export interface InteractiveModeContext {
 	handleBtwEscape(): boolean;
 	handleBtwBranchKey(): Promise<boolean>;
 	canBranchBtw(): boolean;
+	handlesBtwBranchKey(): boolean;
 	canCopyBtw(): boolean;
 	handleBtwCopyKey(): Promise<boolean>;
-	handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void>;
+	handleBtwBranch(
+		question: string,
+		assistantMessage: AssistantMessage,
+		leafId: string,
+		sessionId: string,
+	): Promise<void>;
 	handleOmfgCommand(complaint: string): Promise<void>;
 	hasActiveOmfg(): boolean;
 	handleOmfgEscape(): boolean;
@@ -399,13 +447,18 @@ export interface InteractiveModeContext {
 	toggleToolOutputExpansion(): void;
 	setToolsExpanded(expanded: boolean): void;
 	toggleThinkingBlockVisibility(): void;
-	openExternalEditor(): void;
-	registerExtensionShortcuts(): void;
-	handlePlanModeCommand(initialPrompt?: string): Promise<void>;
-	handleVibeModeCommand(initialPrompt?: string): Promise<void>;
-	handleGoalModeCommand(rest?: string): Promise<void>;
-	handleGuidedGoalCommand(rest?: string): Promise<void>;
+	handlePlanModeCommand(
+		initialPrompt?: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+	): Promise<boolean>;
+	handleVibeModeCommand(
+		initialPrompt?: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+	): Promise<boolean>;
+	handleGoalModeCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
+	handleGuidedGoalCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;
+	setLoopPrompt(prompt: string): void;
 	disableLoopMode(): void;
 	pauseLoop(): void;
 	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;
@@ -413,6 +466,13 @@ export interface InteractiveModeContext {
 
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void>;
+	/**
+	 * The live `ExtensionUIContext` (picker/dialog primitives) used for tool
+	 * execution, `undefined` before hooks have initialized. `/tree` `ask`
+	 * re-answer (issue #5642) reuses it to drive a standalone
+	 * `AskTool.execute()` call.
+	 */
+	getToolUIContext(): ExtensionUIContext | undefined;
 	emitCustomToolSessionEvent(
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
 		previousSessionFile?: string,
@@ -442,7 +502,7 @@ export interface InteractiveModeContext {
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
 		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
-		options?: { overlay?: boolean },
+		options?: ExtensionCustomOptions,
 	): Promise<T>;
 	showExtensionError(extensionPath: string, error: string): void;
 	showToolError(toolName: string, error: string): void;

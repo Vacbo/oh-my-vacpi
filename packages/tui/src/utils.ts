@@ -30,14 +30,62 @@ export function getHangulCompatibilityJamoWidth(): HangulCompatibilityJamoWidth 
 	return hangulCompatibilityJamoWidth;
 }
 
+// Monotonic epoch for width-affecting runtime configuration. Any cache or
+// carried-width sidecar derived from `visibleWidth` results must be stamped
+// with the epoch at computation time and discarded on mismatch, so a Hangul
+// Compatibility Jamo width change invalidates every derived width.
+let widthConfigEpoch = 0;
+
+export function getWidthConfigEpoch(): number {
+	return widthConfigEpoch;
+}
+
+interface LineWidthsEntry {
+	epoch: number;
+	lines: readonly string[];
+	widths: readonly number[];
+}
+
+// Per-render-result visible widths, keyed by the exact lines array a component
+// returned. The copied strings and widths are the single publication snapshot:
+// they cannot be changed through either publisher array and do not retain the
+// WeakMap key. Entries therefore die with their lines-array owners.
+const lineWidthSidecar = new WeakMap<readonly string[], LineWidthsEntry>();
+
+/** Publish exact per-line visible widths for a rendered lines array. */
+export function publishLineWidths(lines: readonly string[], widths: readonly number[]): void {
+	if (lines.length !== widths.length) {
+		throw new RangeError(`Cannot publish ${widths.length} widths for ${lines.length} lines`);
+	}
+	lineWidthSidecar.set(lines, {
+		epoch: widthConfigEpoch,
+		lines: [...lines],
+		widths: Object.freeze([...widths]),
+	});
+}
+
+/** Exact per-line visible widths for an unchanged `lines` array under the current width config. */
+export function getPublishedLineWidths(lines: readonly string[]): readonly number[] | undefined {
+	const entry = lineWidthSidecar.get(lines);
+	if (entry === undefined || entry.epoch !== widthConfigEpoch || entry.lines.length !== lines.length) {
+		return undefined;
+	}
+	for (let i = 0; i < lines.length; i++) {
+		if (entry.lines[i] !== lines[i]) return undefined;
+	}
+	return entry.widths;
+}
+
 export function setHangulCompatibilityJamoWidth(width: HangulCompatibilityJamoWidth): boolean {
 	const changed = hangulCompatibilityJamoWidth !== width;
 	hangulCompatibilityJamoWidth = width;
+	if (changed) widthConfigEpoch++;
 	nativeSetHangulCompatJamoWidthOverride(nativeHangulCompatibilityJamoOverride(width));
 	return changed;
 }
 
 export function resetHangulCompatibilityJamoWidthForTests(): void {
+	if (hangulCompatibilityJamoWidth !== "platform") widthConfigEpoch++;
 	hangulCompatibilityJamoWidth = "platform";
 	nativeSetHangulCompatJamoWidthOverride(0);
 }
@@ -323,6 +371,34 @@ export function visibleWidth(str: string): number {
 	return correctHangulCompatibilityJamoWidth(width, str);
 }
 
+/**
+ * True when a row carries a Kitty OSC 66 text-sizing span (`\x1b]66;…`).
+ * Scaled spans must bypass wrapping/padding and, when scaled up, reserve the
+ * terminal rows their multicell glyphs flow into.
+ */
+export function isOsc66Line(line: string): boolean {
+	return line.includes(OSC66_PREFIX);
+}
+
+/**
+ * Largest `s=` scale among the OSC 66 spans in a line (1 when none is scaled).
+ * A scale-`s` heading occupies `s` terminal rows, so the `s - 1` blank rows
+ * beneath it are the glyph's lower half and must never be erased or overdrawn.
+ */
+export function osc66MaxScale(line: string): number {
+	if (!line.includes(OSC66_PREFIX)) return 1;
+	let max = 1;
+	OSC66_SPAN_REGEX.lastIndex = 0;
+	for (let m = OSC66_SPAN_REGEX.exec(line); m !== null; m = OSC66_SPAN_REGEX.exec(line)) {
+		for (const part of m[1].split(":")) {
+			if (part.indexOf("=") !== 1 || part[0] !== "s") continue;
+			const value = Number.parseInt(part.slice(2), 10);
+			if (Number.isFinite(value) && value > max && value <= 7) max = value;
+		}
+	}
+	return max;
+}
+
 const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
 
 /**
@@ -394,6 +470,7 @@ export function getWordNavKind(grapheme: string): WordNavKind {
 	const ch = firstCodePointChar(grapheme);
 	if (!ch) return "other";
 	if (WORD_NAV_RE_WHITESPACE.test(ch)) return "whitespace";
+	if (ch === "_") return "word";
 	if (WORD_NAV_RE_PUNCT.test(ch) || WORD_NAV_RE_SYMBOL.test(ch)) return "delimiter";
 	if (
 		WORD_NAV_RE_HAN.test(ch) ||
@@ -403,7 +480,7 @@ export function getWordNavKind(grapheme: string): WordNavKind {
 	) {
 		return "cjk";
 	}
-	if (ch === "_" || WORD_NAV_RE_LETTER.test(ch) || WORD_NAV_RE_NUMBER.test(ch)) return "word";
+	if (WORD_NAV_RE_LETTER.test(ch) || WORD_NAV_RE_NUMBER.test(ch)) return "word";
 	return "other";
 }
 

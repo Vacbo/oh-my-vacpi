@@ -14,9 +14,9 @@
  * handler, and `createIf` excludes subagents outright.
  */
 import * as fs from "node:fs/promises";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
 import restartConfirmationTemplate from "../prompts/restart-confirmation.md" with { type: "text" };
 import restartDescription from "../prompts/tools/restart.md" with { type: "text" };
 import { preflightRelaunch, relaunchArtifact } from "../utils/relaunch";
@@ -25,11 +25,11 @@ import type { OutputMeta } from "./output-meta";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
-const restartSchema = z.object({
-	reason: z.string().describe("one line: why the restart is needed (e.g. 'adopt rebuilt tui_observe')"),
+const restartSchema = type({
+	reason: type("string").describe("one line: why the restart is needed (e.g. 'adopt rebuilt tui_observe')"),
 });
 
-type RestartParams = z.infer<typeof restartSchema>;
+type RestartParams = typeof restartSchema.infer;
 
 export interface RestartToolDetails {
 	reason: string;
@@ -76,9 +76,9 @@ export class RestartTool implements AgentTool<typeof restartSchema, RestartToolD
 		_toolCallId: string,
 		params: RestartParams,
 		_signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<RestartToolDetails>,
+		_onUpdate?: AgentToolUpdateCallback<RestartToolDetails, typeof restartSchema>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<RestartToolDetails>> {
+	): Promise<AgentToolResult<RestartToolDetails, typeof restartSchema>> {
 		if (!this.session.requestRestart) {
 			throw new ToolError("Restart is unavailable in this mode: only the interactive omp TUI can re-exec in place.");
 		}

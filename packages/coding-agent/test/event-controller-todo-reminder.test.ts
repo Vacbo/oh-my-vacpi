@@ -14,6 +14,7 @@ function createContext() {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
 		ui: { requestRender: vi.fn() },
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
@@ -65,7 +66,7 @@ describe("EventController todo reminder", () => {
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "todo-1",
-			toolName: "todo_write",
+			toolName: "todo",
 			isError: false,
 			result: { content: [{ type: "text", text: "" }], details: { phases } },
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);

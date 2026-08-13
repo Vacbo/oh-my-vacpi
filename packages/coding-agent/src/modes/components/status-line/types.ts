@@ -2,6 +2,7 @@ import type { CollabSessionState } from "../../../collab/protocol";
 import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
+import type { LoopLimitRuntime } from "../../loop-limit";
 
 export type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
@@ -51,6 +52,8 @@ export interface SegmentContext {
 	session: AgentSession;
 	/** Focused subagent id while the view is proxied at its session, undefined otherwise. */
 	focusedAgentId?: string | undefined;
+	/** Effective `statusLine.sessionAccent`; `false` disables hash-derived accent colors, while `true` or omission enables them. */
+	sessionAccent?: boolean;
 	activeRepo: ActiveRepoContext | null;
 	width: number;
 	options: StatusLineSegmentOptions;
@@ -64,7 +67,8 @@ export interface SegmentContext {
 		enabled: boolean;
 	} | null;
 	loopMode: {
-		enabled: boolean;
+		state: "waiting" | "running" | "paused";
+		limit?: LoopLimitRuntime;
 	} | null;
 	goalMode: {
 		enabled: boolean;
@@ -118,6 +122,7 @@ export interface SegmentContext {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
+		monthly?: { percent: number; resetHours?: number };
 	} | null;
 }
 

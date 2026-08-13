@@ -16,9 +16,11 @@ import { invalidate as invalidateFsCache, readDirEntries, readFile } from "../ca
 import { parseRuleConditionAndScope, type Rule, type RuleFrontmatter } from "../capability/rule";
 import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
+import type { MCPRequestIdFormat } from "../mcp/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
 
+import { realpathIfExists, resolveContainedPath } from "./contained-path";
 import { buildPluginDirRoot } from "./plugin-dir-roots";
 
 /**
@@ -141,6 +143,15 @@ export function parseBoolean(value: unknown): boolean | undefined {
 }
 
 /**
+ * Parse an MCP `requestIdFormat` value. Unrecognized values are dropped so a typo
+ * degrades to the default integer ids rather than reaching a transport.
+ */
+export function parseRequestIdFormat(value: unknown): MCPRequestIdFormat | undefined {
+	if (value === "string" || value === "number") return value;
+	return undefined;
+}
+
+/**
  * Parse a comma-separated string into an array of trimmed, non-empty strings.
  */
 export function parseCSV(value: string): string[] {
@@ -232,6 +243,10 @@ export interface ParsedAgentFields {
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
+	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
+	prewalk?: boolean | string;
+	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
+	advisor?: boolean | string;
 }
 
 /**
@@ -286,10 +301,35 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const model = parseModelList(frontmatter.model);
 	const blocking = parseBoolean(frontmatter.blocking);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
+	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
+	let prewalk: boolean | string | undefined = parseBoolean(frontmatter.prewalk);
+	if (prewalk === undefined && typeof frontmatter.prewalk === "string") {
+		const trimmed = frontmatter.prewalk.trim();
+		if (trimmed) prewalk = trimmed;
+	}
+	// advisor: true → advise with the default advisor-role model; "<pattern>" → custom advisor model.
+	let advisor: boolean | string | undefined = parseBoolean(frontmatter.advisor);
+	if (advisor === undefined && typeof frontmatter.advisor === "string") {
+		const trimmed = frontmatter.advisor.trim();
+		if (trimmed) advisor = trimmed;
+	}
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
-	return { name, description, tools, spawns, model, output, thinkingLevel, blocking, autoloadSkills, readSummarize };
+	return {
+		name,
+		description,
+		tools,
+		spawns,
+		model,
+		output,
+		thinkingLevel,
+		blocking,
+		autoloadSkills,
+		readSummarize,
+		prewalk,
+		advisor,
+	};
 }
 
 async function globIf(
@@ -721,13 +761,16 @@ export function buildExtensionModuleItems(
  * Entry for an installed Claude Code plugin.
  */
 export interface ClaudePluginEntry {
-	scope: "user" | "project";
+	/** Claude registry scope; local entries are restricted to their project path. */
+	scope?: "user" | "project" | "local";
 	installPath: string;
 	version: string;
 	installedAt: string;
 	lastUpdated: string;
 	gitCommitSha?: string;
 	enabled?: boolean;
+	/** Project root recorded by Claude for a local installation. */
+	projectPath?: string;
 }
 
 /**
@@ -842,6 +885,14 @@ export async function resolveOrDefaultProjectRegistryPath(cwd: string): Promise<
 	return path.join(cwd, getConfigDirName(), "plugins", "installed_plugins.json");
 }
 
+async function canonicalClaudeProjectPath(projectPath: string): Promise<string | null> {
+	try {
+		return await fs.promises.realpath(path.resolve(projectPath));
+	} catch {
+		return null;
+	}
+}
+
 const pluginRootsCache = new Map<string, { roots: ClaudePluginRoot[]; warnings: string[] }>();
 
 const pluginCacheInvalidators = new Set<() => void>();
@@ -856,20 +907,23 @@ export function registerPluginCacheInvalidator(invalidator: () => void): void {
  * Reads ~/.claude/plugins/installed_plugins.json and ~/.omp/plugins/installed_plugins.json,
  * and optionally the nearest project-scoped registry resolved from `cwd`.
  *
- * Results are cached per `home:resolvedProjectPath` key to avoid repeated parsing.
+ * Results are cached per home, project registry, and canonical active project.
  */
 export async function listClaudePluginRoots(
 	home: string,
 	cwd?: string,
 ): Promise<{ roots: ClaudePluginRoot[]; warnings: string[] }> {
 	const resolvedProjectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
-	const cacheKey = `${home}:${resolvedProjectPath ?? ""}`;
+	const projectRoot = resolvedProjectPath ? path.dirname(path.dirname(path.dirname(resolvedProjectPath))) : cwd;
+	const activeClaudeProjectPath = projectRoot ? await canonicalClaudeProjectPath(projectRoot) : null;
+	const cacheKey = `${home}:${resolvedProjectPath ?? ""}:${activeClaudeProjectPath ?? ""}`;
 	const cached = pluginRootsCache.get(cacheKey);
 	if (cached) return cached;
 
 	const roots: ClaudePluginRoot[] = [];
 	const warnings: string[] = [];
 	const projectRoots: ClaudePluginRoot[] = [];
+	const canonicalClaudeProjectPaths = new Map<string, string | null>();
 
 	// ── Claude Code registry ──────────────────────────────────────────────────
 	const registryPath = path.join(home, ".claude", "plugins", "installed_plugins.json");
@@ -901,6 +955,15 @@ export async function listClaudePluginRoots(
 						continue;
 					}
 					if (entry.enabled === false) continue;
+					if (entry.scope === "local") {
+						if (!entry.projectPath || !activeClaudeProjectPath) continue;
+						let entryProjectPath = canonicalClaudeProjectPaths.get(entry.projectPath);
+						if (entryProjectPath === undefined) {
+							entryProjectPath = await canonicalClaudeProjectPath(entry.projectPath);
+							canonicalClaudeProjectPaths.set(entry.projectPath, entryProjectPath);
+						}
+						if (entryProjectPath !== activeClaudeProjectPath) continue;
+					}
 
 					roots.push({
 						id: pluginId,
@@ -908,7 +971,7 @@ export async function listClaudePluginRoots(
 						plugin: pluginName,
 						version: entry.version || "unknown",
 						path: entry.installPath,
-						scope: entry.scope || "user",
+						scope: entry.scope === "local" ? "project" : entry.scope || "user",
 					});
 				}
 			}
@@ -956,7 +1019,7 @@ export async function listClaudePluginRoots(
 						plugin: pluginName,
 						version: entry.version || "unknown",
 						path: entry.installPath,
-						scope: entry.scope || "user",
+						scope: entry.scope === "local" ? "project" : entry.scope || "user",
 					});
 				}
 			}
@@ -1088,17 +1151,30 @@ export async function injectPluginDirRoots(home: string, dirs: string[], cwd?: s
 	const injected: ClaudePluginRoot[] = [];
 	for (const dir of dirs) {
 		const resolved = path.resolve(dir);
-		// Read plugin name from manifest
+		// Read plugin name from manifest: Claude marketplace layout first, then
+		// the Agent Plugins standard root manifest (agent-plugins.org). Each
+		// manifest is resolved and proven inside the plugin directory BEFORE the
+		// read (Agent Plugins §4.1) — an escaping symlink falls back to the
+		// directory basename without consuming outside content.
 		let pluginName = path.basename(resolved);
-		try {
-			const manifestPath = path.join(resolved, ".claude-plugin", "plugin.json");
-			const content = await Bun.file(manifestPath).text();
-			const manifest = JSON.parse(content);
-			if (typeof manifest.name === "string" && manifest.name) {
-				pluginName = manifest.name;
+		const realRoot = await realpathIfExists(resolved);
+		if (realRoot !== null) {
+			for (const manifestPath of [
+				path.join(realRoot, ".claude-plugin", "plugin.json"),
+				path.join(realRoot, "plugin.json"),
+			]) {
+				const contained = await resolveContainedPath(realRoot, manifestPath);
+				if (contained.status !== "ok") continue;
+				try {
+					const manifest = await Bun.file(contained.realPath).json();
+					if (typeof manifest?.name === "string" && manifest.name) {
+						pluginName = manifest.name;
+						break;
+					}
+				} catch {
+					// Invalid manifest — try next, fall back to directory name
+				}
 			}
-		} catch {
-			// No manifest or invalid — use directory name
 		}
 
 		injected.push(buildPluginDirRoot(resolved, pluginName));

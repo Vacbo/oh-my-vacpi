@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Context } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -11,7 +12,6 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { type CustomMessage, convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 const zeroUsage = {
 	input: 0,
@@ -94,7 +94,7 @@ describe("AgentSession tool-call loop guard", () => {
 			"todo.enabled": false,
 			"model.toolCallLoopGuard.enabled": true,
 			"model.toolCallLoopGuard.threshold": 5,
-			"model.toolCallLoopGuard.exemptTools": ["job", "irc"],
+			"model.toolCallLoopGuard.exemptTools": ["hub"],
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 		session = new AgentSession({

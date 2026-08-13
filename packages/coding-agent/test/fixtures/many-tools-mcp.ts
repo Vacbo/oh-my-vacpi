@@ -1,16 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Test fixture: a minimal stdio MCP server that advertises MANY tools, used by
- * `sdk-mcp-auto-discovery.test.ts` to prove two deferred-discovery contracts:
+ * Test fixture: a minimal stdio MCP server that advertises MANY tools, used to
+ * prove that a large catalog stays coherent under connection churn:
  *
- * 1. `tools.discoveryMode: "auto"` is recomputed once the real MCP tool count
- *    is known — a toolset this large must flip discovery ON for a session whose
- *    pre-discovery registry was under the threshold, instead of force-activating
- *    every tool with no `search_tool_bm25` registered.
- * 2. A session disposed while the server is still connecting must disconnect
- *    the manager and never have MCP tools resurrected onto it. The optional
- *    `--delay <ms>` argv stalls the `initialize` response so the test can
- *    deterministically dispose mid-connect.
+ * 1. `mcp-server-tool-ownership.test.ts` — two servers each advertising this
+ *    many tools must never clobber each other's entries on connect/disconnect.
+ * 2. `mcp-connection-status-events.test.ts` — a session disposed while the
+ *    server is still connecting must disconnect the manager and never have MCP
+ *    tools resurrected onto it. The optional `--delay <ms>` argv stalls the
+ *    `initialize` response so the test can deterministically dispose mid-connect.
  *
  * Speaks newline-delimited JSON-RPC 2.0 (the wire format of `StdioTransport`),
  * same shape as `instructions-mcp.ts`. Exported constants are imported by the
@@ -18,7 +16,7 @@
  */
 import * as readline from "node:readline";
 
-/** Enough tools to push any small session past TOOL_DISCOVERY_AUTO_THRESHOLD (40). */
+/** Large enough that any per-tool bookkeeping bug shows up as a count mismatch. */
 export const MANY_TOOL_COUNT = 45;
 
 /** Alphabetic names: MCP tool-name sanitization strips digits, so numeric

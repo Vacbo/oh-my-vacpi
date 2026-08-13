@@ -1,13 +1,13 @@
 /**
- * Repeated `job` polls must not stack "waiting on N jobs" frames in the
- * transcript: a poll whose watched jobs are all still running stays live
- * (displaceable) and the next `job` call replaces it — one persistent poll.
+ * Repeated `hub` waits must not stack "waiting on N jobs" frames in the
+ * transcript: a wait whose watched jobs are all still running stays live
+ * (displaceable) and the next `hub` call replaces it — one persistent wait.
  *
  * Contracts under test:
  *  - ToolExecutionComponent: a waiting-poll result keeps the block
  *    un-finalized and displaceable; a settled/cancelled/error result
  *    finalizes normally; seal() always freezes.
- *  - EventController: a follow-up `job` call removes the tracked waiting
+ *  - EventController: a follow-up `hub` call removes the tracked waiting
  *    poll from the transcript; any other tool seals it in place.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
@@ -31,6 +31,7 @@ function pollResult(statuses: JobStatus[], extra: { cancelled?: boolean; isError
 		content: [{ type: "text" as const, text: "" }],
 		isError: extra.isError,
 		details: {
+			op: "wait" as const,
 			jobs: statuses.map((status, i) => ({
 				id: `j${i}`,
 				type: "task" as const,
@@ -66,7 +67,7 @@ function trackComponent(components: ToolExecutionComponent[], component: ToolExe
 	return component;
 }
 
-describe("job waiting-poll block lifecycle", () => {
+describe("hub waiting-poll block lifecycle", () => {
 	const created: ToolExecutionComponent[] = [];
 
 	beforeEach(async () => {
@@ -84,7 +85,10 @@ describe("job waiting-poll block lifecycle", () => {
 	});
 
 	function makeJobComponent() {
-		return trackComponent(created, new ToolExecutionComponent("job", { poll: ["j0", "j1"] }, {}, undefined, uiStub));
+		return trackComponent(
+			created,
+			new ToolExecutionComponent("hub", { op: "wait", ids: ["j0", "j1"] }, {}, undefined, uiStub),
+		);
 	}
 
 	it("keeps an all-running poll live and displaceable until sealed", () => {
@@ -121,7 +125,7 @@ describe("job waiting-poll block lifecycle", () => {
 	it("keeps successful todo snapshots live for replacement", () => {
 		const component = trackComponent(
 			created,
-			new ToolExecutionComponent("todo_write", { op: "view" }, {}, undefined, uiStub),
+			new ToolExecutionComponent("todo", { op: "view" }, {}, undefined, uiStub),
 		);
 		component.updateResult(todoResult(), false);
 
@@ -171,9 +175,9 @@ describe("EventController displaces consecutive waiting polls", () => {
 			toolOutputExpanded: false,
 			pendingTools,
 			chatContainer,
-			session: { getToolByName: () => undefined },
+			session: { getToolByName: () => undefined, hasBuiltInTool: () => true },
 			showWarning: vi.fn(),
-			viewSession: { getToolByName: () => undefined },
+			viewSession: { getToolByName: () => undefined, hasBuiltInTool: () => true },
 			sessionManager: { getCwd: () => process.cwd() },
 			setTodos: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -184,15 +188,15 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId,
-			toolName: "job",
-			args: { poll: ["j0"] },
+			toolName: "hub",
+			args: { op: "wait", ids: ["j0"] },
 		});
 		const component = children[children.length - 1] as ToolExecutionComponent;
 		trackComponent(created, component);
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId,
-			toolName: "job",
+			toolName: "hub",
 			result: pollResult(["running", "running"]),
 			isError: false,
 		});
@@ -203,7 +207,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId,
-			toolName: "todo_write",
+			toolName: "todo",
 			args: { op: "view" },
 		});
 		const component = children[children.length - 1] as ToolExecutionComponent;
@@ -211,14 +215,14 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId,
-			toolName: "todo_write",
+			toolName: "todo",
 			result: todoResult(items),
 			isError: false,
 		});
 		return component;
 	}
 
-	it("removes the previous waiting poll when the next job call starts", async () => {
+	it("removes the previous waiting poll when the next hub call starts", async () => {
 		const { controller, children } = createFixture();
 
 		const first = await runPoll(controller, children, "t1");
@@ -284,22 +288,19 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId: "todo-1",
-			toolName: "todo_write",
+			toolName: "todo",
 			args: { op: "view" },
 		});
 		const first = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
 
-		const second = trackComponent(
-			created,
-			new ToolExecutionComponent("todo_write", { op: "view" }, {}, undefined, uiStub),
-		);
+		const second = trackComponent(created, new ToolExecutionComponent("todo", { op: "view" }, {}, undefined, uiStub));
 		children.push(second);
 		pendingTools.set("todo-2", second);
 
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "todo-1",
-			toolName: "todo_write",
+			toolName: "todo",
 			result: todoResult(["plan", "read"]),
 			isError: false,
 		});
@@ -319,7 +320,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId: "todo-2",
-			toolName: "todo_write",
+			toolName: "todo",
 			args: { op: "view" },
 		});
 
@@ -331,7 +332,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "todo-2",
-			toolName: "todo_write",
+			toolName: "todo",
 			result: todoResult(["fix", "test"]),
 			isError: false,
 		});
@@ -352,7 +353,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId: "todo-2",
-			toolName: "todo_write",
+			toolName: "todo",
 			args: { op: "view" },
 		});
 		const errored = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
@@ -360,7 +361,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "todo-2",
-			toolName: "todo_write",
+			toolName: "todo",
 			result: { content: [{ type: "text", text: "Phase missing" }], details: undefined, isError: true },
 			isError: true,
 		});
@@ -376,14 +377,14 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId: "t1",
-			toolName: "job",
-			args: { poll: ["j0"] },
+			toolName: "hub",
+			args: { op: "wait", ids: ["j0"] },
 		});
 		const settled = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "t1",
-			toolName: "job",
+			toolName: "hub",
 			result: pollResult(["completed", "running"]),
 			isError: false,
 		});
@@ -407,11 +408,15 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		vi.restoreAllMocks();
 	});
 
-	it("removes the earlier todo snapshot when an assistant message replays two todo calls", () => {
+	// The stored-transcript replays below keep the legacy `todo_write` wire name:
+	// historical sessions recorded before the todo rename must still collapse
+	// through the rebuild path (isHistoricalTodoToolName accepts both).
+	it("removes the earlier todo snapshot when an assistant message replays two legacy todo_write calls", () => {
 		const chatContainer = new TranscriptContainer();
 		let helpers!: UiHelpers;
 		const ctx = {
 			chatContainer,
+			transcriptMessageComponents: new WeakMap(),
 			pendingTools: new Map(),
 			ui: { requestRender: vi.fn() },
 			statusLine: { invalidate: vi.fn() },
@@ -421,6 +426,7 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 			session: {
 				retryAttempt: 0,
 				getToolByName: () => undefined,
+				hasBuiltInTool: () => true,
 				sessionManager: { getCwd: () => process.cwd() },
 			},
 			get viewSession() {
@@ -482,12 +488,13 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		expect(todos[0].isTranscriptBlockFinalized()).toBe(true);
 	});
 
-	it("hands the trailing todo snapshot to the controller during mid-turn rebuild", () => {
+	it("hands the trailing legacy todo_write snapshot to the controller during mid-turn rebuild", () => {
 		const chatContainer = new TranscriptContainer();
 		const inheritDisplaceableTodo = vi.fn();
 		let helpers!: UiHelpers;
 		const ctx = {
 			chatContainer,
+			transcriptMessageComponents: new WeakMap(),
 			pendingTools: new Map(),
 			ui: { requestRender: vi.fn() },
 			statusLine: { invalidate: vi.fn() },
@@ -497,6 +504,7 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 			session: {
 				retryAttempt: 0,
 				getToolByName: () => undefined,
+				hasBuiltInTool: () => true,
 				sessionManager: { getCwd: () => process.cwd() },
 				isStreaming: true,
 			},

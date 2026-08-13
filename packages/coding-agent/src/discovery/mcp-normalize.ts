@@ -6,7 +6,7 @@
  * `mcp.json` / `.mcp.json` fallback). It owns env-var expansion, per-value
  * validation, and the projection of the documented server fields so the loaders
  * cannot drift apart or silently drop fields like `connectTimeoutMs`,
- * `launchApp`, or `auth.resource`.
+ * `requestIdFormat`, `launchApp`, or `auth.resource`.
  *
  * Validation problems are returned as `warnings` (never logged here) so each
  * loader keeps ownership of its `LoadResult.warnings` and both providers stay
@@ -15,7 +15,7 @@
 import type { MCPServer } from "../capability/mcp";
 import type { SourceMeta } from "../capability/types";
 import type { MCPLaunchApp } from "../mcp/types";
-import { expandEnvVarsDeep } from "./helpers";
+import { expandEnvVarsDeep, parseRequestIdFormat } from "./helpers";
 
 type MCPAuth = NonNullable<MCPServer["auth"]>;
 type MCPOAuth = NonNullable<MCPServer["oauth"]>;
@@ -152,11 +152,21 @@ export function normalizeMCPServer(name: string, raw: unknown, source: SourceMet
 	}
 	const config = (isObject ? expandEnvVarsDeep(raw as Record<string, unknown>) : {}) as Record<string, unknown>;
 
+	// Unrecognized encodings degrade to the allocator's integer default rather
+	// than reaching a transport. The upstream providers warn when a value was
+	// present but unusable; routed through `warnings` like every other field so
+	// a typo stays visible instead of silently changing wire ids.
+	const requestIdFormat = parseRequestIdFormat(config.requestIdFormat);
+	if (requestIdFormat === undefined && config.requestIdFormat !== undefined && config.requestIdFormat !== null) {
+		warnings.push(`MCP server "${name}": invalid requestIdFormat "${String(config.requestIdFormat)}", ignoring`);
+	}
+
 	return {
 		name,
 		enabled: normalizeEnabled(name, config.enabled, warnings),
 		timeout: normalizeTimeoutField(name, "timeout", config.timeout, warnings),
 		connectTimeoutMs: normalizeTimeoutField(name, "connectTimeoutMs", config.connectTimeoutMs, warnings),
+		requestIdFormat,
 		command: typeof config.command === "string" ? config.command : undefined,
 		args: Array.isArray(config.args) ? (config.args as string[]) : undefined,
 		env: config.env as Record<string, string> | undefined,

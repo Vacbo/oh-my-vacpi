@@ -2,7 +2,7 @@
 import type { GalleryFixture } from "./types";
 
 export const interactionFixtures: Record<string, GalleryFixture> = {
-	todo_write: {
+	todo: {
 		label: "Todo",
 		streamingArgs: {
 			op: "init",

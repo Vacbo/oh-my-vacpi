@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { $which, logger } from "@oh-my-pi/pi-utils";
-import { LRUCache } from "lru-cache/raw";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { withTimeoutSignal } from "./fetch-timeout";
 import * as git from "./git";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -29,18 +30,23 @@ export interface JjRepository {
 }
 
 /** Options for `jj diff` invocations. */
-export interface DiffOptions {
+export interface DiffOptions extends JjCommandOptions {
 	/** Optional file paths to restrict the diff with `-- <files>`. */
 	readonly files?: readonly string[];
 	/** Return only changed file names instead of Git-format diff text. */
 	readonly nameOnly?: boolean;
-	/** Optional abort signal passed to the spawned `jj` process. */
-	readonly signal?: AbortSignal;
 }
 
-interface CommandOptions {
+/** Options for a bounded `jj` subprocess query. */
+export interface JjCommandOptions {
+	/** Optional cancellation signal for the subprocess. */
 	readonly signal?: AbortSignal;
+	/** Deadline in milliseconds. Defaults to {@link JJ_COMMAND_TIMEOUT_MS}. */
+	readonly timeoutMs?: number;
 }
+
+/** Default finite deadline for local jj subprocesses. */
+export const JJ_COMMAND_TIMEOUT_MS = 5_000;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Error
@@ -65,6 +71,8 @@ export class JjCommandError extends Error {
 // ════════════════════════════════════════════════════════════════════════════
 // Internal: Core execution
 // ════════════════════════════════════════════════════════════════════════════
+const WORKING_COPY_LABEL_REVSET = "@ | heads(::@ & bookmarks())";
+const WORKING_COPY_LABEL_TEMPLATE = 'change_id.shortest(8) ++ "|" ++ local_bookmarks ++ "\\n"';
 
 function ensureAvailable(): void {
 	if (!$which("jj")) {
@@ -83,10 +91,10 @@ function formatCommandFailure(
 	return `jj ${args.join(" ")} failed with exit code ${result.exitCode}`;
 }
 
-async function jj(cwd: string, args: readonly string[], options: CommandOptions = {}): Promise<JjCommandResult> {
+async function jj(cwd: string, args: readonly string[], options: JjCommandOptions = {}): Promise<JjCommandResult> {
 	const child = Bun.spawn(["jj", "--no-pager", "--color=never", ...args], {
 		cwd,
-		signal: options.signal,
+		signal: withTimeoutSignal(options.timeoutMs ?? JJ_COMMAND_TIMEOUT_MS, options.signal),
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -109,7 +117,7 @@ async function jj(cwd: string, args: readonly string[], options: CommandOptions 
 async function runChecked(
 	cwd: string,
 	args: readonly string[],
-	options: CommandOptions = {},
+	options: JjCommandOptions = {},
 ): Promise<JjCommandResult> {
 	ensureAvailable();
 	const result = await jj(cwd, args, options);
@@ -119,8 +127,21 @@ async function runChecked(
 	return result;
 }
 
-async function runText(cwd: string, args: readonly string[], options: CommandOptions = {}): Promise<string> {
+async function runText(cwd: string, args: readonly string[], options: JjCommandOptions = {}): Promise<string> {
 	return (await runChecked(cwd, args, options)).stdout;
+}
+
+async function runOptionalText(
+	cwd: string,
+	args: readonly string[],
+	options: JjCommandOptions = {},
+): Promise<string | null> {
+	try {
+		const result = await jj(cwd, args, options);
+		return result.exitCode === 0 ? result.stdout : null;
+	} catch {
+		return null;
+	}
 }
 
 function splitLines(text: string): string[] {
@@ -135,6 +156,30 @@ function buildDiffArgs(options: DiffOptions): string[] {
 	args.push(options.nameOnly ? "--name-only" : "--git");
 	if (options.files?.length) args.push("--", ...options.files);
 	return args;
+}
+
+function parseWorkingCopyLabel(raw: string): string | null {
+	let changeId: string | null = null;
+	for (const line of raw.split("\n")) {
+		const sep = line.indexOf("|");
+		const change = (sep === -1 ? line : line.slice(0, sep)).trim();
+		const bookmarks = sep === -1 ? "" : line.slice(sep + 1).trim();
+		if (changeId === null && change) changeId = change;
+		if (bookmarks) return bookmarks.replace(/\s+/g, " ");
+	}
+	return changeId;
+}
+
+function parseStatusSummary(raw: string): git.GitStatusSummary {
+	let unstaged = 0;
+	let untracked = 0;
+	for (const line of raw.split("\n")) {
+		const type = line.trim()[0];
+		if (!type) continue;
+		if (type === "A") untracked++;
+		else unstaged++;
+	}
+	return { staged: 0, unstaged, untracked };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -162,6 +207,15 @@ async function hasJjWorkspaceMetadata(dir: string): Promise<boolean> {
 	}
 }
 
+function hasJjWorkspaceMetadataSync(dir: string): boolean {
+	try {
+		fs.statSync(path.join(dir, ".jj", "repo"));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function parentOf(dir: string): string | undefined {
 	const parent = path.dirname(dir);
 	return parent === dir ? undefined : parent;
@@ -173,6 +227,21 @@ async function findWorkspaceRoot(cwd: string): Promise<string | undefined> {
 
 	for (let dir: string | undefined = key; dir; dir = parentOf(dir)) {
 		if (await hasJjWorkspaceMetadata(dir)) {
+			workspaceRootCache.set(key, { root: dir });
+			return dir;
+		}
+	}
+
+	workspaceRootCache.set(key, {});
+	return undefined;
+}
+
+function findWorkspaceRootSync(cwd: string): string | undefined {
+	const key = path.resolve(cwd);
+	if (workspaceRootCache.has(key)) return workspaceRootCache.get(key)?.root;
+
+	for (let dir: string | undefined = key; dir; dir = parentOf(dir)) {
+		if (hasJjWorkspaceMetadataSync(dir)) {
 			workspaceRootCache.set(key, { root: dir });
 			return dir;
 		}
@@ -211,31 +280,7 @@ function repositoryFromRepoDir(root: string, repoDir: string): JjRepository {
 	};
 }
 
-// Synchronous mirrors for render-path callers; they share `workspaceRootCache`.
-
-function hasJjWorkspaceMetadataSync(dir: string): boolean {
-	try {
-		fs.statSync(path.join(dir, ".jj", "repo"));
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function findWorkspaceRootSync(cwd: string): string | undefined {
-	const key = path.resolve(cwd);
-	if (workspaceRootCache.has(key)) return workspaceRootCache.get(key)?.root;
-
-	for (let dir: string | undefined = key; dir; dir = parentOf(dir)) {
-		if (hasJjWorkspaceMetadataSync(dir)) {
-			workspaceRootCache.set(key, { root: dir });
-			return dir;
-		}
-	}
-
-	workspaceRootCache.set(key, {});
-	return undefined;
-}
+// Synchronous mirrors for render-path callers that cannot await filesystem I/O.
 
 function resolveRepoDirSync(root: string): string {
 	const jjDir = path.join(root, ".jj");
@@ -269,6 +314,56 @@ export const diff = Object.assign(
 );
 
 // ════════════════════════════════════════════════════════════════════════════
+// API: working copy
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Jujutsu working-copy metadata used by status displays. */
+export const workingCopy = {
+	/**
+	 * Label `@` with its nearest bookmark, falling back to its short change ID.
+	 * Returns `null` when `jj` is unavailable or the query fails.
+	 */
+	async label(cwd: string, options?: JjCommandOptions): Promise<string | null> {
+		const raw = await runOptionalText(
+			cwd,
+			[
+				"log",
+				"--no-graph",
+				"--ignore-working-copy",
+				"-r",
+				WORKING_COPY_LABEL_REVSET,
+				"-T",
+				WORKING_COPY_LABEL_TEMPLATE,
+			],
+			options,
+		);
+		return raw === null ? null : parseWorkingCopyLabel(raw);
+	},
+
+	/** Parse working-copy label query output. */
+	parseLabel: parseWorkingCopyLabel,
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// API: status
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Jujutsu working-copy status derived from the changes in `@`. */
+export const status = {
+	/**
+	 * Count changes in `@` relative to its parent using the Git status shape.
+	 * Jujutsu has no index, so `staged` is always zero.
+	 */
+	async summary(cwd: string, options?: JjCommandOptions): Promise<git.GitStatusSummary | null> {
+		const raw = await runOptionalText(cwd, ["diff", "-r", "@", "--summary", "--ignore-working-copy"], options);
+		return raw === null ? null : parseStatusSummary(raw);
+	},
+
+	/** Parse `jj diff --summary` output into status counts. */
+	parse: parseStatusSummary,
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // API: repo
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -276,6 +371,14 @@ export const repo = {
 	/** Clear cached workspace roots. Intended for tests that mutate JJ metadata under an existing path. */
 	clearRootCache(): void {
 		workspaceRootCache.clear();
+	},
+
+	/**
+	 * Resolve the current workspace root synchronously from on-disk metadata.
+	 * Intended for render paths that cannot await filesystem I/O.
+	 */
+	rootSync(cwd: string): string | null {
+		return findWorkspaceRootSync(cwd) ?? null;
 	},
 
 	/** Resolve the current Jujutsu workspace root, or `null` when `cwd` is not in a JJ repository. */
@@ -287,11 +390,6 @@ export const repo = {
 	async resolve(cwd: string): Promise<JjRepository | null> {
 		const root = await repo.root(cwd);
 		return root ? await repositoryFromRoot(root) : null;
-	},
-
-	/** Resolve the current Jujutsu workspace root synchronously (render-path safe), or `null` when not in a JJ repository. */
-	rootSync(cwd: string): string | null {
-		return findWorkspaceRootSync(cwd) ?? null;
 	},
 
 	/** Full Jujutsu workspace metadata (synchronous), or `null` when not in a JJ repository. */

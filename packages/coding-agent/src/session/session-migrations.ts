@@ -1,4 +1,5 @@
 import { Snowflake } from "@oh-my-pi/pi-utils";
+import { normalizeFirePassSelector } from "../config/firepass-selector";
 import { type CompactionEntry, CURRENT_SESSION_VERSION, type FileEntry, type SessionHeader } from "./session-entries";
 
 /** Generate a unique short ID (8 hex chars, collision-checked) */
@@ -75,4 +76,25 @@ export function migrateToCurrentVersion(entries: FileEntry[]): boolean {
 /** Exported for testing */
 export function migrateSessionEntries(entries: FileEntry[]): void {
 	migrateToCurrentVersion(entries);
+}
+
+/**
+ * Rewrite explicit `model_change` selectors to canonical Fire Pass, in place.
+ * Returns true when an entry changed so the caller can persist the session.
+ *
+ * Assistant messages are deliberately left alone: their `provider`/`model` pair
+ * records which endpoint actually served that turn, and rewriting it would
+ * falsify history. Resume derivation normalizes that pair transiently instead
+ * (see `buildSessionContext`).
+ */
+export function migrateFirePassModelSelectors(entries: FileEntry[]): boolean {
+	let changed = false;
+	for (const entry of entries) {
+		if (entry.type !== "model_change") continue;
+		const canonical = normalizeFirePassSelector(entry.model);
+		if (canonical === entry.model) continue;
+		entry.model = canonical;
+		changed = true;
+	}
+	return changed;
 }

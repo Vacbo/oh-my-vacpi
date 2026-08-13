@@ -1,5 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import { getBlobsDir, isEnoent, logger, type postmortem, VERSION } from "@oh-my-pi/pi-utils";
 import {
 	type Agent,
 	type AgentSideConnection,
@@ -39,10 +42,7 @@ import {
 	type SetSessionModeRequest,
 	type SetSessionModeResponse,
 	type Usage,
-} from "@agentclientprotocol/sdk";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
-import { getBlobsDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
+} from "@oh-my-pi/pi-utils/acp";
 import { disableProvider, enableProvider, reset as resetCapabilities } from "../../capability";
 import { Settings } from "../../config/settings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -60,7 +60,7 @@ import { MCPManager } from "../../mcp/manager";
 import type { MCPServerConfig } from "../../mcp/types";
 import { loadAllExtensions } from "../../modes/components/extensions/state-manager";
 import { theme } from "../../modes/theme/theme";
-import { type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
+import { normalizePlanTitle, type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
 import { BlobStore, resolveImageDataSync } from "../../session/blob-store";
 import { isSilentAbort, SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
@@ -70,9 +70,10 @@ import { SessionManager } from "../../session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash-commands/available-commands";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "../../stt/models";
+import { refreshAgentDiscovery } from "../../task";
 import { AUTO_THINKING, parseConfiguredThinkingLevel } from "../../thinking";
 import { normalizeLocalScheme } from "../../tools/path-utils";
-import { runResolveInvocation } from "../../tools/resolve";
+import { isHistoricalTodoToolName } from "../../tools/todo";
 import { ToolError } from "../../tools/tool-errors";
 import {
 	DEFAULT_TTS_LOCAL_MODEL_KEY,
@@ -83,7 +84,6 @@ import {
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { createAcpClientBridge } from "./acp-client-bridge";
 import {
-	buildToolCallStartUpdate,
 	extractAssistantMessageText,
 	mapAgentSessionEventToAcpSessionUpdates,
 	normalizeReplayToolArguments,
@@ -165,6 +165,10 @@ function isPromptTurnInFlight(turn: PromptTurnState | undefined): turn is Prompt
 type ManagedSessionRecord = {
 	session: AgentSession;
 	mcpManager: MCPManager | undefined;
+	// Ordered queue of MCP tool refreshes for this record. Rebuilt per
+	// `#configureMcpServers` call; drained on reconfigure so a stale in-flight
+	// refresh can never land after a newer configuration's tools.
+	mcpRefreshChain: Promise<void> | undefined;
 	promptTurn: PromptTurnState | undefined;
 	promptQueue: PromptQueueState;
 	liveMessageId: string | undefined;
@@ -294,7 +298,7 @@ function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
 async function elicitFromAcpClient(
 	connection: AgentSideConnection,
 	sessionId: string,
-	method: "select" | "confirm" | "input",
+	method: "select" | "confirm" | "input" | "editor",
 	message: string,
 	property: ElicitationPropertySchema,
 	dialogOptions: ExtensionUIDialogOptions | undefined,
@@ -375,9 +379,9 @@ function isAcceptedElicitation(
  * symmetric with every other `sessionUpdate` call in this file
  * (`record.session.sessionId` is always evaluated at emit time).
  *
- * The non-elicitation surface (custom components, editor, theming,
- * terminal input) remains stubbed — ACP clients render those themselves
- * or not at all. Capability gating respects the client's `initialize`
+ * The non-elicitation surface (custom components, theming, terminal
+ * input) remains stubbed — ACP clients render those themselves or not
+ * at all. Capability gating respects the client's `initialize`
  * advertisement.
  */
 export function createAcpExtensionUiContext(
@@ -441,7 +445,18 @@ export function createAcpExtensionUiContext(
 		pasteToEditor: () => {},
 		setEditorText: () => {},
 		getEditorText: () => "",
-		editor: async () => undefined,
+		editor: async (title, prefill, dialogOptions) => {
+			if (!supportsForm) return undefined;
+			const value = await elicitFromAcpClient(
+				connection,
+				getSessionId(),
+				"editor",
+				title,
+				{ type: "string", ...(prefill ? { default: prefill } : {}) },
+				dialogOptions,
+			);
+			return typeof value === "string" ? value : undefined;
+		},
 		setEditorComponent: () => {},
 		addAutocompleteProvider: () => {},
 		get theme() {
@@ -649,12 +664,17 @@ export class AcpAgent implements Agent {
 			});
 		}
 
-		// For `thinking` the lifetime subscription pushes post-bootstrap; only
-		// push here when it's not yet installed so pre-bootstrap callers still
-		// see the change without a post-bootstrap duplicate.
-		const thinkingHandledBySubscription =
-			params.configId === THINKING_CONFIG_ID && record.lifetimeUnsubscribe !== undefined;
-		if (!thinkingHandledBySubscription) {
+		// For `model`/`thinking`, `#setModelById`/`#setThinkingLevelById` change
+		// the session model/thinking level through AgentSession, which now emits
+		// a lifetime event (`model_changed`/`thinking_level_changed`) that
+		// `#handleLifetimeEvent` turns into a push once the subscription is
+		// installed. Only push here when that subscription is not yet
+		// installed, so pre-bootstrap callers still see the change without a
+		// post-bootstrap duplicate.
+		const handledBySubscription =
+			(params.configId === THINKING_CONFIG_ID || params.configId === MODEL_CONFIG_ID) &&
+			record.lifetimeUnsubscribe !== undefined;
+		if (!handledBySubscription) {
 			await this.#pushConfigOptionUpdate(record);
 		}
 		return { configOptions: this.#buildConfigOptions(record.session) };
@@ -1028,7 +1048,7 @@ export class AcpAgent implements Agent {
 		this.#connection.signal.addEventListener(
 			"abort",
 			() => {
-				void this.#disposeAllSessions();
+				void this.dispose();
 			},
 			{ once: true },
 		);
@@ -1133,6 +1153,7 @@ export class AcpAgent implements Agent {
 		return {
 			session,
 			mcpManager: undefined,
+			mcpRefreshChain: undefined,
 			promptTurn: undefined,
 			promptQueue: { promise: Promise.resolve(), release: undefined },
 			liveMessageId: undefined,
@@ -1147,14 +1168,15 @@ export class AcpAgent implements Agent {
 	}
 
 	async #handleLifetimeEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
-		if (event.type !== "thinking_level_changed") {
+		if (event.type !== "thinking_level_changed" && event.type !== "model_changed") {
 			return;
 		}
 		try {
 			await this.#pushConfigOptionUpdate(record);
 		} catch (error) {
-			logger.warn("Failed to push thinking-level config_option_update", {
+			logger.warn("Failed to push config_option_update after a lifetime event", {
 				sessionId: record.session.sessionId,
+				eventType: event.type,
 				error,
 			});
 		}
@@ -1572,7 +1594,7 @@ export class AcpAgent implements Agent {
 	#buildThinkingOptions(session: AgentSession): Array<{ value: string; name: string; description?: string }> {
 		return [
 			{ value: THINKING_OFF, name: "Off" },
-			{ value: AUTO_THINKING, name: "Auto", description: "Auto-detect per prompt (low–xhigh)" },
+			{ value: AUTO_THINKING, name: "Auto", description: "Auto-detect per prompt" },
 			...session.getAvailableThinkingLevels().map(level => ({
 				value: level,
 				name: level,
@@ -1641,93 +1663,96 @@ export class AcpAgent implements Agent {
 				workflow: previous?.workflow ?? "parallel",
 				reentry: previous !== undefined,
 			});
-			// Mirror `InteractiveMode.#enterPlanMode`: register the standing resolve
-			// handler that consumes `resolve { action: "apply" }` from plan-mode.
-			// Without this, the agent's resolve call falls through to the "No
-			// pending action to resolve" error (issue #1869).
-			session.setStandingResolveHandler?.(input => this.#runAcpPlanApprovalResolve(session, input));
+			// Mirror `InteractiveMode.#enterPlanMode`: register the plan-proposal
+			// handler that consumes `xd://propose` writes from plan mode. Without
+			// this, proposal dispatch falls through and plan mode has no approval
+			// path (issue #1869).
+			session.setPlanProposalHandler?.(title => this.#handleAcpPlanProposal(session, title));
 		} else {
-			session.setStandingResolveHandler?.(null);
+			session.setPlanProposalHandler?.(null);
 			session.setPlanModeState(undefined);
 		}
 	}
 
 	/**
-	 * Standing resolve handler installed while ACP plan mode is active. The agent
-	 * submits the finalized plan via `resolve { action: "apply", extra: { title } }`;
-	 * this handler validates the plan file, normalizes the title, asks the ACP
-	 * client to confirm (via `unstable_createElicitation` when supported), and on
-	 * approval renames the plan to `local://<title>.md`, exits plan mode, and
-	 * notifies the client of both mode surfaces so the agent regains full tools.
+	 * Plan-proposal handler installed while ACP plan mode is active. The agent
+	 * submits the finalized plan by writing its `<slug>`/title to
+	 * `xd://propose`; this handler validates the plan file, normalizes the
+	 * title, asks the ACP client to confirm (via `unstable_createElicitation`
+	 * when supported), and on approval keeps the chosen plan path, exits plan
+	 * mode, and notifies the client so the agent regains full tools.
 	 *
-	 * Mirrors `InteractiveMode.#runPlanApprovalResolve` for the parts the agent
-	 * sees (same `PlanApprovalDetails` shape, same source tool name `plan_approval`).
-	 * Clients without form-mode elicitation get an auto-approve so plan mode is
-	 * never stranded — the agent always has a way out.
+	 * Mirrors `InteractiveMode.#handlePlanProposal` for the parts the agent sees
+	 * (same `PlanApprovalDetails` shape). Clients without form-mode elicitation
+	 * get an auto-approve so plan mode is never stranded — the agent always has
+	 * a way out.
 	 */
-	#runAcpPlanApprovalResolve(session: AgentSession, input: unknown): Promise<AgentToolResult<unknown>> {
-		return runResolveInvocation(input as Parameters<typeof runResolveInvocation>[0], {
-			sourceToolName: "plan_approval",
-			label: "Plan ready for approval",
-			apply: async (_reason, extra) => {
-				const state = session.getPlanModeState();
-				if (!state?.enabled) {
-					throw new ToolError("Plan mode is not active.");
-				}
-				const { planFilePath, planContent, title } = await resolveApprovedPlan({
-					suppliedTitle: extra?.title,
-					statePlanFilePath: state.planFilePath,
-					readPlan: url => this.#readAcpPlanFile(session, url),
-					listPlanFiles: () => this.#listAcpLocalPlanFiles(session),
-				});
-				const approved = await this.#requestAcpPlanApprovalChoice(session.sessionId, title, planContent);
-				const details: PlanApprovalDetails = {
-					planFilePath,
-					title,
-					planExists: true,
-				};
-				if (!approved) {
-					// User chose to refine: leave plan mode active so the agent
-					// keeps the read-only toolset and can iterate on the plan file.
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: 'Plan refinement requested. Update the plan file, then call `resolve { action: "apply" }` again when ready.',
-							},
-						],
-						details,
-					};
-				}
-				// Approved. Set the plan reference so the next turn injects the plan
-				// content as context (the file keeps its agent-chosen name — no
-				// rename), then exit plan mode so the agent regains full tools.
-				session.setPlanReferencePath(planFilePath);
-				session.setStandingResolveHandler?.(null);
-				session.setPlanModeState(undefined);
-				try {
-					await this.#connection.sessionUpdate({
-						sessionId: session.sessionId,
-						update: this.#buildCurrentModeUpdate(session),
-					});
-					await this.#pushConfigOptionUpdateForSession(session);
-				} catch (error) {
-					logger.warn("Failed to emit mode updates after plan approval", {
-						sessionId: session.sessionId,
-						error,
-					});
-				}
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Plan approved at ${planFilePath}. Plan mode exited; proceed with the implementation.`,
-						},
-					],
-					details,
-				};
-			},
+	async #handleAcpPlanProposal(session: AgentSession, title: string): Promise<AgentToolResult<unknown>> {
+		const state = session.getPlanModeState();
+		if (!state?.enabled) {
+			throw new ToolError("Plan mode is not active.");
+		}
+		const {
+			planFilePath,
+			planContent,
+			title: resolvedTitle,
+		} = await resolveApprovedPlan({
+			suppliedTitle: title,
+			statePlanFilePath: state.planFilePath,
+			readPlan: url => this.#readAcpPlanFile(session, url),
+			listPlanFiles: () => this.#listAcpLocalPlanFiles(session),
 		});
+		const approved = await this.#requestAcpPlanApprovalChoice(session.sessionId, resolvedTitle, planContent);
+		const details: PlanApprovalDetails = {
+			planFilePath,
+			title: resolvedTitle,
+			planExists: true,
+		};
+		if (!approved) {
+			// Rejection keeps plan mode active for another planning turn. Promote the
+			// reviewed path into plan-mode state so the next `#buildPlanModeMessage()`
+			// targets the plan just reviewed, not the stale state path.
+			if (state.planFilePath !== planFilePath) {
+				session.setPlanModeState({ ...state, planFilePath });
+			}
+			const normalizedTitle = normalizePlanTitle(resolvedTitle).title;
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Plan refinement requested. Update the plan file, then write ${normalizedTitle} to xd://propose again when ready.`,
+					},
+				],
+				details,
+			};
+		}
+		// Approved. Set the plan reference so the next turn injects the plan
+		// content as context (the file keeps its agent-chosen name — no rename),
+		// then exit plan mode so the agent regains full tools.
+		session.setPlanReferencePath(planFilePath);
+		session.setPlanProposalHandler?.(null);
+		session.setPlanModeState(undefined);
+		try {
+			await this.#connection.sessionUpdate({
+				sessionId: session.sessionId,
+				update: this.#buildCurrentModeUpdate(session),
+			});
+			await this.#pushConfigOptionUpdateForSession(session);
+		} catch (error) {
+			logger.warn("Failed to emit mode updates after plan approval", {
+				sessionId: session.sessionId,
+				error,
+			});
+		}
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `Plan approved at ${planFilePath}. Plan mode exited; proceed with the implementation.`,
+				},
+			],
+			details,
+		};
 	}
 
 	#resolveAcpPlanFilePath(session: AgentSession, planFilePath: string): string {
@@ -1907,18 +1932,19 @@ export class AcpAgent implements Agent {
 	/**
 	 * Reload plugin/registry state for an ACP session. Mirrors the interactive
 	 * `/reload-plugins` and `/move` flows: invalidates the plugin-roots cache,
-	 * resets the capability cache, refreshes the session's slash-command state,
-	 * then re-advertises commands so the client sees newly installed/disabled
-	 * plugins.
+	 * refreshes task agents, resets the capability cache, refreshes the
+	 * session's slash-command state, then re-advertises commands so the client
+	 * sees newly installed/disabled plugins.
 	 */
 	async #reloadPluginState(record: ManagedSessionRecord): Promise<void> {
 		const cwd = record.session.sessionManager.getCwd();
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
 		clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+		await refreshAgentDiscovery(cwd);
 		resetCapabilities();
+		await record.session.refreshSkills();
 		const fileCommands = await loadSlashCommands({ cwd });
 		record.session.setSlashCommands(fileCommands);
-		await record.session.refreshSshTool({ activateIfAvailable: true });
 		await this.#emitAvailableCommandsUpdate(record);
 	}
 
@@ -1996,7 +2022,16 @@ export class AcpAgent implements Agent {
 
 	async #findStoredSession(sessionId: string, cwd: string): Promise<StoredSessionInfo | undefined> {
 		const sessions = await this.#listStoredSessions(cwd);
-		return sessions.find(session => session.id === sessionId);
+		const scoped = sessions.find(session => session.id === sessionId);
+		if (scoped) {
+			return scoped;
+		}
+		// The cwd-derived directory only covers sessions stored under the current
+		// naming scheme. Sessions written under a legacy/hashed project directory
+		// (the 17.2.5+ scheme reverted in #7656) live elsewhere, so fall back to a
+		// global by-id scan: the session id is globally unique, and
+		// #openStoredSession reopens the file with the request cwd. See #7779.
+		return this.#findStoredSessionById(sessionId);
 	}
 
 	async #findStoredSessionById(sessionId: string): Promise<StoredSessionInfo | undefined> {
@@ -2114,6 +2149,23 @@ export class AcpAgent implements Agent {
 					});
 					continue;
 				}
+				if (
+					item.type === "image" &&
+					"data" in item &&
+					typeof item.data === "string" &&
+					"mimeType" in item &&
+					typeof item.mimeType === "string"
+				) {
+					notifications.push({
+						sessionId,
+						update: {
+							sessionUpdate: "agent_message_chunk",
+							content: { type: "image", data: item.data, mimeType: item.mimeType },
+							messageId,
+						},
+					});
+					continue;
+				}
 				if (item.type === "thinking" && "thinking" in item && typeof item.thinking === "string") {
 					const thinking = canonicalizeMessage(item.thinking);
 					if (thinking.length === 0) continue;
@@ -2134,14 +2186,18 @@ export class AcpAgent implements Agent {
 					typeof toolItem.name === "string"
 				) {
 					const args = this.#buildReplayAssistantToolArgs(toolItem);
-					const update = buildToolCallStartUpdate({
-						toolCallId: toolItem.id,
-						toolName: toolItem.name,
-						args,
-						status: "completed",
-						cwd,
-					});
-					notifications.push({ sessionId, update });
+					notifications.push(
+						...mapAgentSessionEventToAcpSessionUpdates(
+							{
+								type: "tool_execution_start",
+								toolCallId: toolItem.id,
+								toolName: toolItem.name,
+								args,
+							},
+							sessionId,
+							{ cwd },
+						),
+					);
 					replayedToolCallIds.add(toolItem.id);
 					replayedToolCallArgs.set(toolItem.id, args);
 				}
@@ -2177,16 +2233,21 @@ export class AcpAgent implements Agent {
 		options: { includeStart?: boolean; toolArgs?: unknown } = {},
 	): SessionNotification[] {
 		const args = this.#buildReplayToolArgs(message.details);
+		// Sessions recorded before the todo rename carry `todo_write`. Replay feeds
+		// synthesized events through the same mapper as live turns, and that mapper
+		// recognizes only the canonical `todo`, so normalize the historical spelling
+		// here — otherwise an old transcript replays without its plan update.
+		const toolName = isHistoricalTodoToolName(message.toolName) ? "todo" : message.toolName;
 		const startEvent: AgentSessionEvent = {
 			type: "tool_execution_start",
 			toolCallId: message.toolCallId,
-			toolName: message.toolName,
+			toolName,
 			args,
 		};
 		const endEvent: AgentSessionEvent = {
 			type: "tool_execution_end",
 			toolCallId: message.toolCallId,
-			toolName: message.toolName,
+			toolName,
 			isError: message.isError === true,
 			result: {
 				content: message.content,
@@ -2262,6 +2323,25 @@ export class AcpAgent implements Agent {
 			return;
 		}
 
+		const uiContext = createAcpExtensionUiContext(
+			this.#connection,
+			() => record.session.sessionId,
+			this.#clientCapabilities,
+		);
+		if (this.#clientCapabilities?.elicitation?.form != null) {
+			record.session.setUsageFallbackConfirmer((confirmation, signal) => {
+				const reserve =
+					confirmation.remainingPercent === undefined
+						? "inside the configured reserve margin"
+						: `${confirmation.remainingPercent.toFixed(1)}% remaining`;
+				return uiContext.confirm(
+					"Coding-plan reserve reached",
+					`${confirmation.from} has ${reserve}. Switch to ${confirmation.to}? Choose No to keep using the current plan.`,
+					{ signal },
+				);
+			});
+		}
+
 		const extensionRunner = record.session.extensionRunner;
 		if (!extensionRunner) {
 			record.extensionsConfigured = true;
@@ -2284,8 +2364,8 @@ export class AcpAgent implements Agent {
 				setLabel: (targetId, label) => {
 					record.session.sessionManager.appendLabelChange(targetId, label);
 				},
-				getActiveTools: () => record.session.getActiveToolNames(),
-				getAllTools: () => record.session.getAllToolNames(),
+				getActiveTools: () => record.session.getEnabledToolNames(),
+				getAllTools: () => record.session.getAllToolInfos(),
 				setActiveTools: toolNames => record.session.setActiveToolsByName(toolNames),
 				getCommands: () => getSessionSlashCommands(record.session),
 				setModel: async model => {
@@ -2298,6 +2378,8 @@ export class AcpAgent implements Agent {
 				},
 				getThinkingLevel: () => record.session.thinkingLevel,
 				setThinkingLevel: level => record.session.setThinkingLevel(level),
+				getServiceTiers: () => record.session.serviceTierByFamily,
+				setServiceTier: (family, tier) => record.session.setServiceTierFamily(family, tier),
 				getSessionName: () => record.session.sessionManager.getSessionName(),
 				setSessionName: async name => {
 					await record.session.sessionManager.setSessionName(name, "user");
@@ -2342,15 +2424,7 @@ export class AcpAgent implements Agent {
 				},
 				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
 			},
-			// Per-session getter: `record.session.sessionId` reads through to
-			// `sessionManager.getSessionId()` (it's a getter, not a field), so an
-			// extension command that calls `ctx.newSession` / `ctx.switchSession`
-			// — both exposed in the block just above — mutates the underlying id
-			// mid-flight. Reading lazily on each elicitation matches every other
-			// `sessionUpdate` call in this file. Hoisting the factory to an
-			// `AcpAgent` field would still be wrong because it would also lose
-			// the per-`record` binding.
-			createAcpExtensionUiContext(this.#connection, () => record.session.sessionId, this.#clientCapabilities),
+			uiContext,
 		);
 		await extensionRunner.emit({ type: "session_start" });
 		record.extensionsConfigured = true;
@@ -2360,13 +2434,42 @@ export class AcpAgent implements Agent {
 		if (record.mcpManager) {
 			await record.mcpManager.disconnectAll();
 		}
+		// Drain any in-flight refresh queued by a previous configuration: a refresh
+		// that already passed its manager guard could otherwise finish applying a
+		// stale tool set after this reconfiguration installs the new one.
+		await record.mcpRefreshChain;
+		record.mcpRefreshChain = undefined;
 		if (servers.length === 0) {
 			record.mcpManager = undefined;
-			await record.session.refreshMCPTools([], { activateAll: true });
+			await record.session.refreshMCPTools([]);
 			return;
 		}
 
 		const manager = new MCPManager(record.session.sessionManager.getCwd());
+		// MCP servers connect and reconnect independently, so `onToolsChanged` can fire
+		// several times back to back. Each firing is chained onto `record.mcpRefreshChain`
+		// so refreshes apply in order, and each one re-reads `manager.getTools()` at the
+		// time it actually runs rather than the snapshot from when it was queued — so a
+		// refresh can never apply a stale, smaller tool set after a newer one already landed.
+		// The returned promise propagates failures (the initial awaited refresh below must
+		// fail session setup, as the pre-queue code did); the stored chain swallows them
+		// after logging so background firings only warn and the chain never rejects.
+		const enqueueMcpToolsRefresh = (): Promise<void> => {
+			const run = (record.mcpRefreshChain ?? Promise.resolve()).then(async () => {
+				if (record.mcpManager !== manager) return;
+				await record.session.refreshMCPTools(manager.getTools());
+			});
+			record.mcpRefreshChain = run.catch(error => {
+				logger.warn("ACP MCP tool refresh failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+			return run;
+		};
+		manager.setOnToolsChanged(() => {
+			// Failures are logged once via the stored chain's catch above.
+			enqueueMcpToolsRefresh().catch(() => {});
+		});
 		const configs: MCPConfigMap = {};
 		const sources: MCPSourceMap = {};
 		for (const server of servers) {
@@ -2389,7 +2492,7 @@ export class AcpAgent implements Agent {
 		}
 
 		record.mcpManager = manager;
-		await record.session.refreshMCPTools(result.tools, { activateAll: true });
+		await enqueueMcpToolsRefresh();
 	}
 
 	#toMcpConfig(server: McpServer): MCPServerConfig {
@@ -2448,7 +2551,7 @@ export class AcpAgent implements Agent {
 		}
 	}
 
-	async #disposeSessionRecord(record: ManagedSessionRecord): Promise<void> {
+	async #disposeSessionRecord(record: ManagedSessionRecord, reason?: postmortem.Reason): Promise<void> {
 		record.lifetimeUnsubscribe?.();
 		if (record.mcpManager) {
 			try {
@@ -2459,21 +2562,22 @@ export class AcpAgent implements Agent {
 			record.mcpManager = undefined;
 		}
 		try {
-			await record.session.dispose();
+			await record.session.dispose({ reason });
 		} catch (error) {
 			logger.warn("Failed to dispose ACP session", { error });
 		}
 	}
 
-	async #disposeStandaloneSession(session: AgentSession): Promise<void> {
+	async #disposeStandaloneSession(session: AgentSession, reason?: postmortem.Reason): Promise<void> {
 		try {
-			await session.dispose();
+			await session.dispose({ reason });
 		} catch (error) {
 			logger.warn("Failed to dispose ACP session", { error });
 		}
 	}
 
-	async #disposeAllSessions(): Promise<void> {
+	/** Dispose every session owned by this ACP connection and await persisted teardown. */
+	async dispose(reason?: postmortem.Reason): Promise<void> {
 		if (this.#disposePromise) {
 			await this.#disposePromise;
 			return;
@@ -2489,7 +2593,7 @@ export class AcpAgent implements Agent {
 							"ACP agent disposed before queued prompt could run",
 						);
 						await this.#cancelPromptForClose(record);
-						await this.#disposeSessionRecord(record);
+						await this.#disposeSessionRecord(record, reason);
 					} catch (error) {
 						logger.warn("Failed to clean up ACP session", { sessionId, error });
 					}
@@ -2499,7 +2603,7 @@ export class AcpAgent implements Agent {
 			const initialSession = this.#initialSession;
 			this.#initialSession = undefined;
 			if (initialSession) {
-				await this.#disposeStandaloneSession(initialSession);
+				await this.#disposeStandaloneSession(initialSession, reason);
 			}
 		})();
 

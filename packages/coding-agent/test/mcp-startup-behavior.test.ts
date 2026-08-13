@@ -63,7 +63,9 @@ describe("MCPManager.connectServers — startup behaviour", () => {
 
 		const manager = new MCPManager(process.cwd());
 		const toolsChangedSeen: number[] = [];
-		manager.setOnToolsChanged(tools => toolsChangedSeen.push(tools.length));
+		manager.setOnToolsChanged(tools => {
+			toolsChangedSeen.push(tools.length);
+		});
 
 		const result = await manager.connectServers({ slow: stdioConfig() }, {});
 
@@ -96,7 +98,9 @@ describe("MCPManager.connectServers — startup behaviour", () => {
 
 		const manager = new MCPManager(process.cwd());
 		const toolsChangedSeen: number[] = [];
-		manager.setOnToolsChanged(tools => toolsChangedSeen.push(tools.length));
+		manager.setOnToolsChanged(tools => {
+			toolsChangedSeen.push(tools.length);
+		});
 
 		const result = await manager.connectServers({ slow: stdioConfig() }, {});
 
@@ -227,6 +231,60 @@ describe("MCPManager.connectServers — startup behaviour", () => {
 		await manager.reconnectServer("wobbly");
 
 		expect(manager.getLastConnectError("wobbly")).toBeUndefined();
+		await manager.disconnectAll();
+	});
+
+	it("connectTimeoutMs: 0 disables the discovery bound on the initial path", async () => {
+		// `0` means "no client-side bound" everywhere else in the MCP surface, so
+		// discovery must wait indefinitely rather than treat the bound as expired.
+		vi.spyOn(client, "connectToServer").mockImplementation(async (name: string, config: MCPServerConfig) =>
+			makeConnection(name, config),
+		);
+		const pending: DeferredHandle<MCPToolDefinition[]> = Promise.withResolvers();
+		vi.spyOn(client, "listTools").mockReturnValue(pending.promise);
+
+		const manager = new MCPManager(process.cwd());
+		const toolsPublished: DeferredHandle<number> = Promise.withResolvers();
+		manager.setOnToolsChanged(tools => toolsPublished.resolve(tools.length));
+
+		// `connectServers` returns only after its own startup race elapses, so a
+		// bound misread as "already expired" would have rejected and torn the
+		// connection down before this line — no extra waiting needed.
+		await manager.connectServers({ patient: stdioConfig({ connectTimeoutMs: 0 }) }, {});
+		expect(manager.getConnection("patient")).toBeDefined();
+		expect(manager.getLastConnectError("patient")).toBeUndefined();
+
+		pending.resolve([TOOL_DEF]);
+
+		// Await the manager's own publish signal rather than a guessed delay.
+		expect(await toolsPublished.promise).toBe(1);
+		expect(manager.getTools().map(tool => tool.name)).toEqual(["mcp__patient_do_stuff"]);
+		expect(manager.getLastConnectError("patient")).toBeUndefined();
+		await manager.disconnectAll();
+	});
+
+	it("connectTimeoutMs: 0 disables the discovery bound on the reconnect path", async () => {
+		const config = stdioConfig({ connectTimeoutMs: 0 });
+		vi.spyOn(client, "connectToServer").mockImplementation(async (name: string, cfg: MCPServerConfig) =>
+			makeConnection(name, cfg),
+		);
+		const listSpy = vi.spyOn(client, "listTools").mockResolvedValue([TOOL_DEF]);
+
+		const manager = new MCPManager(process.cwd());
+		expect((await manager.connectServers({ patient: config }, {})).connectedServers).toEqual(["patient"]);
+
+		// Reconnect while tools/list is still outstanding. `Bun.sleep(0)` yields a
+		// single macrotask — enough for a zero-length bound's timer to fire if the
+		// disable were misread — without tying the test to wall-clock duration.
+		const pending: DeferredHandle<MCPToolDefinition[]> = Promise.withResolvers();
+		listSpy.mockReturnValue(pending.promise);
+		const reconnected = manager.reconnectServer("patient");
+		await Bun.sleep(0);
+		pending.resolve([TOOL_DEF]);
+
+		expect(await reconnected).not.toBeNull();
+		expect(manager.getTools().length).toBe(1);
+		expect(manager.getLastConnectError("patient")).toBeUndefined();
 		await manager.disconnectAll();
 	});
 });

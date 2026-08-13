@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -10,7 +11,6 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { getAgentDir, prompt } from "@oh-my-pi/pi-utils";
-import * as z from "zod/v4";
 import { type SessionsServerHandle, startSessionsServer } from "../cli/sessions-server";
 import type { Settings } from "../config/settings";
 import tuiObserveDescription from "../prompts/tools/tui-observe.md" with { type: "text" };
@@ -42,59 +42,35 @@ const MAX_EVENT_LIMIT = 500;
 const MAX_DIFF_ROWS = 40;
 const MAX_DIFF_ROW_CHARS = 400;
 
-const tuiObserveSchema = z.object({
-	action: z
-		.enum([
-			"list",
-			"snapshot",
-			"events",
-			"mirror",
-			"screenshot",
-			"native_screenshot",
-			"emulator_screen",
-			"render_diff",
-			"bash_snapshots",
-		])
+const tuiObserveSchema = type({
+	action: type(
+		"'list' | 'snapshot' | 'events' | 'mirror' | 'screenshot' | 'native_screenshot' | 'emulator_screen' | 'render_diff' | 'bash_snapshots'",
+	)
 		.default("snapshot")
 		.describe("Observation action. Defaults to a read-only snapshot of the current session."),
-	run: z
-		.string()
-		.optional()
-		.describe("Run id from `list`. Defaults to the current session or the only running session."),
-	limit: z
-		.number()
-		.int()
-		.positive()
-		.max(MAX_EVENT_LIMIT)
-		.optional()
+	"run?": type("string").describe("Run id from `list`. Defaults to the current session or the only running session."),
+	"limit?": type("number.integer > 0")
+		.atMost(MAX_EVENT_LIMIT)
 		.describe(
 			"Max recent events for the events action; for emulator_screen, only the last N lines (includes scrollback).",
 		),
-	running: z.boolean().optional().describe("For list: only include running sessions."),
-	rows: z
-		.string()
-		.optional()
-		.describe(
-			'For screenshot: terminal row range to crop or highlight, e.g. "4" or "4-9" (matches data-terminal-row).',
-		),
-	cols: z
-		.string()
-		.optional()
-		.describe('For screenshot: column (cell index) range within the selected rows, e.g. "10-40". Requires rows.'),
-	selector: z
-		.string()
-		.optional()
-		.describe(
-			"For screenshot: raw CSS selector to crop or highlight instead of rows/cols (mutually exclusive with rows).",
-		),
-	highlight: z
-		.boolean()
-		.optional()
-		.describe("For screenshot: outline the region on a full-page capture instead of cropping to it."),
+	"running?": type("boolean").describe("For list: only include running sessions."),
+	"rows?": type("string").describe(
+		'For screenshot: terminal row range to crop or highlight, e.g. "4" or "4-9" (matches data-terminal-row).',
+	),
+	"cols?": type("string").describe(
+		'For screenshot: column (cell index) range within the selected rows, e.g. "10-40". Requires rows.',
+	),
+	"selector?": type("string").describe(
+		"For screenshot: raw CSS selector to crop or highlight instead of rows/cols (mutually exclusive with rows).",
+	),
+	"highlight?": type("boolean").describe(
+		"For screenshot: outline the region on a full-page capture instead of cropping to it.",
+	),
 });
 
 /** Input schema for the tui_observe tool. */
-export type TuiObserveParams = z.infer<typeof tuiObserveSchema>;
+export type TuiObserveParams = typeof tuiObserveSchema.infer;
 
 export interface TuiObserveDetails {
 	action: TuiObserveParams["action"];
@@ -398,9 +374,9 @@ export class TuiObserveTool implements AgentTool<typeof tuiObserveSchema, TuiObs
 		_toolCallId: string,
 		params: TuiObserveParams,
 		signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<TuiObserveDetails>,
+		_onUpdate?: AgentToolUpdateCallback<TuiObserveDetails, typeof tuiObserveSchema>,
 		_ctx?: AgentToolContext,
-	): Promise<AgentToolResult<TuiObserveDetails>> {
+	): Promise<AgentToolResult<TuiObserveDetails, typeof tuiObserveSchema>> {
 		const agentDir = getAgentDir();
 		switch (params.action) {
 			case "list":

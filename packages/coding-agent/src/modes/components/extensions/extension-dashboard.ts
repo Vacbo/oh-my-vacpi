@@ -182,7 +182,7 @@ export class ExtensionDashboard implements Component {
 			pinnedVia: via,
 			pinnedNote: pinned
 				? "stays listed in the system prompt"
-				: "found on demand via search_tool_bm25 under search discovery",
+				: "found on demand via search_skills under search discovery",
 		};
 	}
 

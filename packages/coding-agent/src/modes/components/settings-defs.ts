@@ -18,6 +18,7 @@ import {
 	getPathsForTab,
 	getType,
 	getUi,
+	isCredential,
 	SETTING_TABS,
 	type SettingPath,
 	type SettingTab,
@@ -66,10 +67,18 @@ export interface SubmenuSettingDef extends BaseSettingDef {
 
 export interface TextInputSettingDef extends BaseSettingDef {
 	type: "text";
+	secret: boolean;
 }
 
 export interface ProviderLimitsSettingDef extends BaseSettingDef {
 	type: "providerLimits";
+}
+
+/** Array-of-enum setting edited as a toggle list; `ordered` lists render positions and support reordering. */
+export interface MultiSelectSettingDef extends BaseSettingDef {
+	type: "multiselect";
+	options: OptionList;
+	ordered: boolean;
 }
 
 export type SettingDef =
@@ -77,7 +86,8 @@ export type SettingDef =
 	| EnumSettingDef
 	| SubmenuSettingDef
 	| TextInputSettingDef
-	| ProviderLimitsSettingDef;
+	| ProviderLimitsSettingDef
+	| MultiSelectSettingDef;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Condition Functions
@@ -123,6 +133,13 @@ const CONDITIONS: Record<string, () => boolean> = {
 	skillDiscoverySearchActive: () => {
 		try {
 			return Settings.instance.get("skills.discoveryMode") === "search";
+		} catch {
+			return false;
+		}
+	},
+	usageAwareFallbackEnabled: () => {
+		try {
+			return Settings.instance.get("retry.usageAwareFallback") === true;
 		} catch {
 			return false;
 		}
@@ -183,16 +200,26 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 		if (options) {
 			return { ...base, type: "submenu", options };
 		}
-		return { ...base, type: "text" };
+		// One classification drives both surfaces: a setting marked `credential`
+		// masks here too, so the panel cannot display one that only the CLI knows
+		// to redact.
+		return { ...base, type: "text", secret: isCredential(path) };
 	}
 
 	if (schemaType === "array") {
-		// Arrays render as comma-separated text inputs.
-		return { ...base, type: "text" };
+		// A declared, finite choice set toggles as a multiselect. Free-form lists
+		// (extension paths, skill globs) have nothing to enumerate, so they stay
+		// editable as comma-separated text — see {@link formatSettingTextValue} and
+		// {@link parseSettingArrayText}. The same `credential` classification masks
+		// here as for plain strings.
+		if (!options || options === "runtime") return { ...base, type: "text", secret: isCredential(path) };
+		return { ...base, type: "multiselect", options, ordered: ui.ordered === true };
 	}
 
 	if (schemaType === "record") {
-		return path === "providers.maxInFlightRequests" ? { ...base, type: "providerLimits" } : { ...base, type: "text" };
+		return path === "providers.maxInFlightRequests"
+			? { ...base, type: "providerLimits" }
+			: { ...base, type: "text", secret: false };
 	}
 
 	return null;

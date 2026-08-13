@@ -92,9 +92,9 @@ describe("gallery harness", () => {
 
 	it("renders curated failed states as failures", async () => {
 		const cases = [
-			["irc_inbox", "IRC inbox failed: message store unavailable.", "IRC inbox empty"],
-			["irc_list", "IRC list failed: agent hub is unavailable.", "no other agents"],
-			["job", "Subagent exited 1: Redis connection string is missing.", "cancelled"],
+			["hub_inbox", "IRC inbox failed: message store unavailable.", "IRC inbox empty"],
+			["hub_list", "IRC list failed: agent hub is unavailable.", "no other agents"],
+			["hub_jobs", "Subagent exited 1: Redis connection string is missing.", "cancelled"],
 		] as const;
 
 		for (const [name, expected, forbidden] of cases) {
@@ -125,15 +125,14 @@ describe("gallery harness", () => {
 		expect(fixture.result.content.length).toBeGreaterThan(0);
 	});
 
-	it("keys the curated todo fixture to todo_write and renders the completed-status contract", async () => {
-		// The fork registers the tool as `todo_write`; the curated fixture must be
-		// keyed to match, or the gallery falls through to the generic fixture and
-		// the dedicated renderer never runs.
-		const fixture = resolveFixture("todo_write");
+	it("keys the curated todo fixture to todo and renders the completed-status contract", async () => {
+		// The tool is registered as `todo`; the curated fixture must be keyed to
+		// match, or the gallery falls through to the generic fixture and the
+		// dedicated renderer never runs.
+		const fixture = resolveFixture("todo");
 		expect(fixture.label).toBe("Todo");
 
-		// Fixture task statuses use the current `completed` contract, never the
-		// stale upstream `done`.
+		// Fixture task statuses use the `completed` contract, never the stale `done`.
 		const details = fixture.result.details as TodoToolDetails;
 		const statuses: string[] = details.phases.flatMap(phase => phase.tasks.map(task => task.status));
 		expect(statuses).toContain("completed");
@@ -141,7 +140,7 @@ describe("gallery harness", () => {
 
 		// The dedicated renderer draws the phase tree; the completed task shows the
 		// checked marker — a stale `done` status would render it unchecked.
-		const lines = (await renderGalleryState("todo_write", fixture, "success", 100)).map(line => Bun.stripANSI(line));
+		const lines = (await renderGalleryState("todo", fixture, "success", 100)).map(line => Bun.stripANSI(line));
 		const output = lines.join("\n");
 		expect(output).toContain("Foundation");
 		expect(output).toContain("Wire workspace");
