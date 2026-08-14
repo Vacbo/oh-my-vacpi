@@ -8,6 +8,12 @@
 
 - Added `NothingToCompactError` to `compaction/errors`: a typed sentinel raised when a compaction request finds nothing to summarize (branch below the minimum size, or already ending in a compaction entry). Callers that compact opportunistically can classify the benign no-op via `instanceof` instead of sniffing error messages.
 
+## [17.3.4] - 2026-08-14
+
+### Fixed
+
+- Fixed Codex-compatible V2 remote compaction with an explicit `v2Endpoint` by sending the required feature-negotiation header ([#8524](https://github.com/can1357/oh-my-pi/issues/8524)).
+
 ## [17.3.0] - 2026-08-13
 
 ### Fixed
@@ -189,6 +195,7 @@
 ### Fixed
 
 - Fixed compatibility with Copilot gpt-5.6 models by correcting token escaping in compaction summaries.
+
 ## [16.5.0] - 2026-07-13
 
 ### Added

@@ -7,6 +7,8 @@ import {
 	formatModelString,
 	formatModelStringWithRouting,
 	parseModelString,
+	resolveModelOverride,
+	splitUpstreamRouting,
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { type ConfiguredThinkingLevel, concreteThinkingLevel } from "../thinking";
@@ -95,6 +97,39 @@ export function parseRetryFallbackSelector(
 		id: parsed.id,
 		thinkingLevel: concreteThinkingLevel(parsed.thinkingLevel),
 	};
+}
+/**
+ * Resolves a parsed fallback selector against known and available models.
+ *
+ * Exact provider/id matching wins for ordinary selectors. Selectors with a
+ * routing-shaped suffix use pattern resolution only when it preserves either
+ * the literal selector identity or the unrouted base identity. This retains
+ * literal `@` model ids, applies valid `@upstream` routing, and rejects fuzzy
+ * matches through a different aggregator.
+ *
+ * @param selector - Parsed configured selector.
+ * @param modelRegistry - Registry providing exact and credential-aware lookup.
+ * @param settings - Model matching preferences and aliases.
+ * @returns The resolved model, or undefined when neither lookup can resolve it.
+ */
+export function resolveRetryFallbackSelectorModel(
+	selector: RetryFallbackSelector,
+	modelRegistry: ModelRegistry,
+	settings: Settings,
+): Model | undefined {
+	const routing = splitUpstreamRouting(selector.raw);
+	const exactSelector = routing ? parseRetryFallbackSelector(routing.base, modelRegistry) : selector;
+	const patternModel = resolveModelOverride([selector.raw], modelRegistry, settings).model;
+	const exactModel = exactSelector ? modelRegistry.find(exactSelector.provider, exactSelector.id) : undefined;
+	if (!routing) return exactModel ?? patternModel;
+	if (
+		patternModel &&
+		((patternModel.provider === selector.provider && patternModel.id === selector.id) ||
+			(patternModel.provider === exactSelector?.provider && patternModel.id === exactSelector.id))
+	) {
+		return patternModel;
+	}
+	return exactModel;
 }
 
 /** Whether a fallback-chain key is a model selector rather than a role. */

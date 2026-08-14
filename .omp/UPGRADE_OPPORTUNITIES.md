@@ -41,6 +41,23 @@ git fetch --all --tags
 
 ---
 
+## 2026-08-14 — Merged upstream v17.3.4: native PDF adopted, fork updater retained   `[done]` `[high]`
+
+**Merge**: fork `17.3.1` → upstream `v17.3.4`.
+
+**Divergence calls**:
+- **Preserved the fork `omp update` merge-session launcher and declined upstream's foreign-alias updater fix.** The v17.3.4 fix only improves Bun/npm ownership classification inside the package/binary self-updater this fork intentionally removed. The live command surface accepts only the fork merge workflow and the safe `-l` plugin shorthand, so restoring upstream's updater would add unreachable code and could overwrite the fork with plain upstream artifacts. The fork's read-only, bounded `getLatestUpstreamRelease()` lookup remains the startup update-notice source.
+- **Adopted upstream's native PDF extraction architecture while retaining fork-visible compatibility.** `pdf-inspector` now supplies asynchronous `pdfToMarkdown`, replacing the deleted MuPDF-WASM extractor. Chromium page rendering remains available for legacy `read file.pdf:<image>.png` paths. The generated native export surface keeps both upstream `pdfToMarkdown` and fork `processExec`; the latter still powers in-place restart.
+- **Preserved the fork's pi-ai TypeBox compatibility shim while adopting omptype for current callers.** Upstream removes the root runtime `Type` export, but this fork explicitly promises that public API to direct external consumers. `typebox-compat.ts` and the root export therefore remain alongside the coding-agent's `legacy-pi-ai-shim.ts` and `legacy-typebox.ts` bridge; current production callers continue using `TSchema`, `Static`, and omptype.
+- **Adopted upstream's Codex V2 compaction negotiation unchanged.** Explicit Responses endpoints now receive the canonical remote-compaction beta header; the fork's model/provider `remoteCompaction` configuration continues to feed that transport path.
+
+**Residual levers**:
+- `update-cli.ts` remains a standing merge hotspot. Port upstream updater changes only when they affect the fork's report-only release lookup or merge-session launcher; package-manager ownership, download, and binary-replacement fixes have no fork landing site.
+- Keep the root pi-ai `Type` export and the coding-agent's legacy TypeBox remap until an explicit breaking release migrates direct package consumers and published extensions together. The fork changelog entry and public API test are the retirement gate.
+- Rebuild natives before coding-agent whenever the Rust PDF API or generated bindings change, and keep `pdfToMarkdown` plus `processExec` aligned across Rust, `index.d.ts`, and the generated `index.js` export block.
+
+---
+
 ## 2026-08-13 — Merged upstream v17.3.1: watcher rewrite adopted, fork updater retained   `[done]` `[high]`
 
 **Merge**: fork `17.3.0` → upstream `v17.3.1`.

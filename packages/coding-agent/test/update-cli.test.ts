@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 import { parseArgs } from "../src/cli/args";
 import * as pluginCli from "../src/cli/plugin-cli";
@@ -82,5 +85,41 @@ describe("update command plugin dispatch", () => {
 
 		expect(updateSpy).toHaveBeenCalledWith();
 		expect(pluginSpy).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The fork updater merges upstream inside a checkout instead of installing a
+ * published artifact, so its only install-target contract is the checkout guard:
+ * a missing or non-git directory must abort before a session is started.
+ */
+describe("fork update repo guard", () => {
+	const originalRepoDir = process.env.OMP_VACPI_REPO_DIR;
+	const tempDirs: string[] = [];
+
+	afterEach(async () => {
+		if (originalRepoDir === undefined) delete process.env.OMP_VACPI_REPO_DIR;
+		else process.env.OMP_VACPI_REPO_DIR = originalRepoDir;
+		for (const dir of tempDirs.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+	});
+
+	async function tempRepoDir(): Promise<string> {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-fork-update-"));
+		tempDirs.push(dir);
+		return dir;
+	}
+
+	it("refuses to start the merge session when the configured checkout is missing", async () => {
+		const missing = path.join(await tempRepoDir(), "absent");
+		process.env.OMP_VACPI_REPO_DIR = missing;
+
+		await expect(updateCli.runUpdateCommand()).rejects.toThrow(`Fork repo not found at ${missing}`);
+	});
+
+	it("refuses to start the merge session when the checkout has no git repo", async () => {
+		const dir = await tempRepoDir();
+		process.env.OMP_VACPI_REPO_DIR = dir;
+
+		await expect(updateCli.runUpdateCommand()).rejects.toThrow(/is not a git checkout/);
 	});
 });

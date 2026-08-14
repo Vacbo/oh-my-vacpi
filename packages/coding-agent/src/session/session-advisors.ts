@@ -91,6 +91,7 @@ import {
 	getRetryFallbackRevertPolicy,
 	parseRetryFallbackSelector,
 	type RetryFallbackSelector,
+	resolveRetryFallbackSelectorModel,
 } from "./retry-fallback-chains";
 import { formatSessionDumpText } from "./session-dump-format";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
@@ -1149,13 +1150,11 @@ export class SessionAdvisors {
 		}
 		if (this.#host.isRetryFallbackSelectorSuppressed(originalSelector)) return;
 
-		const resolvedPrimary = resolveModelOverride(
-			[originalSelector.raw],
+		const primaryModel = resolveRetryFallbackSelectorModel(
+			originalSelector,
 			this.#host.modelRegistry,
 			this.#host.settings,
 		);
-		const primaryModel =
-			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
 		if (!primaryModel) return;
 		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, advisor.providerSessionId, { signal });
 		if (!apiKey) return;
@@ -1248,8 +1247,7 @@ export class SessionAdvisors {
 		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
 		for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 			if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
-			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
+			const candidate = resolveRetryFallbackSelectorModel(selector, this.#host.modelRegistry, this.#host.settings);
 			if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
 			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
 			if (!apiKey) continue;

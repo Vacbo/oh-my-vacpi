@@ -10,19 +10,28 @@ import {
 	type ModelUsageHealth,
 	type ProviderSessionState,
 } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { parseModelPattern, parseModelString } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import {
+	formatModelStringWithRouting,
+	parseModelPattern,
+	parseModelString,
+} from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import type { ServingModel } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
+import {
+	parseRetryFallbackSelector,
+	resolveRetryFallbackSelectorModel,
+	type ServingModel,
+} from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -60,9 +69,10 @@ function getLastAssistantMessage(session: AgentSession): AssistantMessage {
 function createFallbackAgent(
 	primaryModel: Model,
 	requestedModels: string[],
-	options: { retryAfterMs?: number } = {},
+	options: { retryAfterMs?: number; firstError?: string | Error } = {},
 ): Agent {
 	const retryAfterMs = options.retryAfterMs ?? FALLBACK_TEST_RETRY_AFTER_MS;
+	const firstError = options.firstError ?? `rate limit exceeded retry-after-ms=${retryAfterMs}`;
 	const mock = createMockModel();
 	let primaryAttempts = 0;
 	return new Agent({
@@ -77,7 +87,7 @@ function createFallbackAgent(
 			requestedModels.push(`${model.provider}/${model.id}`);
 			if (model.provider === primaryModel.provider && model.id === primaryModel.id && primaryAttempts === 0) {
 				primaryAttempts += 1;
-				mock.push({ throw: `rate limit exceeded retry-after-ms=${retryAfterMs}` });
+				mock.push({ throw: firstError });
 			} else {
 				mock.push({ content: [`ok:${model.provider}/${model.id}`] });
 			}
@@ -242,6 +252,46 @@ describe("AgentSession retry fallback", () => {
 				role: "default",
 			},
 		]);
+	});
+
+	it("keeps non-Gemini empty-body errors on the model-fallback path", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled empty-body fallback models");
+		}
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels, {
+			firstError: new AIError.ProviderResponseError("Devin API error: empty response body", {
+				provider: "devin",
+				kind: "empty-body",
+			}),
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		await session.prompt("Recover the empty provider body");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.provider).toBe(fallbackModel.provider);
+		expect(session.model?.id).toBe(fallbackModel.id);
 	});
 
 	it("forwards retry fallback events to extension handlers", async () => {
@@ -3906,7 +3956,22 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.id).toBe(fallbackModel.id);
 	});
 
-	it("restores routed fallback primaries after cooldown expiry", async () => {
+	it("rejects a routed fuzzy match from a different aggregator", () => {
+		const exactModel = getBundledModel("vercel-ai-gateway", "openai/gpt-4o-mini");
+		const fuzzyModel = getBundledModel("openrouter", "openai/gpt-4o-mini");
+		if (!exactModel || !fuzzyModel) {
+			throw new Error("Expected bundled Vercel Gateway and OpenRouter test models to exist");
+		}
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([fuzzyModel]);
+		const selector = parseRetryFallbackSelector("vercel-ai-gateway/openai/gpt-4o-mini@cerebras", modelRegistry);
+		if (!selector) throw new Error("Expected routed Vercel Gateway selector to parse");
+
+		const resolved = resolveRetryFallbackSelectorModel(selector, modelRegistry, Settings.isolated());
+
+		expect(resolved).toMatchObject({ provider: exactModel.provider, id: exactModel.id });
+	});
+
+	it("restores routed fallback primaries when only the unrouted base model is available", async () => {
 		const openRouterModel = getBundledModel("openrouter", "z-ai/glm-4.7");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 		if (!openRouterModel || !fallbackModel) {
@@ -3916,6 +3981,7 @@ describe("AgentSession retry fallback", () => {
 		if (!routedPrimary) {
 			throw new Error("Expected routed OpenRouter primary to resolve");
 		}
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([openRouterModel]);
 
 		const requestedModels: string[] = [];
 		const mock = createMockModel();
@@ -3983,11 +4049,7 @@ describe("AgentSession retry fallback", () => {
 			`${fallbackModel.provider}/${fallbackModel.id}`,
 			"openrouter/z-ai/glm-4.7@cerebras",
 		]);
-		expect(session.model?.provider).toBe("openrouter");
-		expect(session.model?.id).toBe("z-ai/glm-4.7");
-		expect(
-			(session.model?.compat as { openRouterRouting?: { only?: string[] } } | undefined)?.openRouterRouting?.only,
-		).toEqual(["cerebras"]);
+		expect(session.model && formatModelStringWithRouting(session.model)).toBe("openrouter/z-ai/glm-4.7@cerebras");
 	});
 	it("preserves thinking on bare fallback selectors and does not overwrite user thinking on restore", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
@@ -4233,7 +4295,7 @@ describe("AgentSession retry fallback", () => {
 		expect(modelRegistry.isSelectorSuppressed("openai/gpt-4o")).toBe(false);
 	});
 
-	it("auto-retries Gemini MALFORMED_FUNCTION_CALL transient errors", async () => {
+	it("auto-retries Gemini MALFORMED_FUNCTION_CALL after an unexecuted tool call", async () => {
 		const model = getBundledModel("google", "gemini-1.5-flash");
 		if (!model) {
 			throw new Error("Expected bundled Google test model to exist");
@@ -4241,11 +4303,30 @@ describe("AgentSession retry fallback", () => {
 
 		const malformedError = "Generation failed with finish reason: MALFORMED_FUNCTION_CALL";
 		const requestedModels: string[] = [];
+		let toolExecutions = 0;
+		const toolSchema = type({ value: type("string") });
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "record",
+			label: "Record",
+			description: "Record a value",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				toolExecutions += 1;
+				return { content: [{ type: "text", text: params.value }], details: params };
+			},
+		};
 
 		const mock = createMockModel({
 			responses: [
 				{
-					content: [{ type: "thinking", thinking: "Thinking before malformed function call..." }],
+					content: [
+						{
+							type: "toolCall",
+							id: "malformed-call",
+							name: "record",
+							arguments: { value: "must-not-execute" },
+						},
+					],
 					stopReason: "error",
 					errorMessage: malformedError,
 				},
@@ -4257,7 +4338,7 @@ describe("AgentSession retry fallback", () => {
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
-				tools: [],
+				tools: [tool],
 				messages: [],
 			},
 			streamFn: (requestedModel, context, options) => {
@@ -4284,15 +4365,28 @@ describe("AgentSession retry fallback", () => {
 		await session.prompt("recover from Gemini malformed error");
 		await session.waitForIdle();
 
-		expect(mock.calls).toHaveLength(2);
+		expect(requestedModels).toEqual([`${model.provider}/${model.id}`, `${model.provider}/${model.id}`]);
+		expect(toolExecutions).toBe(0);
 		expect(retryStartEvents).toHaveLength(1);
 		expect(retryEndEvents).toHaveLength(1);
-		expect(session.agent.state.messages).toHaveLength(2);
-		const assistantMsg = session.agent.state.messages[1];
-		if (assistantMsg.role !== "assistant") {
-			throw new Error(`Expected assistant message, got ${assistantMsg.role}`);
+		const messages = session.agent.state.messages;
+		expect(messages.map(message => message.role)).toEqual(["user", "assistant", "toolResult", "assistant"]);
+		const failedAssistant = messages[1];
+		if (failedAssistant.role !== "assistant") {
+			throw new Error(`Expected failed assistant message, got ${failedAssistant.role}`);
 		}
-		const contentBlock = assistantMsg.content[0];
+		expect(failedAssistant.errorMessage).toBe(malformedError);
+		const syntheticResult = messages[2];
+		if (syntheticResult.role !== "toolResult") {
+			throw new Error(`Expected synthetic tool result, got ${syntheticResult.role}`);
+		}
+		expect(syntheticResult.toolCallId).toBe("malformed-call");
+		expect(syntheticResult.details).toMatchObject({ executed: false, source: "assistant_stop_error" });
+		const recoveredAssistant = messages[3];
+		if (recoveredAssistant.role !== "assistant") {
+			throw new Error(`Expected recovered assistant message, got ${recoveredAssistant.role}`);
+		}
+		const contentBlock = recoveredAssistant.content[0];
 		if (contentBlock.type !== "text") {
 			throw new Error(`Expected text content block, got ${contentBlock.type}`);
 		}
