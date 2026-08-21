@@ -41,6 +41,25 @@ git fetch --all --tags
 
 ---
 
+## 2026-08-21 — Merged upstream v17.4.1: model-scoped tokenizers adopted, fork controls re-homed   `[done]` `[high]`
+
+**Merge**: fork `17.3.4` → upstream `v17.4.1`.
+
+**Divergence calls**:
+- **Preserved the fork's jj merge-session updater and adopted only upstream's actionable proxy diagnostic.** Upstream's package-manager and binary self-installer internals remain intentionally absent: `omp update` still launches the guarded source-checkout merge workflow, while the bounded release lookup now identifies unsupported proxy failures instead of reporting a generic network error.
+- **Adopted upstream's model-scoped `Tokenizer`, ordered compaction methods, and handoff architecture.** Context-manifest accounting now uses the session tokenizer instead of the removed global estimator. Retry recovery combines upstream's two-key fallback-chain walk and Anthropic signature guard with the fork's routing-aware selector-model resolution.
+- **Adopted upstream's pure settings-reload architecture while retaining authoritative fork migrations.** Fire Pass selectors migrate in memory during read-only reloads and write back only on persistent/quarantine loads; fork todo/search tool-ID migrations remain. MCP imports synthesize the merged schema correctly, including inherited-property bounds.
+- **Preserved fork-visible restart, SSH refresh, autocomplete, editor-constructor, and project-trust compatibility surfaces while adopting upstream's code mode, composer shape definitions, and editor border architecture.** These are deliberate re-homes rather than parallel implementations.
+- **Regenerated owned artifacts from merged sources.** The catalog, Bazel module lock, native bindings, and package changelogs were rebuilt or normalized; released changelog sections remain byte-identical to upstream and fork entries stay under `[Unreleased]`.
+
+**Residual levers**:
+- `OMP_VACPI_REPO_DIR` remains the explicit updater checkout override. The updater's directory/`.git` guard is the safety boundary, and `update-cli.ts` remains a standing merge hotspot.
+- Retire `ExtensionAutocompleteProviderFactory`, `ExtensionContext.isProjectTrusted()`, and the overloaded editor constructor only in an explicit compatibility-breaking release with all extension consumers migrated.
+- Startup plan-mode selection is intentionally represented in both interactive initialization and print-mode setup. A later refactor may centralize the predicate, but this merge keeps the two observable entry paths explicit.
+- Regenerate the catalog after model-policy or descriptor changes and rebuild natives before coding-agent whenever Rust or generated native exports change.
+
+---
+
 ## 2026-08-14 — Merged upstream v17.3.4: native PDF adopted, fork updater retained   `[done]` `[high]`
 
 **Merge**: fork `17.3.1` → upstream `v17.3.4`.

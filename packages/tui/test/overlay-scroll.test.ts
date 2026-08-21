@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { type Component, CURSOR_MARKER, type Focusable, type OverlayFocusOwner, TUI } from "@oh-my-pi/pi-tui";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualTerminal } from "./virtual-terminal";
 
 class LineComponent implements Component {
@@ -167,34 +168,24 @@ async function settleResize(term: VirtualTerminal): Promise<void> {
 	await flushRender(term);
 }
 
-// Multiplexer / terminal-identity signals and overrides, read fresh from Bun.env
-// on every render (isInsideTerminalMultiplexer + reportsSizeOnAltScreenToggle).
-// A multiplexer id (TMUX/STY/ZELLIJ/CMUX_*/TERM=tmux*|screen*), Warp
-// (TERM_PROGRAM), or PI_TUI_RESIZE_IN_PLACE=1 can steer a resize onto the
-// in-place path that skips the ED3 scrollback rebuild. Direct-terminal
-// assertions must run with all of them cleared: dev machines and CI run this
-// suite inside cmux (CMUX_WORKSPACE_ID/CMUX_SURFACE_ID), tmux/screen/zellij, or
-// Warp.
-const DIRECT_TERMINAL_ENV_KEYS = [
-	"TMUX",
-	"STY",
-	"ZELLIJ",
-	"CMUX_WORKSPACE_ID",
-	"CMUX_SURFACE_ID",
-	"CMUX_REMOTE_TRANSPORT",
-	"HERDR_ENV",
-	"TERM",
-	"TERM_PROGRAM",
-	"PI_TUI_RESIZE_IN_PLACE",
-] as const;
+// Multiplexer / terminal-identity signals and overrides are read fresh from
+// Bun.env on every render (isInsideTerminalMultiplexer +
+// reportsSizeOnAltScreenToggle), and any of them can steer a resize onto the
+// in-place path that skips the ED3 scrollback rebuild. The shared helper clears
+// the multiplexer ids (TMUX/STY/ZELLIJ/HERDR_ENV/CMUX_*/TERM=tmux*|screen*);
+// Warp (TERM_PROGRAM) and the explicit PI_TUI_RESIZE_IN_PLACE override are
+// cleared per test below. Dev machines and CI run this suite inside cmux,
+// tmux/screen/zellij, or Warp.
+withoutTerminalMultiplexer();
+
+const DIRECT_TERMINAL_ENV_KEYS = ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE"] as const;
 
 describe("TUI overlays", () => {
 	let savedTerminalEnv: Record<string, string | undefined> = {};
 	beforeEach(() => {
-		// Any of these can steer a resize onto the in-place path that skips the
-		// ED3 scrollback rebuild (multiplexer detection, Warp, or the explicit
-		// override), so clear them all to keep the direct-terminal resize and
-		// scrollback assertions below deterministic on any host, including cmux.
+		// Warp and the explicit override steer a resize onto the in-place path
+		// that skips the ED3 scrollback rebuild, so clear them to keep the
+		// direct-terminal resize and scrollback assertions below deterministic.
 		for (const key of DIRECT_TERMINAL_ENV_KEYS) {
 			savedTerminalEnv[key] = Bun.env[key];
 			delete Bun.env[key];

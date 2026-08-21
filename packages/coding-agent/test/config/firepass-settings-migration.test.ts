@@ -59,4 +59,25 @@ describe("legacy Fire Pass selector settings migration", () => {
 			fs.rmSync(agentDir, { recursive: true, force: true });
 		}
 	});
+
+	it("migrates reloaded project selectors in memory without rewriting the file", async () => {
+		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-firepass-settings-"));
+		const project = TempDir.createSync("@pi-firepass-project-");
+		try {
+			setAgentDir(agentDir);
+			const projectConfigPath = path.join(project.path(), ".omp", "config.yml");
+			fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+			const settings = await Settings.init({ cwd: project.path(), agentDir });
+			const legacyProjectConfig = YAML.stringify({ modelRoles: { slow: LEGACY_FIREPASS_SELECTOR } });
+			fs.writeFileSync(projectConfigPath, legacyProjectConfig);
+
+			await settings.reloadFromDisk();
+
+			expect(settings.getProjectModelRole("slow")).toBe(FIREPASS_SELECTOR);
+			expect(fs.readFileSync(projectConfigPath, "utf8")).toBe(legacyProjectConfig);
+		} finally {
+			project.removeSync();
+			fs.rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
 });

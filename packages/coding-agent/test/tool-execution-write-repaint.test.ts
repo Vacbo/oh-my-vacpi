@@ -4,6 +4,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type Component, TUI } from "@oh-my-pi/pi-tui";
 import { StressRenderScheduler } from "../../tui/test/render-stress-scheduler";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 
 function writeArgs(lineCount: number) {
 	return {
@@ -31,24 +32,16 @@ function plainBuffer(term: VirtualTerminal): string[] {
 		.filter(Boolean);
 }
 
-// A host-independent direct-terminal baseline for the buffer assertions below.
-// A multiplexer id (TMUX/STY/ZELLIJ/CMUX_*/TERM=tmux*|screen*), read fresh from
-// Bun.env, makes the destructive rebuild fall back to repair-below (ED3 would
-// corrupt a pane's own history), so the stale pending tail rows survive instead
-// of being scrubbed — clearing these keeps the ED3 scrub path. TERM_PROGRAM and
-// PI_TUI_RESIZE_IN_PLACE only steer the resize path (not exercised here) but are
-// cleared too so no ambient terminal identity leaks in. The suite runs inside
-// cmux (CMUX_WORKSPACE_ID/CMUX_SURFACE_ID), tmux/screen/zellij, or Warp.
-const DIRECT_TERMINAL_ENV_KEYS = [
-	"TMUX",
-	"STY",
-	"ZELLIJ",
-	"CMUX_WORKSPACE_ID",
-	"CMUX_SURFACE_ID",
-	"TERM",
-	"TERM_PROGRAM",
-	"PI_TUI_RESIZE_IN_PLACE",
-] as const;
+// `withoutTerminalMultiplexer()` neutralizes the multiplexer ids
+// (TMUX/STY/ZELLIJ/HERDR_ENV/CMUX_*/TERM=tmux*|screen*) that make the
+// destructive rebuild fall back to repair-below — ED3 would corrupt a pane's
+// own history — which would leave the stale pending tail rows on screen.
+withoutTerminalMultiplexer();
+
+// Warp (TERM_PROGRAM=WarpTerminal) and PI_TUI_RESIZE_IN_PLACE=1 additionally
+// route the frame through the in-place path that skips the ED3 scrub, so clear
+// them too; the suite runs on Warp on dev machines and CI.
+const DIRECT_TERMINAL_ENV_KEYS = ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE"] as const;
 
 describe("ToolExecutionComponent write repaint seam", () => {
 	const components: ToolExecutionComponent[] = [];

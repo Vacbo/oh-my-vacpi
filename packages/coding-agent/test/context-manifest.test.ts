@@ -11,7 +11,7 @@
  *   4. The overlay reveals a leaf's raw content on expand and closes on Esc.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
+import { Tokenizer } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { ContextInspectorOverlayComponent } from "../src/modes/components/context-inspector-overlay";
 import { initTheme } from "../src/modes/theme/theme";
@@ -76,9 +76,16 @@ const BLOCK1 = [
 	"</critical>",
 ].join("\n");
 
+/**
+ * One tokenizer for the whole suite: the manifest counts through the session's
+ * instance, so the expectations must measure with the same one.
+ */
+const TOKENIZER = new Tokenizer();
+
 function makeSession(overrides: Partial<ContextManifestSession> = {}): ContextManifestSession {
 	const session: ContextManifestSession = {
 		systemPrompt: [BLOCK0, BLOCK1],
+		tokenizer: TOKENIZER,
 		agent: { state: { tools: [{ name: "read", description: "Read files", parameters: { type: "object" } }] } },
 		skills: [
 			{ name: "alpha", description: "First skill description", filePath: "/s/alpha.md", source: "builtin" },
@@ -224,8 +231,7 @@ describe("buildContextManifest", () => {
 		const session = makeSession();
 		const manifest = buildContextManifest(session);
 		const messages = findNode(manifest.root, n => n.id === "msgs");
-		let expected = 0;
-		for (const message of session.messages ?? []) expected += estimateTokens(message);
+		const expected = session.tokenizer.countMessages(session.messages ?? []);
 		expect(messages?.tokens).toBe(expected);
 	});
 

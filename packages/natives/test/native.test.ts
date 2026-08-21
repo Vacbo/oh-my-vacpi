@@ -7,6 +7,8 @@ import {
 	astEdit,
 	astMatch,
 	blockRangeAt,
+	countTokens,
+	Encoding,
 	executeShell,
 	FileType,
 	fuzzyFind,
@@ -66,6 +68,13 @@ This is a test file.
 
 	await fs.writeFile(path.join(testDir, "history-search.ts"), "export const historySearch = true;\n");
 }
+
+describe("countTokens", () => {
+	it("counts native UTF-16 content without its N-API terminator and sums arrays", () => {
+		expect(countTokens("hello world", Encoding.O200kBase)).toBe(2);
+		expect(countTokens(["hello world", "hello world"], Encoding.O200kBase)).toBe(4);
+	});
+});
 
 async function cleanupFixtures() {
 	await fs.rm(testDir, { recursive: true, force: true });
@@ -675,6 +684,59 @@ describe("pi-natives", () => {
 				.replace(/\u001b\][^\u0007]*?(?:\u0007|\u001b\\)|\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
 				.trim();
 			expect(JSON.parse(payload)).toEqual(expected);
+		});
+
+		it("starts from an empty environment when envClear is enabled", async () => {
+			const shellPath = Bun.which("sh");
+			if (!shellPath) {
+				return;
+			}
+
+			const inheritedEnvName = "OMP_PTY_ENV_CLEAR_TEST";
+			const inheritedEnvValue = `inherited-${crypto.randomUUID()}`;
+			const command = `[ -z "$${inheritedEnvName}" ] && printf absent || printf '%s' "$${inheritedEnvName}"`;
+			const childScript = `
+import { PtySession } from ${JSON.stringify(addonUrl)};
+
+if (process.env[${JSON.stringify(inheritedEnvName)}] !== ${JSON.stringify(inheritedEnvValue)}) {
+	throw new Error("PTY test process did not receive inherited environment");
+}
+
+const session = new PtySession();
+let output = "";
+const result = await session.start(
+	{
+		command: ${JSON.stringify(command)},
+		cwd: ${JSON.stringify(testDir)},
+		env: {},
+		envClear: true,
+		timeoutMs: 5_000,
+		cols: 80,
+		rows: 24,
+		shell: ${JSON.stringify(shellPath)},
+	},
+	(error, chunk) => {
+		if (error) {
+			throw error;
+		}
+		output += chunk;
+	},
+);
+
+process.stdout.write(JSON.stringify({ output, result }));
+`;
+			const childProcess = Bun.spawn([process.execPath, "--eval", childScript], {
+				env: { ...process.env, [inheritedEnvName]: inheritedEnvValue },
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [stdout, exitCode] = await Promise.all([new Response(childProcess.stdout).text(), childProcess.exited]);
+			const payload: { output: string; result: { exitCode?: number } } = JSON.parse(stdout);
+
+			expect(exitCode).toBe(0);
+			expect(payload.result.exitCode).toBe(0);
+			expect(payload.output).toContain("absent");
+			expect(payload.output).not.toContain(inheritedEnvValue);
 		});
 
 		it("reports the child PID as soon as the PTY process starts", async () => {

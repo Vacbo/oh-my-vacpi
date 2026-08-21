@@ -11,6 +11,7 @@ import { previewWindowRows } from "@oh-my-pi/pi-coding-agent/tools/render-utils"
 import { TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 
 // A host-independent direct-terminal baseline for the real-TUI finalization test
 // below, which resizes and asserts the ED3 scrollback rebuild. A multiplexer id
@@ -39,6 +40,8 @@ const DIRECT_TERMINAL_ENV_KEYS = [
 // whole change segments grew and shrank tick to tick (the stutter), and the
 // earlier high-water fix padded the deficit with blank rows (the "large
 // rectangle that is half empty" regression). The tail window has neither.
+withoutTerminalMultiplexer();
+
 describe("streaming edit preview height (stable, full tail window)", () => {
 	const oldBlock = ["function foo() {", "  const x = 1;", "  return x;", "}"].join("\n");
 	const tail = ["", "function bar() {", "  return 2;", "}", "", "function baz() {", "  return 3;", "}", ""].join("\n");

@@ -8,15 +8,14 @@
  * content. Consumers display `node.tokens`/`node.bytes` as-is and never re-sum.
  *
  * Token accounting reuses the exact helpers behind the `/context` summary
- * (`estimateToolSchemaTokens`, `estimateTokens`, `countTokens`, and the same
- * auto-compaction reserve math) so the inspector's headline total matches that
- * panel without depending on the full `AgentSession` concrete type.
+ * (`estimateToolSchemaTokens`, the session's model-scoped {@link Tokenizer},
+ * and the same auto-compaction reserve math) so the inspector's headline total
+ * matches that panel without depending on the full `AgentSession` concrete type.
  */
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
 import type { CompactionSettings } from "@oh-my-pi/pi-agent-core/compaction";
-import { effectiveReserveTokens, estimateTokens, resolveThresholdTokens } from "@oh-my-pi/pi-agent-core/compaction";
+import { effectiveReserveTokens, resolveThresholdTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { countTokens } from "@oh-my-pi/pi-natives";
 import type {
 	BashExecutionMessage,
 	BranchSummaryMessage,
@@ -61,11 +60,18 @@ export interface ContextManifestSession {
 		getGroup(name: "compaction"): CompactionSettings;
 	};
 	messages?: readonly AgentMessage[];
+	/**
+	 * Counter behind every token number in the manifest. It is the live
+	 * `Agent`'s own instance, so the encoding is the active model's and the
+	 * per-message memo is shared with compaction and the `/context` summary.
+	 */
+	tokenizer: Tokenizer;
 }
 
 export function toContextManifestSession(session: {
 	systemPrompt?: readonly string[];
-	agent?: {
+	agent: {
+		tokenizer: Tokenizer;
 		state?: {
 			tools?: readonly { name: string; description?: string; parameters?: unknown }[];
 		};
@@ -81,7 +87,7 @@ export function toContextManifestSession(session: {
 		systemPrompt: session.systemPrompt,
 		agent: {
 			state: {
-				tools: (session.agent?.state?.tools ?? []).map(tool => ({
+				tools: (session.agent.state?.tools ?? []).map(tool => ({
 					name: tool.name,
 					description: tool.description ?? "",
 					parameters: tool.parameters,
@@ -99,6 +105,7 @@ export function toContextManifestSession(session: {
 			: undefined,
 		settings: session.settings,
 		messages: session.messages,
+		tokenizer: session.agent.tokenizer,
 	};
 }
 export type ManifestNodeKind =
@@ -349,6 +356,7 @@ function skillSegmentChildren(
 	content: string,
 	window: number,
 	skills: readonly ContextManifestSkill[],
+	tokenizer: Tokenizer,
 ): ManifestNode[] {
 	const byName = new Map<string, ContextManifestSkill>();
 	for (const skill of skills) byName.set(skill.name, skill);
@@ -359,7 +367,7 @@ function skillSegmentChildren(
 		const name = match[1].trim();
 		const description = match[2].trim();
 		const skill = byName.get(name);
-		const tokens = countTokens([name, description]);
+		const tokens = tokenizer.countTokens([name, description]);
 		children.push(
 			makeLeaf(
 				`${idPrefix}/skill-${children.length}`,
@@ -376,7 +384,12 @@ function skillSegmentChildren(
 }
 
 /** Parse a `<context>` segment into per-file leaves. Returns [] when the structure does not pair cleanly. */
-function contextSegmentChildren(idPrefix: string, content: string, window: number): ManifestNode[] {
+function contextSegmentChildren(
+	idPrefix: string,
+	content: string,
+	window: number,
+	tokenizer: Tokenizer,
+): ManifestNode[] {
 	const lines = splitLinesWithOffsets(content);
 	const children: ManifestNode[] = [];
 	let i = 0;
@@ -404,7 +417,7 @@ function contextSegmentChildren(idPrefix: string, content: string, window: numbe
 				shortenLeadingPath(path),
 				"file",
 				fileContent,
-				countTokens(fileContent),
+				tokenizer.countTokens(fileContent),
 				window,
 				path,
 			),
@@ -430,10 +443,11 @@ function buildSystemPromptGroup(
 	blocks: readonly string[],
 	window: number,
 	skills: readonly ContextManifestSkill[],
+	tokenizer: Tokenizer,
 ): ManifestNode {
 	const blockNodes: ManifestNode[] = blocks.map((block, index) => {
 		const id = `sys/block-${index}`;
-		const blockTokens = countTokens(block);
+		const blockTokens = tokenizer.countTokens(block);
 		const segments = segmentPromptBlock(block);
 		if (segments.length <= 1) {
 			return {
@@ -443,10 +457,13 @@ function buildSystemPromptGroup(
 		}
 		const sectionNodes: ManifestNode[] = segments.map((segment, segIndex) => {
 			const segId = `${id}/seg-${segIndex}`;
-			const segTokens = countTokens(segment.content);
+			const segTokens = tokenizer.countTokens(segment.content);
 			let segChildren: ManifestNode[] = [];
-			if (segment.tag === "skills") segChildren = skillSegmentChildren(segId, segment.content, window, skills);
-			else if (segment.tag === "context") segChildren = contextSegmentChildren(segId, segment.content, window);
+			if (segment.tag === "skills") {
+				segChildren = skillSegmentChildren(segId, segment.content, window, skills, tokenizer);
+			} else if (segment.tag === "context") {
+				segChildren = contextSegmentChildren(segId, segment.content, window, tokenizer);
+			}
 			const node: ManifestNode = {
 				id: segId,
 				label: segment.label,
@@ -487,7 +504,7 @@ function buildSystemPromptGroup(
 }
 
 /** Build the "Tool schemas" group from the wire tool set. */
-function buildToolsGroup(tools: readonly ContextManifestTool[], window: number): ManifestNode {
+function buildToolsGroup(tools: readonly ContextManifestTool[], window: number, tokenizer: Tokenizer): ManifestNode {
 	const normalized = tools.map(tool => ({
 		name: tool.name,
 		description: tool.description,
@@ -496,10 +513,10 @@ function buildToolsGroup(tools: readonly ContextManifestTool[], window: number):
 	const toolNodes: ManifestNode[] = normalized.map((tool, index) => {
 		const params = safeStringify(tool.parameters);
 		const content = `${tool.name}\n\n${tool.description}\n\n${params}`;
-		const tokens = estimateToolSchemaTokens([tool]);
+		const tokens = estimateToolSchemaTokens([tool], tokenizer);
 		return makeLeaf(`tools/${tool.name || index}`, tool.name || `tool-${index}`, "tool", content, tokens, window);
 	});
-	const tokens = estimateToolSchemaTokens(normalized);
+	const tokens = estimateToolSchemaTokens(normalized, tokenizer);
 	return {
 		id: "tools",
 		label: "Tool schemas",
@@ -574,7 +591,7 @@ function messageRoleLabel(message: AgentMessage): string {
 }
 
 /** Decompose a message into byte-exact content parts. Never drops a message: unknown shapes fall back to raw JSON. */
-function messageParts(idPrefix: string, message: AgentMessage, window: number): ManifestNode[] {
+function messageParts(idPrefix: string, message: AgentMessage, window: number, tokenizer: Tokenizer): ManifestNode[] {
 	const parts: ManifestNode[] = [];
 	const push = (label: string, content: string, detail?: string) => {
 		parts.push(
@@ -583,7 +600,7 @@ function messageParts(idPrefix: string, message: AgentMessage, window: number): 
 				label,
 				"messagePart",
 				content,
-				countTokens(content),
+				tokenizer.countTokens(content),
 				window,
 				detail,
 			),
@@ -654,11 +671,11 @@ function messageParts(idPrefix: string, message: AgentMessage, window: number): 
 }
 
 /** Build the "Messages" group from the live conversation. */
-function buildMessagesGroup(messages: readonly AgentMessage[], window: number): ManifestNode {
+function buildMessagesGroup(messages: readonly AgentMessage[], window: number, tokenizer: Tokenizer): ManifestNode {
 	const messageNodes: ManifestNode[] = messages.map((message, index) => {
 		const id = `msgs/${index}`;
-		const tokens = estimateTokens(message);
-		const parts = messageParts(id, message, window);
+		const tokens = tokenizer.countMessage(message);
+		const parts = messageParts(id, message, window, tokenizer);
 		return {
 			id,
 			label: `[${index}] ${messageRoleLabel(message)}`,
@@ -695,10 +712,11 @@ export function buildContextManifest(session: ContextManifestSession): ContextMa
 	const tools = session.agent?.state?.tools ?? [];
 	const messages = session.messages ?? [];
 	const skills = session.skills ?? [];
+	const tokenizer = session.tokenizer;
 
-	const systemGroup = buildSystemPromptGroup(blocks, contextWindow, skills);
-	const toolsGroup = buildToolsGroup(tools, contextWindow);
-	const messagesGroup = buildMessagesGroup(messages, contextWindow);
+	const systemGroup = buildSystemPromptGroup(blocks, contextWindow, skills, tokenizer);
+	const toolsGroup = buildToolsGroup(tools, contextWindow, tokenizer);
+	const messagesGroup = buildMessagesGroup(messages, contextWindow, tokenizer);
 	const children = [systemGroup, toolsGroup, messagesGroup];
 
 	const usedTokens = sumTokens(children);

@@ -21,7 +21,7 @@ import { Settings } from "../config/settings";
 import { runRootCommand } from "../main";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import forkUpdatePrompt from "../prompts/system/fork-update.md" with { type: "text" };
-import { withTimeoutSignal } from "../utils/fetch-timeout";
+import { isUnsupportedProxyError, unsupportedProxyMessage, withTimeoutSignal } from "../utils/fetch-timeout";
 import { parseArgs } from "./args";
 
 interface ModelRoleSettings {
@@ -39,7 +39,6 @@ export interface ForkRepoDirOptions {
 }
 
 const DEFAULT_FORK_REPO_SUBPATH = ["Dev", "oh-my-vacpi"] as const;
-
 /**
  * Resolve the fork checkout the update session must operate in.
  * `OMP_VACPI_REPO_DIR` overrides; otherwise the default `~/Dev/oh-my-vacpi`.
@@ -132,10 +131,18 @@ function readRenamePointer(manifest: unknown): string | undefined {
 }
 
 async function fetchLatestManifest(pkg: string, timeoutMs: number): Promise<unknown> {
-	const response = await fetch(`${NPM_REGISTRY}${pkg}/latest`, {
-		headers: { accept: "application/json" },
-		signal: withTimeoutSignal(timeoutMs),
-	});
+	let response: Response;
+	try {
+		response = await fetch(`${NPM_REGISTRY}${pkg}/latest`, {
+			headers: { accept: "application/json" },
+			signal: withTimeoutSignal(timeoutMs),
+		});
+	} catch (err) {
+		// A misconfigured proxy env var otherwise surfaces as an opaque fetch
+		// failure; upstream's diagnostic names the offending variable.
+		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
+		throw err;
+	}
 	if (!response.ok) {
 		throw new Error(`Failed to read ${pkg} release metadata: ${response.status} ${response.statusText}`);
 	}
