@@ -27,7 +27,7 @@ test("computer schema is constructed once on first parameters access", async () 
 			afterSecondToolParametersAccess: 1,
 			afterValidation: 1,
 		},
-		disabledToolCount: 0,
+		disabledComputerToolCount: 0,
 		schema: {
 			callable: true,
 			repeatedIdentity: true,

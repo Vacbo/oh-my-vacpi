@@ -203,6 +203,8 @@ export interface AgentSessionConfig {
 	 * surfaces it, but must never activate a tool the caller excluded.
 	 */
 	requestedToolNames?: ReadonlySet<string>;
+	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
+	ensureGoalRegistered?: () => Promise<boolean>;
 	/** Current session pre-LLM message transform pipeline. */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	/** Provider request transform applied after message conversion. */

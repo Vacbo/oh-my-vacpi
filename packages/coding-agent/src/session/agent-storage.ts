@@ -23,12 +23,6 @@ type ModelUsageRow = {
 	last_used_at: number;
 };
 
-/** Row shape for slash_command_usage table queries */
-type SlashCommandUsageRow = {
-	command_name: string;
-	last_used_at: number;
-};
-
 /** Row shape for model_perf table queries */
 type ModelPerfRow = {
 	model_key: string;
@@ -147,10 +141,9 @@ export class AgentStorage {
 	#listModelUsageStmt: Statement;
 	#upsertModelPerfStmt: Statement;
 	#listModelPerfStmt: Statement;
+	#upsertCommandUsageStmt: Statement;
+	#listCommandUsageStmt: Statement;
 	#modelUsageCache: string[] | null = null;
-	#upsertSlashCommandUsageStmt: Statement;
-	#listSlashCommandUsageStmt: Statement;
-	#slashCommandUsageCache: string[] | null = null;
 	/** Only the real user db auto-imports stats.db history; custom paths (tests, embedding) opt in explicitly. */
 	#autoPerfBackfill: boolean;
 	/** One backfill *check* per process; the persistent gate is the meta marker. */
@@ -187,12 +180,6 @@ export class AgentStorage {
 		this.#listModelUsageStmt = this.#db.prepare(
 			"SELECT model_key, last_used_at FROM model_usage ORDER BY last_used_at DESC",
 		);
-		this.#upsertSlashCommandUsageStmt = this.#db.prepare(
-			`INSERT INTO slash_command_usage (command_name, last_used_at) VALUES (?, ${SQLITE_NOW_EPOCH}) ON CONFLICT(command_name) DO UPDATE SET last_used_at = ${SQLITE_NOW_EPOCH}`,
-		);
-		this.#listSlashCommandUsageStmt = this.#db.prepare(
-			"SELECT command_name, last_used_at FROM slash_command_usage ORDER BY last_used_at DESC",
-		);
 		// Recency-weighted upsert: past MODEL_PERF_DECAY_AT samples, every new
 		// sample first halves the aggregates so old measurements fade out.
 		this.#upsertModelPerfStmt = this.#db.prepare(
@@ -209,6 +196,11 @@ ON CONFLICT(model_key) DO UPDATE SET
 		this.#listModelPerfStmt = this.#db.prepare(
 			"SELECT model_key, samples, output_tokens, gen_ms, ttft_samples, ttft_ms FROM model_perf",
 		);
+		this.#upsertCommandUsageStmt = this.#db.prepare(
+			`INSERT INTO command_usage (name, count, last_used_at) VALUES (?, 1, ${SQLITE_NOW_EPOCH})
+ON CONFLICT(name) DO UPDATE SET count = command_usage.count + 1, last_used_at = ${SQLITE_NOW_EPOCH}`,
+		);
+		this.#listCommandUsageStmt = this.#db.prepare("SELECT name, count FROM command_usage");
 	}
 
 	/**
@@ -245,6 +237,12 @@ CREATE TABLE IF NOT EXISTS model_perf (
 	ttft_samples REAL NOT NULL DEFAULT 0,
 	ttft_ms REAL NOT NULL DEFAULT 0,
 	updated_at INTEGER NOT NULL DEFAULT (${SQLITE_NOW_EPOCH})
+);
+
+CREATE TABLE IF NOT EXISTS command_usage (
+	name TEXT PRIMARY KEY,
+	count INTEGER NOT NULL DEFAULT 0,
+	last_used_at INTEGER NOT NULL DEFAULT (${SQLITE_NOW_EPOCH})
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -448,8 +446,8 @@ CREATE TABLE IF NOT EXISTS slash_command_usage (
 		this.#listModelUsageStmt.finalize();
 		this.#upsertModelPerfStmt.finalize();
 		this.#listModelPerfStmt.finalize();
-		this.#upsertSlashCommandUsageStmt.finalize();
-		this.#listSlashCommandUsageStmt.finalize();
+		this.#upsertCommandUsageStmt.finalize();
+		this.#listCommandUsageStmt.finalize();
 		// SqliteAuthCredentialStore.close() finalizes its own statements and
 		// closes the shared #db handle — must run after our statements finalize.
 		this.#authStore.close();
@@ -509,40 +507,32 @@ CREATE TABLE IF NOT EXISTS slash_command_usage (
 			return [];
 		}
 	}
-
 	/**
-	 * Records slash command usage, updating the last-used timestamp.
-	 * @param commandName - Canonical slash command name (without leading "/")
+	 * Records one slash-command invocation, bumping its usage count and
+	 * last-used timestamp. Frequency-ranked autocomplete reads these counts.
+	 * @param name - Canonical command name (e.g. "model", "skill:review")
 	 */
-	recordSlashCommandUsage(commandName: string): void {
-		if (!commandName) return;
+	recordCommandUsage(name: string): void {
 		try {
-			this.#upsertSlashCommandUsageStmt.run(commandName);
-			this.#slashCommandUsageCache = null;
+			this.#upsertCommandUsageStmt.run(name);
 		} catch (error) {
-			logger.warn("AgentStorage failed to record slash command usage", {
-				commandName,
-				error: String(error),
-			});
+			logger.warn("AgentStorage failed to record command usage", { name, error: String(error) });
 		}
 	}
 
 	/**
-	 * Gets slash command names ordered by most recently used.
-	 * Results are cached until recordSlashCommandUsage is called.
-	 * @returns Array of command names in MRU order
+	 * Gets slash-command usage counts keyed by canonical command name.
+	 * @returns Command name → invocation count
 	 */
-	getSlashCommandUsageOrder(): string[] {
-		if (this.#slashCommandUsageCache) {
-			return this.#slashCommandUsageCache;
-		}
+	listCommandUsage(): Record<string, number> {
 		try {
-			const rows = this.#listSlashCommandUsageStmt.all() as SlashCommandUsageRow[];
-			this.#slashCommandUsageCache = rows.map(row => row.command_name);
-			return this.#slashCommandUsageCache;
+			const rows = this.#listCommandUsageStmt.all() as Array<{ name: string; count: number }>;
+			const counts: Record<string, number> = {};
+			for (const row of rows) counts[row.name] = row.count;
+			return counts;
 		} catch (error) {
-			logger.warn("AgentStorage failed to get slash command usage order", { error: String(error) });
-			return [];
+			logger.warn("AgentStorage failed to list command usage", { error: String(error) });
+			return {};
 		}
 	}
 

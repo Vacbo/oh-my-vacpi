@@ -41,6 +41,30 @@ git fetch --all --tags
 
 ---
 
+## 2026-08-24 — Merged upstream v18.0.4: frame-plan TUI adopted, fork controls re-homed   `[done]` `[high]`
+
+**Merge**: fork `17.4.1` → upstream `v18.0.4`.
+
+**Divergence calls**:
+- **Preserved the fork's jj merge-session updater and deleted upstream's incompatible self-update channels.** `omp update` still launches the guarded fork-update session and `-l` still updates plugins; package-manager/binary replacement, `--stable`/`--canary`, the dead `update.channel` setting, and their tests stay absent. Upstream's v18 startup composer, parallel initialization, and discovery flow were adopted, with the fork's upstream-tag notice, goal mode, live-session wiring, and exit-code behavior re-homed onto them.
+- **Adopted upstream's `TerminalFramePlan`/`HistoryBatch` renderer and async text-assist/autocomplete pipeline.** The deleted native-scrollback ledger, width-epoch, and resize-replay documentation and tests were not resurrected. Architecture-independent regressions were ported onto v18's virtual scheduler and frame-plan harness, including SGR/BCE containment, bounded paint volume, pending-wrap/DECAWM, ZWJ rows, and synchronized-output bracketing. Still-live fork contracts were ported to the new sinks: no-op autocomplete sanitization, placement-box image pre-scaling, the tolerant legacy `Editor(tui, theme, keybindings)` constructor, and current-frame tool/SSH repaint behavior.
+- **Adopted upstream's command-usage ranking and removed the parallel MRU-boost mechanism.** `commandUsage` now owns slash-command ranking; `computeSlashUsageBoosts`, `getSlashUsageOrder`, their positional callback, and mechanism-specific tests were deleted. `AgentStorage` no longer exposes or writes the fork-only MRU API: `command_usage` is the sole runtime store, while `slash_command_usage` remains inert only so databases from the fork's v6 lineage migrate without data loss. The user-visible behavior remains, but usage now breaks equal text-match scores instead of lifting commands across score gaps.
+- **Re-homed terminal recording onto the v18 startup Composer.** A reflective write tap wraps the already-started terminal while forwarding the complete evolving `Terminal` surface with the real receiver. The manual `TeeTerminal` mirror and `TerminalWriteListener` were deleted, closing their recurring interface-drift hotspot without losing snapshots or live TUI control.
+- **Synthesized upstream lifecycle ownership with fork diagnostics and controls.** MCP catalog/status events, incremental registry replacement, lazy goal registration, command-usage storage, and startup composer ownership coexist with bounded MCP discovery, classified connection errors, live SSH refresh, fork live sessions, goal continuation, restart control, and TUI observability. The fork's deliberate no-deferred-cache MCP startup policy remains; pending servers register when their handshake completes.
+- **Layered fork extension controls onto upstream's rewritten dashboards.** Skill pinning, pin/status inspector metadata, and the separate `/tools` control center survive alongside upstream's dynamic extension hints, MCP health, fullscreen Git TUI, and post-finalization transcript block versioning. `/tools` now respects turn ownership: while streaming it emits upstream's read-only inventory through the deferred command-output queue, then mounts it once at settle; while idle it opens the fork's state-mutating Tool Control Center. The obsolete detached-task freeze guard was dropped because v18's parked-background mutation tracking supersedes it.
+- **Retained distinct fork compatibility paths after auditing clean merge seams.** The `pi-native` auth-gateway transport remains fully threaded through stream dispatch, catalog discovery, and gateway SSE; the legacy extension resource loader remains intentionally separate from the current root API because compiled-binary routing still selects it.
+- **Normalized source-owned artifacts.** Fork changelog entries remain under `[Unreleased]`, upstream released sections come from `v18.0.4`, the catalog is regenerated from merged policies/resolvers, and native bindings are rebuilt before the coding-agent binary.
+
+**Residual levers**:
+- `update-cli.ts` remains a standing merge hotspot. Source-checkout updates stay stable-tag-only; do not add a channel setting unless a channel has meaningful jj/tag semantics for this fork.
+- Thirteen ported renderer regressions cover the still-live byte/row contracts. The deleted suite's Ghostty-backed renderer-versus-terminal agreement probe has no v18 equivalent; add a fresh `TerminalFramePlan` test only if that integration regresses.
+- Snapshot recording begins when `InteractiveMode` adopts the startup Composer; bytes painted before that adoption are intentionally outside the recording, while geometry and all later writes remain captured.
+- A server still handshaking at the fork's 250 ms MCP startup race contributes tools only after its late registration callback. Revisit only if first-snapshot deferred tools become a required contract.
+- Keep the overloaded editor constructor until legacy extension consumers migrate. Slash usage ranking is intentionally less aggressive under upstream's score-tie policy.
+- Regenerate the catalog after model-policy/descriptor/resolver changes and rebuild natives before coding-agent whenever Rust or generated native exports change.
+
+---
+
 ## 2026-08-21 — Merged upstream v17.4.1: model-scoped tokenizers adopted, fork controls re-homed   `[done]` `[high]`
 
 **Merge**: fork `17.3.4` → upstream `v17.4.1`.
@@ -382,22 +406,21 @@ git fetch --all --tags
 
 **Fix sketch**: stamp the photo page (and the screenshot result JSON) with the serving build's version so staleness is visible at a glance; optionally add a `tui.mirror.preferSource` dev escape hatch or restart the shared mirror when the binary's mtime changes. Low priority: only bites when iterating on the mirror itself.
 
-## 2026-06-10 — Slash picker ranks `/export` above `/exit` on short prefixes; usage boost entrenches the misfire   `[open]` `[low]`
+## 2026-06-10 — Slash picker ranks `/export` above `/exit` on short prefixes; usage tie-break can entrench the misfire   `[open]` `[low]`
 
-**Where**: `packages/tui/src/autocomplete.ts:127-148` (`fuzzyScore`: exact 100, starts-with 80), `:228-239` (`computeSlashUsageBoosts`: MRU rank 0 → +15), `:344-373` (sort by `matchScore + usageBoost`, stable), `packages/coding-agent/src/slash-commands/builtin-registry.ts:262` (`export`) vs `:1098` (`exit`) vs `:1677` (`quit`), `packages/coding-agent/src/modes/controllers/input-controller.ts:602-604,871-874` (usage recording, includes `/skill:` names), `packages/coding-agent/src/session/agent-storage.ts` (`slash_command_usage` table).
+**Where**: `packages/tui/src/autocomplete.ts` (`CombinedAutocompleteProvider` text-match scoring plus `commandUsage` tie-break), `packages/coding-agent/src/utils/command-usage.ts` (`command_usage` persistence), and `packages/coding-agent/src/modes/controllers/input-controller.ts` (canonical builtin, extension, and `/skill:` usage recording).
 
 **Incident**: 2026-06-10, two accidental `/export`s (multi-MB session HTML dumped into the repo root, since gitignored as `omp-session-*.html`) while trying to exit the TUI.
 
-**Mechanism**: For prefix `ex`, both `exit` and `export` are starts-with matches at fuzzyScore 80. The sort is stable, so ties fall back to registry registration order, and `export` (line 262) precedes `exit` (line 1098); the top item is what Enter accepts. This trap predates frecency. The usage boost then entrenches it: one accidental export records usage, the next `/ex` scores export 95 vs exit 80, and every repeat re-records, so the misfire is self-reinforcing. Typing `/exit` in full is safe (exact match 100, and "exit" is not a subsequence of "export"). `/q` is currently a unique prefix for `quit`.
+**Mechanism**: For prefix `ex`, both `exit` and `export` are starts-with matches at the same text score. With no usage, stable declaration order puts `export` first. Upstream v18 removed the fork's flat MRU score boost, so usage no longer lifts a weaker textual match; it now breaks equal-score ties. The trap therefore remains narrower but still self-reinforcing: an accidental export increments its count and keeps winning the `ex` tie. Typing `/exit` in full is safe, and `/q` remains a unique prefix for `quit`.
 
-**Ranking ownership** (clarified same day): the env-level `@ff-labs/pi-fff` plugin only ranks files: FFF-backed `@` autocomplete plus `fffind`/`ffgrep` tools, with a frecency DB of file access. Slash commands and `/skill:` entries are ranked exclusively by the fork-native `slash_command_usage` path above. The two systems share no storage or scoring; "pi-fff handles reranking" holds for `@` mentions only.
+**Ranking ownership**: Slash commands and `/skill:` entries now use upstream v18's generic `command_usage` count store. The fork-only `slash_command_usage` table is inert schema baggage retained solely to migrate v6 databases without data loss; no runtime API reads or writes it. The environment-level `@ff-labs/pi-fff` plugin remains unrelated and ranks file results only.
 
-**Fix sketch — learn from FFF's algorithm** (`fff-core/src/score.rs`, the engine behind pi-fff; read 2026-06-10): FFF never lets history beat relevance because its boosts are multiplicative fractions of the match score (`frecency_boost = base_score * frecency / 100`, git boost `base * 15/100`, exact-filename bonus `base * 40%`), and it keeps a query-to-choice combo memory (`last_same_query_match` + `open_count`): picking a result for a given typed query boosts that exact pair next time. Port both ideas to the commands picker:
+**Remaining fix options**:
 
-1. Replace the flat `+15` MRU boost with a multiplicative one (`base * usageRank%`), so equal-relevance ties stop being decided by global popularity alone.
-2. Record `(typed prefix → picked command)` pairs in `slash_command_usage` (add a `query` column) and boost pair hits first; one corrective `/exit` pick after typing `ex` then flips the ranking permanently, making the picker self-healing instead of self-entrenching.
-3. Adopt FFF's decomposed `Score` shape (`{ base, usageBoost, pairBoost, exactnessBonus, total, matchType }`) in a pure `scoreSlashCommand()` in pi-tui, unit-tested with the `ex` → exit/export case as the regression fixture. That decomposition is what "enables easy upgrades": ranking policy changes become one-component diffs with visible blame, and `/fff-health`-style debugging (show per-component scores in the picker under a debug flag) comes free.
-4. Cheapest interim guard independent of the above: tie-break equal scores by shorter name, so `exit` precedes `export` at `ex` even before any history exists.
+1. Record `(typed prefix → picked command)` pairs in a dedicated current-schema store and prefer a corrected pair on the next identical query; one intentional `/exit` selection after typing `ex` would then heal the ranking.
+2. Use shorter command name as the deterministic equal-score fallback, which places `exit` before `export` before any usage exists.
+3. If ranking grows more complex, expose a decomposed score (`text`, `usage`, `queryPair`, `total`, `matchType`) in one pure scorer so policy changes and debug output share the same source.
 
 ## 2026-06-10 — `sem` entity diffs cover `git diff` only; jj-colocated repos bypass them   `[open]` `[low]`
 
@@ -464,13 +487,15 @@ git fetch --all --tags
 
 **Shipped in fork (2026-06-11), scoped to packages/ai**: `fork-anthropic-output-budget.test.ts` now owns the whole output-budget contract: the relocated `/3` default and 64k-cap tests, the folded-in `anthropic-adaptive-max-tokens.test.ts` (one fork function, one contract file), and new coverage for /3-exceeds-cap clamping (OAuth vs API key), the enabled-thinking re-fit raise, and over-ceiling budget clamping. `anthropic-alignment.test.ts` restored to upstream bytes except one contiguous deletion hunk (upstream's three replaced-default tests) and the `Effort.Max` efforts token, which belongs to the effort-ladder feature, not this entry. Deliberate non-action on `agent-session-eager-todo.test.ts`: its `todo` → `todo_write` renames are forced by the fork's tool registry (irreducible in-place divergence), and relocating the one fork-added test would duplicate the ~180-line AgentSession harness, which drifts with upstream session-construction APIs and would cost more per merge than the insert-only hunk it replaces.
 
-## 2026-06-09 — TeeTerminal mirrors the Terminal interface member-by-member   `[open]` `[med]`
+## 2026-06-09 — TeeTerminal mirrors the Terminal interface member-by-member   `[done]` `[med]`
 
 **Where**: `packages/tui/src/terminal.ts` (`TeeTerminal`).
 
 **Problem**: The fork's `TeeTerminal` re-implements all ~17 members of `Terminal` as manual one-line forwards. Every upstream interface change breaks the fork build: v15.10.10 removed `Terminal.isNativeViewportAtBottom()` and the stale forward was the only `bun check` failure of the whole merge. The only real logic is the `write()` tap.
 
 **Fix sketch**: Either (a) build the tee with a `Proxy` over `inner` that special-cases `write`, so interface drift is absorbed automatically, or (b) propose a `onWrite?: TerminalWriteListener` tap upstream on `ProcessTerminal` itself, which would delete the fork class entirely. Option (b) is the durable one; the recorder use case (terminal snapshots) is not fork-specific in principle.
+
+**Resolved in fork (2026-08-24)**: Upstream v18's startup Composer made the stale wrapper actively unsafe because it dropped deferred-input replay, output-backlog, keyboard-enhancement, appearance-report, private-mode, disconnect, and start-option members. Interactive recording now installs one reflective `write` tap over the already-started terminal and delegates every other property with the real terminal as receiver. `TeeTerminal` and `TerminalWriteListener` were deleted; there is no manual interface mirror left to drift.
 
 ## 2026-06-09 — DirResolver memoization makes XDG-based test isolation order-dependent   `[in-progress]` `[high]`
 

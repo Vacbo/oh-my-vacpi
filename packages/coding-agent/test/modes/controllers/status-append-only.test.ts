@@ -37,7 +37,7 @@ interface AppendOnlyCase {
 }
 
 function createStatusHarness(model: StatusTestModel) {
-	const present = vi.fn();
+	const presentCommandOutput = vi.fn();
 	const ctx = {
 		session: {
 			model,
@@ -70,9 +70,9 @@ function createStatusHarness(model: StatusTestModel) {
 				return undefined;
 			},
 		},
-		present,
+		presentCommandOutput,
 	} as unknown as InteractiveModeContext;
-	return { ctx, present };
+	return { ctx, presentCommandOutput };
 }
 
 const APPEND_ONLY_CASES: AppendOnlyCase[] = [
@@ -119,13 +119,13 @@ describe("CommandController /status append-only", () => {
 
 	for (const testCase of APPEND_ONLY_CASES) {
 		it(`renders the append-only state from the runtime resolver: ${testCase.name}`, async () => {
-			const { ctx, present } = createStatusHarness(testCase.model);
+			const { ctx, presentCommandOutput } = createStatusHarness(testCase.model);
 			const controller = new CommandController(ctx);
 
 			await controller.handleSessionCommand();
 
-			expect(present).toHaveBeenCalledTimes(1);
-			const output = renderPresentedBlocks(present.mock.calls[0]?.[0]);
+			expect(presentCommandOutput).toHaveBeenCalledTimes(1);
+			const output = renderPresentedBlocks(presentCommandOutput.mock.calls[0]?.[0]);
 
 			// The runtime enables append-only via this exact resolver call
 			// (agent-session `#syncAppendOnlyContext` / sdk `buildAgent`).

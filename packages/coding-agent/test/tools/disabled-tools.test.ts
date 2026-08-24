@@ -38,11 +38,11 @@ describe("tools.disabledTools", () => {
 
 	it("never disables hidden/internal tools", async () => {
 		const session = sessionWith({
-			"tools.disabledTools": ["resolve", "yield"],
+			"tools.disabledTools": ["yield"],
 		});
+		session.requireYieldTool = true;
 		const names = (await createTools(session)).map(tool => tool.name);
-		// `resolve` is infrastructure: auto-added outside BUILTIN_TOOLS, so the
-		// built-in disable list must not be able to remove it.
-		expect(names).toContain("resolve");
+		// The built-in disable list must not remove an explicitly required hidden tool.
+		expect(names).toContain("yield");
 	});
 });

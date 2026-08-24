@@ -26,7 +26,7 @@ const counts = {
 	afterValidation: -1,
 };
 
-const disabledTools = await createTools(toolSession(Settings.isolated()), ["computer"]);
+const toolsWithComputerDisabled = await createTools(toolSession(Settings.isolated()), ["computer"]);
 counts.afterDefaultOffFactory = count();
 
 const firstTool = await BUILTIN_TOOLS.computer(toolSession(Settings.isolated()));
@@ -64,7 +64,7 @@ await Promise.all([firstTool.close(), secondTool.close()]);
 process.stdout.write(
 	JSON.stringify({
 		counts,
-		disabledToolCount: disabledTools.length,
+		disabledComputerToolCount: toolsWithComputerDisabled.filter(tool => tool.name === "computer").length,
 		schema: {
 			callable: typeof firstSchema === "function",
 			repeatedIdentity: firstSchema === repeatedSchema,

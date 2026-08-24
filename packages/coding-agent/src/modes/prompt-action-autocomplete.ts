@@ -1,7 +1,6 @@
 import {
 	type AutocompleteItem,
 	type AutocompleteProvider,
-	type AutocompleteRequestOptions,
 	CombinedAutocompleteProvider,
 	findLeadingSlashCommandStart,
 	getKeybindings,
@@ -33,6 +32,8 @@ interface PromptActionAutocompleteItem extends AutocompleteItem {
 interface PromptActionAutocompleteOptions {
 	commands: SlashCommand[];
 	basePath: string;
+	/** Usage count per command name for frequency-ranked slash completions. */
+	commandUsage?: (name: string) => number;
 	keybindings: KeybindingsManager;
 	copyCurrentLine: () => void;
 	copyPrompt: () => void;
@@ -41,8 +42,6 @@ interface PromptActionAutocompleteOptions {
 	moveCursorToMessageStart: () => void;
 	moveCursorToLineStart: () => void;
 	moveCursorToLineEnd: () => void;
-	/** Optional callback returning slash command names in MRU order (frecency boost). */
-	getSlashUsageOrder?: () => readonly string[];
 }
 
 function fuzzyMatch(query: string, target: string): boolean {
@@ -138,10 +137,10 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		commands: SlashCommand[],
 		basePath: string,
 		actions: PromptActionDefinition[],
-		getSlashUsageOrder?: () => readonly string[],
+		commandUsage?: (name: string) => number,
 	) {
 		this.#commands = commands;
-		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, getSlashUsageOrder);
+		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, { commandUsage });
 		this.#basePath = basePath;
 		this.#actions = actions;
 	}
@@ -150,8 +149,9 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		lines: string[],
 		cursorLine: number,
 		cursorCol: number,
-		options?: AutocompleteRequestOptions,
+		signal?: AbortSignal,
 	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+		if (signal?.aborted) return null;
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 		const leadingSlashStart = findLeadingSlashCommandStart(textBeforeCursor);
@@ -165,14 +165,14 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			const commandName = commandText.slice(1, spaceIndex);
 			const command = this.#commands.find(cmd => cmd.name === commandName || cmd.aliases?.includes(commandName));
 			if (command && (!("allowArgs" in command) || command.allowArgs !== false)) {
-				const argumentSuggestions = await this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol);
+				const argumentSuggestions = await this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal);
 				if (argumentSuggestions) return argumentSuggestions;
 				// No slash-argument completion for this input: preserve numeric
 				// GitHub references and internal URLs while keeping prompt-action
 				// tokens such as `#copy` literal.
 				const githubRefSuggestions = getGithubRefSuggestions(textBeforeCursor);
 				if (githubRefSuggestions) return githubRefSuggestions;
-				return getInternalUrlSuggestions(textBeforeCursor, this.#basePath);
+				return getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);
 			}
 		}
 
@@ -202,7 +202,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath);
+		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);
 		if (urlSuggestions) return urlSuggestions;
 
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {
@@ -210,7 +210,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			if (emojiSuggestions) return emojiSuggestions;
 		}
 
-		return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, options);
+		return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal);
 	}
 
 	applyCompletion(
@@ -327,5 +327,5 @@ export function createPromptActionAutocompleteProvider(
 		},
 	];
 
-	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions, options.getSlashUsageOrder);
+	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions, options.commandUsage);
 }

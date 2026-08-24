@@ -34,7 +34,6 @@ describe("buildToolRows", () => {
 		mcp__srv__doit: fakeTool("mcp__srv__doit"),
 		customx: fakeTool("customx", { label: "Custom X Runner" }),
 		// Hidden infrastructure tools land in the registry but must not become rows.
-		resolve: fakeTool("resolve"),
 		yield: fakeTool("yield"),
 	};
 	const session = fakeSession({ registry, active: ["read", "mcp__srv__doit", "customx"] });
@@ -50,7 +49,6 @@ describe("buildToolRows", () => {
 		expect(byId.get("tool:mcp__srv__doit")?.source.provider).toBe("mcp");
 		expect(byId.get("tool:customx")?.source.provider).toBe("custom");
 		// Hidden/internal tools never become rows.
-		expect(byId.has("tool:resolve")).toBe(false);
 		expect(byId.has("tool:yield")).toBe(false);
 	});
 

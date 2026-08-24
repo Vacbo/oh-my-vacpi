@@ -60,6 +60,7 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		aliases: command.aliases,
 		allowArgs: command.allowArgs === true,
 		description: command.description,
+		icon: command.icon,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,
 		getTuiAutocompleteDescription: command.getTuiAutocompleteDescription,
@@ -127,9 +128,6 @@ export async function executeBuiltinSlashCommand(
 	if (parsed.args.length > 0 && !command.allowArgs) {
 		return false;
 	}
-	// Record usage against the canonical name (alias resolution already happened
-	// in the lookup map) so subsequent `/`-prefix autocomplete can rank by MRU.
-	runtime.ctx.settings?.getStorage?.()?.recordSlashCommandUsage(command.name);
 	// Collab guests run a read-mostly replica: session-mutating builtins are
 	// host-only; the allowlist covers purely local/read-only commands.
 	if (runtime.ctx.collabGuest && !COLLAB_GUEST_ALLOWED_COMMANDS[command.name]) {

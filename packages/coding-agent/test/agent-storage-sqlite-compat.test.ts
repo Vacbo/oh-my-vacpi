@@ -158,11 +158,10 @@ describe("AgentStorage SQLite compatibility", () => {
 		expect(storage.getModelUsageOrder()).toEqual(["anthropic/claude-sonnet-4-5"]);
 		expect(readSettingsRows(dbPath)).toEqual([{ key: "theme", value: '"dark"', updated_at: LEGACY_TIMESTAMP }]);
 
-		// The full v4 -> current chain provisions both feature tables and leaves
-		// them usable.
+		// The full v4 -> current chain preserves the legacy slash table and
+		// provisions the current model performance table.
 		expect(tableExists(dbPath, "slash_command_usage")).toBe(true);
 		expect(tableExists(dbPath, "model_perf")).toBe(true);
-		expect(storage.getSlashCommandUsageOrder()).toEqual([]);
 		expect(storage.getModelPerf().size).toBe(0);
 
 		// Recreated tables carry evaluable timestamp defaults (not the legacy
@@ -223,10 +222,9 @@ describe("AgentStorage SQLite compatibility", () => {
 		// Stale aggregates are purged and the backfill marker is cleared.
 		expect(storage.getModelPerf().size).toBe(0);
 		expect(readMetaValue(dbPath, MODEL_PERF_BACKFILL_KEY)).toBeNull();
-		// Targeted reset: user data is untouched and slash_command_usage arrives.
+		// Targeted reset: user data is untouched and the legacy slash table is preserved.
 		expect(storage.getModelUsageOrder()).toEqual(["anthropic/claude-sonnet-4-5"]);
 		expect(tableExists(dbPath, "slash_command_usage")).toBe(true);
-		expect(storage.getSlashCommandUsageOrder()).toEqual([]);
 	});
 
 	it("upgrades an upstream v6 database, adding slash_command_usage without purging model_perf", async () => {
@@ -278,11 +276,8 @@ describe("AgentStorage SQLite compatibility", () => {
 		// The backfill marker is preserved, so history is not needlessly re-imported.
 		expect(readMetaValue(dbPath, MODEL_PERF_BACKFILL_KEY)).toBe("complete");
 
-		// slash_command_usage is provisioned and usable.
+		// The legacy slash table remains available for databases created by either v6 lineage.
 		expect(tableExists(dbPath, "slash_command_usage")).toBe(true);
-		expect(storage.getSlashCommandUsageOrder()).toEqual([]);
-		storage.recordSlashCommandUsage("commit");
-		expect(storage.getSlashCommandUsageOrder()).toEqual(["commit"]);
 	});
 
 	it("upgrades a fork v6 database, adding model_perf without dropping slash_command_usage", async () => {
@@ -319,8 +314,20 @@ describe("AgentStorage SQLite compatibility", () => {
 
 		expect(readSchemaVersion(dbPath)).toBe(SCHEMA_VERSION);
 
-		// slash_command_usage rows survive, still ordered most-recent-first.
-		expect(storage.getSlashCommandUsageOrder()).toEqual(["diff", "commit"]);
+		// Existing fork rows survive even though v18 no longer reads or writes this table.
+		const migratedForkDb = new Database(dbPath, { readonly: true });
+		try {
+			expect(
+				migratedForkDb
+					.prepare("SELECT command_name, last_used_at FROM slash_command_usage ORDER BY last_used_at DESC")
+					.all(),
+			).toEqual([
+				{ command_name: "diff", last_used_at: LEGACY_TIMESTAMP + 100 },
+				{ command_name: "commit", last_used_at: LEGACY_TIMESTAMP },
+			]);
+		} finally {
+			migratedForkDb.close();
+		}
 
 		// model_perf + meta are provisioned and usable.
 		expect(tableExists(dbPath, "model_perf")).toBe(true);
