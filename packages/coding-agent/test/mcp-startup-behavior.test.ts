@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as client from "../src/mcp/client";
+import { MCPTransportError } from "../src/mcp/errors";
 import { classifyConnectError, MCPManager } from "../src/mcp/manager";
 import type { MCPServerConfig, MCPServerConnection, MCPToolDefinition, MCPTransport } from "../src/mcp/types";
 
@@ -39,6 +40,26 @@ function makeConnection(name: string, config: MCPServerConfig): MCPServerConnect
 
 function stdioConfig(extra?: Partial<MCPServerConfig>): MCPServerConfig {
 	return { type: "stdio", command: "echo", ...extra } as MCPServerConfig;
+}
+
+/**
+ * The exact error `StdioTransport`'s read loop rejects pending requests with
+ * when the subprocess dies before answering `initialize` (see `#startReadLoop`):
+ * a typed transport failure carrying the reaped exit code, or the stdout-EOF
+ * variant for when the process has not been reaped yet.
+ */
+function subprocessDeathError(exitCode?: number): MCPTransportError {
+	return new MCPTransportError({
+		transport: "stdio",
+		stage: "receive",
+		failure: "eof",
+		message:
+			exitCode === undefined
+				? "MCP subprocess closed stdout before responding"
+				: `MCP subprocess exited with code ${exitCode} before responding`,
+		retryable: true,
+		code: exitCode,
+	});
 }
 
 const TOOL_DEF: MCPToolDefinition = {
@@ -108,7 +129,7 @@ describe("MCPManager.connectServers — startup behaviour", () => {
 		expect(result.errors.has("slow")).toBe(false);
 		expect(manager.getTools()).toEqual([]);
 
-		deferred.reject(new Error("Transport closed (subprocess exit code 1)"));
+		deferred.reject(subprocessDeathError(1));
 		// Let the `.catch` fire.
 		await deferred.promise.catch(() => {});
 		await Bun.sleep(10);
@@ -127,13 +148,13 @@ describe("MCPManager.connectServers — startup behaviour", () => {
 	});
 
 	it("sub-window connect failure → result.errors set AND getLastConnectError set with same classification", async () => {
-		vi.spyOn(client, "connectToServer").mockRejectedValue(new Error("Transport closed (subprocess exit code 137)"));
+		vi.spyOn(client, "connectToServer").mockRejectedValue(subprocessDeathError(137));
 		vi.spyOn(client, "listTools").mockResolvedValue([TOOL_DEF]);
 
 		const manager = new MCPManager(process.cwd());
 		const result = await manager.connectServers({ kaput: stdioConfig() }, {});
 
-		expect(result.errors.get("kaput")).toMatch(/Transport closed \(subprocess exit code 137\)/);
+		expect(result.errors.get("kaput")).toMatch(/MCP subprocess exited with code 137 before responding/);
 		const classified = manager.getLastConnectError("kaput");
 		expect(classified).toBeDefined();
 		expect(classified?.kind).toBe("unreachable");
@@ -322,24 +343,46 @@ describe("classifyConnectError", () => {
 		expect(classifyConnectError(notFound, "x").kind).toBe("unreachable");
 	});
 
-	it("maps stdio close with an exit code → unreachable and surfaces the exit code", () => {
-		const out = classifyConnectError(new Error("Transport closed (subprocess exit code 137)"), "x");
+	it("maps stdio subprocess death with an exit code → unreachable and surfaces the exit code", () => {
+		const out = classifyConnectError(subprocessDeathError(137), "x");
 		expect(out.kind).toBe("unreachable");
 		expect(out.message).toMatch(/subprocess exited/);
 		expect(out.message).toContain("exit code 137");
 	});
 
-	it("maps stdio close with a negative exit code → unreachable and surfaces the code", () => {
-		const out = classifyConnectError(new Error("Transport closed (subprocess exit code -1)"), "x");
+	it("maps stdio subprocess death with a negative exit code → unreachable and surfaces the code", () => {
+		const out = classifyConnectError(subprocessDeathError(-1), "x");
 		expect(out.kind).toBe("unreachable");
 		expect(out.message).toContain("exit code -1");
 	});
 
-	it("keeps generic transport closure generic (not a subprocess exit)", () => {
+	it("maps stdout EOF before the exit code is reaped → unreachable without an exit code", () => {
+		const out = classifyConnectError(subprocessDeathError(), "x");
+		expect(out.kind).toBe("unreachable");
+		expect(out.message).toBe("x: subprocess closed stdout before responding to initialize");
+		expect(out.message).not.toMatch(/exit code/);
+	});
+
+	it("keeps generic transport closure generic (not a subprocess death)", () => {
+		// Still emitted untyped by the legacy SSE transport, and typed by
+		// `StdioTransport.close()` — a deliberate local teardown, not a death.
 		const plain = classifyConnectError(new Error("Transport closed"), "x");
 		expect(plain.kind).toBe("other");
 		expect(plain.message).toBe("x: Transport closed");
 		expect(plain.message).not.toMatch(/subprocess exited/);
+
+		const typed = classifyConnectError(
+			new MCPTransportError({
+				transport: "stdio",
+				stage: "receive",
+				failure: "closed",
+				message: "Transport closed",
+				retryable: true,
+			}),
+			"x",
+		);
+		expect(typed.kind).toBe("other");
+		expect(typed.message).toBe("x: Transport closed");
 	});
 
 	it("keeps legacy SSE transport closure generic (not a subprocess exit)", () => {

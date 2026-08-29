@@ -41,6 +41,30 @@ git fetch --all --tags
 
 ---
 
+## 2026-08-29 — Merged upstream v18.0.11: native VCS and restart lifecycle adopted   `[done]` `[high]`
+
+**Merge**: fork `18.0.4` → upstream `v18.0.11`.
+
+**Divergence calls**:
+- **Preserved the fork's jj merge-session updater and rejected upstream's package/binary self-replacement again.** `omp update` still launches the guarded fork checkout and `-l` still updates plugins. Canary/channel selection, package-manager ownership, binary replacement, and their mechanism tests remain absent; upstream gallery surfaces, atomic settings writes, extension roots, and config migrations were adopted around that boundary.
+- **Adopted upstream's in-process `@oh-my-pi/pi-natives/vcs` architecture and deleted the fork's TypeScript git/jj wrappers.** Native gix diffs make the fork's `--no-ext-diff`/`--no-textconv` shell flags structurally unnecessary while preserving their machine-readable-patch contract. Native jj label/status/watch APIs replace the subprocess cache and separate watcher. A merge audit found upstream's generic discovery intentionally chose Git for equal-root colocated workspaces, so presentation discovery now has an explicit `preferJj` tie-break: status shows the jj bookmark/change id, watches operation heads, and suppresses GitHub PR lookup, while a nested Git checkout still beats an outer jj workspace. JJ status now snapshots fresh files and consumes jj-lib copy records, preserving rename semantics; Git comparison tests isolate host `diff.external`.
+- **Adopted upstream's restart argv, teardown, entry resolution, and `execReplace`; retained the fork's model-facing restart rail.** Upstream preserves original launch/config flags, drains stdout, and gives restart a first-class shared teardown instead of the fork's shutdown boolean detour. The fork-only boot preflight, model tool, and confirmation handoff remain re-homed on that lifecycle. The duplicate native `processExec`, `relaunchSelf`, and `buildRestartArgs` were deleted. Relaunch resumes the exact durable session file, so supported sessions outside configured roots remain reachable.
+- **Re-grounded fork MCP diagnostics on upstream's typed transport errors.** Upstream's stdio EOF/exit error and managed OAuth refresh ownership replace the fork's string shaping and inline broker refresh. The fork keeps bounded discovery, late-server registration without stale deferred schemas, classified `/mcp` diagnostics, `launchApp`, reconnect auth challenges, and HTTP endpoint context; `normalizeMCPTransportError` now owns cause-chain error codes.
+- **Synthesized session and extension plumbing instead of choosing a parent.** Fork SSH reload, explicit tool allowlists, `context_export`, skill search/pinning, retry routing guards, and immediate Fire Pass persistence coexist with upstream device-only writes, advisor-cost restore, extension roots, transport-error retry windows, session durability, `/restart`, gallery surfaces, and subagent-id status accounting.
+- **Adopted upstream's atomic `HistoryBatch` replay/flush/resize lifecycle unchanged.** Review confirmed replay is consumed as one tapped terminal write before acknowledgement, resize offers keep their ordering, shutdown flushes finalized provider rows, and the fork's reflective recording tap forwards the expanded `Terminal` surface with the real receiver. Fork autocomplete sanitation, placement-box image scaling, legacy editor constructor, and current-frame repaint contracts remain.
+- **Regenerated the catalog from merged source and removed one harmful fork identity marker.** Upstream's v18.0.11 snapshot/policies replace stale generated thinking modes; the catalog generator then refreshed current provider data. `max` is no longer stripped as a generic proxy-reference suffix because `*-max` names real SKUs and could inherit unrelated base pricing/limits. The fork's Fireworks `routers/` mapper stays: upstream `wireModelIdMode` does not cover explicit ordinary-Fireworks router ids.
+- **Normalized owned artifacts by source of truth.** Every changed package changelog keeps fork entries under `[Unreleased]` and uses the entire released suffix from `v18.0.11` byte-for-byte. Native bindings were regenerated after Rust/N-API changes before rebuilding coding-agent.
+
+**Residual levers**:
+- `update-cli.ts` remains stable-tag-only and `.git`-guarded. Upstream `omp.dist`, renamed-native-package metadata, canary channels, and pure-jj checkout support are intentionally not consumed; add only merge-session semantics, never an upstream installer.
+- The restart tool's boot probe still derives its artifact from `process.argv[1]`, while execution uses `resolveCliEntryCmd()`. They agree for normal source/compiled runs but can diverge under SDK embedding/tests. Unify them only with a replacement injection seam for the probe test.
+- Upstream's Windows spawn-and-wait restart fallback does not retain the fork's old SIGINT/SIGTERM parent-survival guard. Revisit if Windows restart returns the terminal early.
+- Upstream `TuiDebugServer`/`OMP_TUI_DEBUG` may eventually replace the fork's separate loopback input-control bridge and part of `tui_drive`; migrate only after token gating, audit logging, screenshots, and emulator diffs have equivalent homes.
+- MCP classification still message-matches typed errors instead of branching on `MCPTransportError.failure/code`, and legacy SSE remains plain-error based. Consolidate only with stable user-facing `/mcp` wording.
+- Continue regenerating `models.json` after resolver/descriptor/seed/policy changes and rebuilding natives before coding-agent whenever Rust or generated exports change.
+
+---
+
 ## 2026-08-24 — Merged upstream v18.0.4: frame-plan TUI adopted, fork controls re-homed   `[done]` `[high]`
 
 **Merge**: fork `17.4.1` → upstream `v18.0.4`.
@@ -90,14 +114,14 @@ git fetch --all --tags
 
 **Divergence calls**:
 - **Preserved the fork `omp update` merge-session launcher and declined upstream's foreign-alias updater fix.** The v17.3.4 fix only improves Bun/npm ownership classification inside the package/binary self-updater this fork intentionally removed. The live command surface accepts only the fork merge workflow and the safe `-l` plugin shorthand, so restoring upstream's updater would add unreachable code and could overwrite the fork with plain upstream artifacts. The fork's read-only, bounded `getLatestUpstreamRelease()` lookup remains the startup update-notice source.
-- **Adopted upstream's native PDF extraction architecture while retaining fork-visible compatibility.** `pdf-inspector` now supplies asynchronous `pdfToMarkdown`, replacing the deleted MuPDF-WASM extractor. Chromium page rendering remains available for legacy `read file.pdf:<image>.png` paths. The generated native export surface keeps both upstream `pdfToMarkdown` and fork `processExec`; the latter still powers in-place restart.
+- **Adopted upstream's native PDF extraction architecture while retaining fork-visible compatibility.** `pdf-inspector` now supplies asynchronous `pdfToMarkdown`, replacing the deleted MuPDF-WASM extractor. Chromium page rendering remains available for legacy `read file.pdf:<image>.png` paths. At this merge the generated native export surface kept both upstream `pdfToMarkdown` and fork `processExec`; v18.0.11 later retired the duplicate `processExec` in favor of upstream `execReplace`.
 - **Preserved the fork's pi-ai TypeBox compatibility shim while adopting omptype for current callers.** Upstream removes the root runtime `Type` export, but this fork explicitly promises that public API to direct external consumers. `typebox-compat.ts` and the root export therefore remain alongside the coding-agent's `legacy-pi-ai-shim.ts` and `legacy-typebox.ts` bridge; current production callers continue using `TSchema`, `Static`, and omptype.
 - **Adopted upstream's Codex V2 compaction negotiation unchanged.** Explicit Responses endpoints now receive the canonical remote-compaction beta header; the fork's model/provider `remoteCompaction` configuration continues to feed that transport path.
 
 **Residual levers**:
 - `update-cli.ts` remains a standing merge hotspot. Port upstream updater changes only when they affect the fork's report-only release lookup or merge-session launcher; package-manager ownership, download, and binary-replacement fixes have no fork landing site.
 - Keep the root pi-ai `Type` export and the coding-agent's legacy TypeBox remap until an explicit breaking release migrates direct package consumers and published extensions together. The fork changelog entry and public API test are the retirement gate.
-- Rebuild natives before coding-agent whenever the Rust PDF API or generated bindings change, and keep `pdfToMarkdown` plus `processExec` aligned across Rust, `index.d.ts`, and the generated `index.js` export block.
+- Rebuild natives before coding-agent whenever the Rust PDF API or generated bindings change. `processExec` was retired in v18.0.11; keep `pdfToMarkdown` and the current Rust/`index.d.ts`/generated `index.js` export surface aligned.
 
 ---
 
@@ -515,7 +539,7 @@ git fetch --all --tags
 
 **Problem**: Every `git.diff()` output path is machine-consumed — parsed by `parseFileDiffs`/`parseNumstat`/`parseCommitDiffHunks` or piped into `git apply` — yet the invocation honored `diff.external`/`GIT_EXTERNAL_DIFF`. On a host with an external differ configured (here: `sem`), `git diff` emits presentation output instead of patch syntax, so `git apply` rejects the delta patch and task-worktree merge-back breaks at runtime. Surfaced as 3 deterministic test failures (`worktree.test.ts` ×2, `issue-966-repro`) that looked environmental but were a product bug. `git diff-tree` (used by `diff.tree`) is plumbing and already ignores external diff unless `--ext-diff` is passed; `jj diff --git` and `gh pr diff` are unaffected.
 
-**Fixed in fork**: `buildDiffArgs` now emits `git diff --no-ext-diff --no-textconv ...` (textconv output is equally un-applyable); `diff.has` adds `--no-ext-diff` so the `--quiet` exit code never depends on `diff.trustExitCode`. One test-side assertion in `worktree.test.ts` that shells `git diff` directly got the same flag. Upstream PR candidate: identical patch applies to upstream `utils/git.ts`, which has the same flaw.
+**Fixed in fork, then superseded upstream in v18.0.11**: the fork first added `--no-ext-diff`/`--no-textconv` to every machine-consumed shell diff. Upstream's in-process gix VCS now makes host external differ/textconv configuration unreachable, and the native VCS test encodes the same byte-level invariant. Direct `runGit` calls in worktree tests still keep the flags because they construct the Git reference output compared with native diffs; there is no remaining upstream PR against the deleted wrapper.
 
 ## 2026-06-09 — wrapFetchForCch silently changes the FetchImpl body contract   `[open]` `[low]`
 

@@ -24,6 +24,8 @@ const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 /** native reads <cwd>/.omp/mcp.json; the standalone fallback reads <cwd>/mcp.json. */
 const NATIVE_REL = path.join(".omp", "mcp.json");
 const STANDALONE_REL = "mcp.json";
+const MCP_APP_ENV_REF = "$" + "{OMP_TEST_MCP_APP}";
+const MCP_RESOURCE_ENV_REF = "$" + "{OMP_TEST_MCP_RESOURCE}";
 
 const SHAPES = [
 	{ provider: "native", relPath: NATIVE_REL },
@@ -170,10 +172,10 @@ describe("shared MCP normalizer preserves documented fields across both JSON sha
 				mcpServers: {
 					deep: {
 						command: "repo-cli",
-						args: [`--app=${"${OMP_TEST_MCP_APP}"}`],
-						launchApp: { path: `${"${OMP_TEST_MCP_APP}"}`, foreground: true },
-						headers: { "X-App": `${"${OMP_TEST_MCP_APP}"}` },
-						auth: { type: "oauth", resource: `${"${OMP_TEST_MCP_RESOURCE}"}` },
+						args: [`--app=${MCP_APP_ENV_REF}`],
+						launchApp: { path: MCP_APP_ENV_REF, foreground: true },
+						headers: { "X-App": MCP_APP_ENV_REF },
+						auth: { type: "oauth", resource: MCP_RESOURCE_ENV_REF },
 					},
 				},
 			});

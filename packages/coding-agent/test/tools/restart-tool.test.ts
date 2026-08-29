@@ -138,8 +138,9 @@ describe("restart tool host rail", () => {
 		const handlerFired = new Promise<void>(resolve => {
 			dispatched = resolve;
 		});
-		// The registration InteractiveMode.init performs; its teardown callback is
-		// what stashes the confirmation for buildRestartArgs and re-execs.
+		// The registration InteractiveMode.init performs; its teardown callback
+		// stashes the confirmation that InteractiveMode.restart() appends as the
+		// sole positional of the rewritten launch argv before it re-execs.
 		installRestartRail(session!, async confirmation => {
 			confirmations.push(confirmation);
 			dispatched?.();

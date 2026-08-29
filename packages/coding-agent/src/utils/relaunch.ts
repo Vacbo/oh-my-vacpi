@@ -1,35 +1,17 @@
 /**
- * Self-relaunch primitives for the `/restart` command and the `restart` tool.
+ * Boot-probe primitives for the `restart` tool.
  *
  * `selfInvocation` reconstructs how this process was started: a script entry
- * (`bun src/cli.ts`, `bun dist/cli.js`) relaunches through the same runtime
- * and entry module, while a compiled binary relaunches `process.execPath`
- * itself, so a restart always loads the exact artifact the user is iterating
- * on (freshly rebuilt source or binary) rather than whatever `omp` resolves
- * to on PATH.
+ * (`bun src/cli.ts`, `bun dist/cli.js`) probes through the same runtime and
+ * entry module, while a compiled binary probes `process.execPath` itself, so
+ * the probe always loads the exact artifact the user is iterating on (freshly
+ * rebuilt source or binary) rather than whatever `omp` resolves to on PATH.
+ *
+ * The relaunch itself lives in `InteractiveMode.restart()`, which rewrites the
+ * original launch argv (`restartArgv`) and replaces the process image through
+ * `execReplace`. Nothing here performs the exec.
  */
-import { processExec } from "@oh-my-pi/pi-natives";
-import { isCompiledBinary, logger } from "@oh-my-pi/pi-utils";
-
-/** Argv tail that resumes the given session file, or none for unpersisted sessions.
- *  A `followUpMessage` rides along as a positional argument: `runInteractiveMode`
- *  auto-submits positionals after resume (`initialMessages`), which is how the
- *  restart tool's confirmation reaches the model in the relaunched process. */
-export function buildRestartArgs(sessionFile: string | undefined, followUpMessage?: string): string[] {
-	// Resume by exact file path: immune to cwd moves and --session-dir
-	// resolution, and `createSessionManager` opens path-like arguments
-	// directly without directory scanning.
-	if (!sessionFile) {
-		// No session to resume: drop the follow-up too. A fresh session must
-		// not receive a stray auto-submitted prompt.
-		return [];
-	}
-	const args = ["--resume", sessionFile];
-	if (followUpMessage) {
-		args.push(followUpMessage);
-	}
-	return args;
-}
+import { isCompiledBinary } from "@oh-my-pi/pi-utils";
 
 export function selfInvocation(
 	entry: string | undefined = process.argv[1],
@@ -63,12 +45,12 @@ export interface RelaunchPreflight {
 }
 
 /**
- * Boot-probe the exact artifact {@link relaunchSelf} would exec into by
- * spawning `<selfInvocation> --version` and requiring a clean exit. Catches
- * builds that cannot load at all (syntax errors, broken import graphs) before
- * the running process is irreversibly replaced. Does not catch state-dependent
- * failures (e.g. a session-resume crash); those remain the restart's residual
- * risk and are documented in the restart tool description.
+ * Boot-probe the artifact a restart would exec into by spawning
+ * `<selfInvocation> --version` and requiring a clean exit. Catches builds that
+ * cannot load at all (syntax errors, broken import graphs) before the running
+ * process is irreversibly replaced. Does not catch state-dependent failures
+ * (e.g. a session-resume crash); those remain the restart's residual risk and
+ * are documented in the restart tool description.
  */
 export async function preflightRelaunch(timeoutMs = 15_000): Promise<RelaunchPreflight> {
 	const argv = [...selfInvocation(), "--version"];
@@ -96,32 +78,4 @@ export async function preflightRelaunch(timeoutMs = 15_000): Promise<RelaunchPre
 	} catch (err) {
 		return { ok: false, detail: err instanceof Error ? err.message : String(err) };
 	}
-}
-
-/**
- * Replace this process with a fresh self-invocation.
- *
- * POSIX: true `execvp`, so the pid, controlling terminal, and foreground
- * process-group state carry over and no dormant parent is left behind.
- * Windows (or a failed exec): spawn-and-wait fallback; resolves with the
- * child's exit code for the caller to exit with. The caller must have fully
- * torn down the TUI (cooked terminal mode) and run postmortem cleanup first.
- */
-export async function relaunchSelf(args: string[]): Promise<number> {
-	const argv = [...selfInvocation(), ...args];
-	if (process.platform !== "win32") {
-		try {
-			processExec(argv);
-		} catch (err) {
-			logger.warn("processExec failed; falling back to spawn-and-wait", { argv, error: String(err) });
-		}
-	}
-	// Fallback: the child shares this terminal's foreground process group, so
-	// Ctrl+C reaches it directly; the parent must ignore the signal to avoid
-	// dying (and yielding the tty back to the shell) before the child exits.
-	const ignoreSignal = () => {};
-	process.on("SIGINT", ignoreSignal);
-	process.on("SIGTERM", ignoreSignal);
-	const child = Bun.spawn({ cmd: argv, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-	return await child.exited;
 }

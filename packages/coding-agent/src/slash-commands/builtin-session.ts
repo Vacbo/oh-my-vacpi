@@ -1,6 +1,5 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { settings } from "../config/settings";
 import { CONTEXT_EXPORT_TASK_MAX_LENGTH, CONTEXT_EXPORT_TASK_TOO_LONG_MESSAGE } from "../context-export";
 import contextExportCommandPrompt from "../prompts/commands/context-export.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
@@ -535,11 +534,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "branch",
 		description: "Create a new branch from a previous message",
 		handleTui: (_command, runtime) => {
-			if (settings.get("doubleEscapeAction") === "tree") {
-				runtime.ctx.showTreeSelector();
-			} else {
-				runtime.ctx.showUserMessageSelector();
-			}
+			runtime.ctx.showUserMessageSelector();
 			runtime.ctx.editor.setText("");
 		},
 	},

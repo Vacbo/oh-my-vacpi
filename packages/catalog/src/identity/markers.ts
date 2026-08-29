@@ -12,7 +12,6 @@ const TRAILING_MARKERS = [
 	"medium",
 	"minimal",
 	"xhigh",
-	"max",
 	"free",
 	"cloud",
 	"exacto",

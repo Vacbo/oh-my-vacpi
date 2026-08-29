@@ -1,12 +1,16 @@
 /**
- * Contracts for the `/restart` relaunch argv builders: the restart must
- * re-invoke the exact artifact this process runs from (runtime + script entry
- * for source/npm runs, the binary itself for compiled runs) and resume by
- * exact session file path, which `createSessionManager` opens directly
- * without directory resolution.
+ * Contracts for `selfInvocation`, which the `restart` tool's boot probe
+ * (`preflightRelaunch`) and artifact report (`relaunchArtifact`) build on: the
+ * probe must re-invoke the exact artifact this process runs from — runtime plus
+ * script entry for source/npm runs, the binary itself for compiled runs — so a
+ * broken rebuild is caught before the process image is replaced.
+ *
+ * The relaunch argv itself is upstream's `restartArgv` (see
+ * `test/flag-tables.test.ts`), which rewrites the original launch flags rather
+ * than resuming by session-file path.
  */
 import { describe, expect, it } from "bun:test";
-import { buildRestartArgs, selfInvocation } from "@oh-my-pi/pi-coding-agent/utils/relaunch";
+import { selfInvocation } from "@oh-my-pi/pi-coding-agent/utils/relaunch";
 
 describe("selfInvocation", () => {
 	it("relaunches through the runtime and script entry for source runs", () => {
@@ -32,26 +36,5 @@ describe("selfInvocation", () => {
 
 	it("falls back to the bare exec path when the entry is not a script", () => {
 		expect(selfInvocation("serve", "/usr/local/bin/omp", false)).toEqual(["/usr/local/bin/omp"]);
-	});
-});
-
-describe("buildRestartArgs", () => {
-	it("resumes by exact session file path", () => {
-		expect(buildRestartArgs("/home/u/.omp/sessions/abc/rollout.jsonl")).toEqual([
-			"--resume",
-			"/home/u/.omp/sessions/abc/rollout.jsonl",
-		]);
-	});
-	it("appends a follow-up message only when resuming a persisted session", () => {
-		expect(buildRestartArgs("/home/u/.omp/sessions/abc/rollout.jsonl", "Restart completed")).toEqual([
-			"--resume",
-			"/home/u/.omp/sessions/abc/rollout.jsonl",
-			"Restart completed",
-		]);
-		expect(buildRestartArgs(undefined, "Restart completed")).toEqual([]);
-	});
-
-	it("relaunches fresh when the session is not persisted", () => {
-		expect(buildRestartArgs(undefined)).toEqual([]);
 	});
 });

@@ -22,6 +22,7 @@ import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion"
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
+	isUserTurnInitiator,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
@@ -58,7 +59,7 @@ import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGr
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
-import { createUsageRowBlock } from "./usage-row";
+import { createUsageRowBlock, turnElapsedMs } from "./usage-row";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
 
 export interface ChatTranscriptBuilderDeps {
@@ -92,6 +93,8 @@ export class ChatTranscriptBuilder {
 	#pendingUsageTtft: number | undefined;
 	#pendingUsageTimestamp: number | undefined;
 	#pendingReadUsageCallIds: string[] | undefined;
+	#pendingUsageElapsedMs: number | undefined;
+	#turnStartedAt: number | undefined;
 	#lastAssistantUsage: Usage | undefined;
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#todoSnapshot: ToolExecutionComponent | null = null;
@@ -144,6 +147,8 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTtft = undefined;
 		this.#pendingUsageTimestamp = undefined;
 		this.#pendingReadUsageCallIds = undefined;
+		this.#pendingUsageElapsedMs = undefined;
+		this.#turnStartedAt = undefined;
 		this.#lastAssistantUsage = undefined;
 		this.#waitingPoll = null;
 		this.#todoSnapshot = null;
@@ -216,6 +221,7 @@ export class ChatTranscriptBuilder {
 				this.#pendingUsageDuration,
 				this.#pendingUsageTtft,
 				this.#pendingUsageTimestamp,
+				this.#pendingUsageElapsedMs,
 			) ??
 				false);
 		if (!usageAttached) {
@@ -227,6 +233,7 @@ export class ChatTranscriptBuilder {
 					this.#pendingUsageDuration,
 					this.#pendingUsageTtft,
 					this.#pendingUsageTimestamp,
+					this.#pendingUsageElapsedMs,
 				),
 			);
 		}
@@ -235,6 +242,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTtft = undefined;
 		this.#pendingUsageTimestamp = undefined;
 		this.#pendingReadUsageCallIds = undefined;
+		this.#pendingUsageElapsedMs = undefined;
 	}
 
 	#appendChatMessage(message: AgentMessage): void {
@@ -252,6 +260,22 @@ export class ChatTranscriptBuilder {
 				break;
 			case "user":
 			case "developer": {
+				// Only genuinely user-attributed prompts anchor the delta; a mid-run
+				// agent-attributed `user` message (advisor tool-loop redirect) must not.
+				if (message.role === "user" && message.attribution !== "agent") {
+					this.#turnStartedAt = message.timestamp;
+				} else if (message.role === "developer" && message.synthetic) {
+					// A synthetic developer message initiates a fresh run (auto-
+					// continue, /goal, approved plan): replay must not inherit the
+					// preceding user prompt's timestamp, mirroring the live
+					// agent_start clear. Same-turn continuation reminders (todo, plan)
+					// are persisted developer messages WITHOUT the synthetic marker,
+					// so their anchor survives the rebuild.
+					// A deliberate operator action (`.`, `c` continue shortcut) is the turn's
+					// own prompt: anchor the delta to it instead of clearing.
+					if (message.userInitiated) this.#turnStartedAt = message.timestamp;
+					else this.#turnStartedAt = undefined;
+				}
 				// A user prompt closes the poll-displacement window, same as the live path.
 				if (message.role === "user") this.#resolveWaitingPoll();
 				if (message.role === "user") this.#resolveTodoSnapshot();
@@ -289,6 +313,12 @@ export class ChatTranscriptBuilder {
 			}
 			case "hookMessage":
 			case "custom":
+				// A directly-invoked `/skill:` custom prompt is the run's initiator
+				// (user attribution), so it seeds the prompt→yield delta like a user
+				// message does.
+				if (message.role === "custom" && isUserTurnInitiator(message as CustomMessage)) {
+					this.#turnStartedAt = message.timestamp;
+				}
 				this.#appendCustomMessage(message);
 				break;
 			case "compactionSummary": {
@@ -313,6 +343,11 @@ export class ChatTranscriptBuilder {
 			default:
 				message satisfies never;
 		}
+	}
+
+	/** Prompt→yield wall time for the current turn, or undefined when unknown. */
+	#turnElapsedMs(message: Extract<AgentMessage, { role: "assistant" }>): number | undefined {
+		return turnElapsedMs(this.#turnStartedAt, message);
 	}
 
 	#appendAssistantMessage(message: Extract<AgentMessage, { role: "assistant" }>): void {
@@ -431,6 +466,8 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTtft = message.ttft;
 		this.#pendingUsageTimestamp = message.timestamp;
 		this.#pendingReadUsageCallIds = this.#pendingUsage ? groupedReadUsageCallIds(message) : undefined;
+		this.#pendingUsageElapsedMs =
+			this.#pendingUsage && settings.get("display.showTurnTime") ? this.#turnElapsedMs(message) : undefined;
 	}
 
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {

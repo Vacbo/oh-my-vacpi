@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parseArgs, validateToolNames } from "../src/cli/args";
-import { OPTIONAL_VALUE_FLAGS, STRING_VALUE_FLAGS } from "../src/cli/flag-tables";
+import { OPTIONAL_VALUE_FLAGS, restartArgv, STRING_VALUE_FLAGS } from "../src/cli/flag-tables";
 import { CliUsageError } from "../src/cli/usage-error";
 
 /**
@@ -187,5 +187,45 @@ describe("foreign session import flags", () => {
 		expect(codex.fromCodex).toBe(true);
 		expect(codex.messages).toEqual(["continue this session"]);
 		expect(codex.unrecognizedFlags).toEqual([]);
+	});
+});
+
+describe("restartArgv (/restart relaunch argv)", () => {
+	it("keeps configuration flags and resumes the exact durable session path", () => {
+		const sessionFile = "/tmp/external sessions/run.jsonl";
+		expect(restartArgv(["--model", "gpt-5", "fix the bug", "@notes.md"], sessionFile)).toEqual([
+			"--model",
+			"gpt-5",
+			"--resume",
+			sessionFile,
+		]);
+	});
+
+	it("drops every session-source flag, including inline = and value forms", () => {
+		expect(
+			restartArgv(["--resume=old", "-r", "old2", "--continue", "-c", "--fork", "xyz", "--from-claude"], "sid"),
+		).toEqual(["--resume", "sid"]);
+	});
+
+	it("keeps the value of an unknown extension flag instead of dropping it as a positional", () => {
+		expect(restartArgv(["--myext-flag", "val", "--no-tools"], "sid")).toEqual([
+			"--myext-flag",
+			"val",
+			"--no-tools",
+			"--resume",
+			"sid",
+		]);
+	});
+
+	it("treats everything after -- as prompt text and drops it", () => {
+		expect(restartArgv(["--print-thoughts", "--", "--model", "opus"], "sid")).toEqual([
+			"--print-thoughts",
+			"--resume",
+			"sid",
+		]);
+	});
+
+	it("omits --resume for a session that never materialized on disk", () => {
+		expect(restartArgv(["--no-session", "hello"], undefined)).toEqual(["--no-session"]);
 	});
 });

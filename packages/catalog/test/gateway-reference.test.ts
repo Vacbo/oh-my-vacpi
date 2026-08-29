@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildModel } from "../src/build";
 import { getBundledModelReferenceIndex } from "../src/identity/bundled";
-import { inheritReferenceThinking, resolveModelReference } from "../src/identity/reference";
+import { buildModelReferenceIndex, inheritReferenceThinking, resolveModelReference } from "../src/identity/reference";
 import type { ModelSpec } from "../src/types";
 
 describe("Portkey gateway model references", () => {
@@ -16,6 +16,30 @@ describe("Portkey gateway model references", () => {
 		expect(kiloGigaPotato?.provider).toBe("kilo");
 		expect(kiloGigaPotato?.thinking?.effortRouting).toBeDefined();
 		expect(inheritReferenceThinking(undefined, kiloGigaPotato, "gateway")).toBeUndefined();
+	});
+});
+
+describe("proxy routing marker references", () => {
+	const baseModel = buildModel({
+		id: "qwen3.8",
+		name: "Qwen 3.8",
+		api: "openai-completions",
+		provider: "reference-fixture",
+		baseUrl: "https://example.com/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 32_000,
+		maxTokens: 4_096,
+	} satisfies ModelSpec<"openai-completions">);
+	const index = buildModelReferenceIndex([baseModel]);
+
+	test("does not strip real max SKU suffixes", () => {
+		expect(resolveModelReference("proxy/qwen3.8-max", index)).toBeUndefined();
+	});
+
+	test("still strips identity-preserving effort suffixes", () => {
+		expect(resolveModelReference("proxy/qwen3.8-xhigh", index)).toBe(baseModel);
 	});
 });
 

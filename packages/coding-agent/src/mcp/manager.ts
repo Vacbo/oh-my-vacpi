@@ -6,13 +6,12 @@
  */
 import * as path from "node:path";
 import * as url from "node:url";
-import { isDefinitiveOAuthFailure, type TSchema } from "@oh-my-pi/pi-ai";
-import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
+import type { TSchema } from "@oh-my-pi/pi-ai";
 import { logger, withTimeout } from "@oh-my-pi/pi-utils";
-import type { SourceMeta } from "../capability/types";
+import type { EffectiveExtensionRoots, SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
 import type { CustomTool } from "../extensibility/custom-tools/types";
-import { type AuthStorage, REMOTE_REFRESH_SENTINEL } from "../session/auth-storage";
+import type { AuthStorage } from "../session/auth-storage";
 import {
 	connectToServer,
 	disconnectServer,
@@ -31,8 +30,7 @@ import { type LoadMCPConfigsResult, loadAllMCPConfigs, validateServerConfig } fr
 import {
 	lookupMcpOAuthCredential,
 	type MCPOAuthCredentialLookup,
-	refreshManagedMcpOAuthCredential,
-	selectMcpOAuthRefreshMaterial,
+	refreshStoredManagedMcpOAuthCredential,
 } from "./oauth-credentials";
 import type { MCPStoredOAuthCredential } from "./oauth-flow";
 import type { McpConnectionStatusEvent } from "./startup-events";
@@ -177,6 +175,8 @@ export interface MCPDiscoverOptions {
 	filterExa?: boolean;
 	/** Whether to filter out browser MCP servers when builtin browser tool is enabled (default: false) */
 	filterBrowser?: boolean;
+	/** Session-local extension roots for post-startup rediscovery (explicit + mode + configured). */
+	extensionRoots?: EffectiveExtensionRoots;
 	/** Called when MCP server connection state changes. */
 	onStatus?: (event: McpConnectionStatusEvent) => void;
 }
@@ -217,13 +217,16 @@ export interface MCPConnectError {
  * known transport messages) before falling back to message regex. Bun's
  * `fetch` rejection carries `code: "ConnectionRefused"` with the message
  * `Unable to connect…`, which Node's `ECONNREFUSED` regex would otherwise
- * miss — both are covered here.
+ * miss — both are covered here. Transport failures now arrive as
+ * `MCPTransportError`, which keeps the underlying `code` (walking the `cause`
+ * chain) and a stable message, so the same ladder classifies typed and plain
+ * errors alike.
  *
  * Exported for tests and `/mcp` panel rendering.
  */
 export function classifyConnectError(err: unknown, name: string): MCPConnectError {
 	const raw = err instanceof Error ? err.message : String(err);
-	const code = (err as { code?: string } | null | undefined)?.code;
+	const code = (err as { code?: string | number } | null | undefined)?.code;
 	const at = Date.now();
 	const make = (kind: MCPConnectErrorKind, message: string): MCPConnectError => ({ kind, message, raw, at });
 
@@ -236,12 +239,18 @@ export function classifyConnectError(err: unknown, name: string): MCPConnectErro
 	if (code === "EAI_NONAME" || code === "ENOTFOUND" || /(EAI_NONAME|ENOTFOUND|getaddrinfo)/.test(raw)) {
 		return make("unreachable", `${name}: host did not resolve`);
 	}
-	const stdioExit = /^Transport closed \(subprocess exit code (-?\d+)\)$/.exec(raw);
+	// `StdioTransport`'s read loop rejects pending requests with this wording when
+	// the subprocess dies before answering `initialize`; the exit code is present
+	// whenever it has been reaped by then.
+	const stdioExit = /subprocess exited with code (-?\d+)/.exec(raw);
 	if (stdioExit) {
 		return make(
 			"unreachable",
 			`${name}: subprocess exited before responding to initialize (exit code ${stdioExit[1]})`,
 		);
+	}
+	if (/subprocess closed stdout before responding/.test(raw)) {
+		return make("unreachable", `${name}: subprocess closed stdout before responding to initialize`);
 	}
 	if (/launchApp:/.test(raw)) {
 		return make("unreachable", `${name}: ${raw}`);
@@ -542,6 +551,7 @@ export class MCPManager {
 				enableProjectConfig: options?.enableProjectConfig,
 				filterExa: options?.filterExa,
 				filterBrowser: options?.filterBrowser,
+				extensionRoots: options?.extensionRoots,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -1588,36 +1598,6 @@ export class MCPManager {
 	}
 
 	/**
-	 * Refresh a broker-redacted MCP OAuth credential through the auth-broker.
-	 *
-	 * When running in broker mode the client only ever holds the redacted
-	 * refresh sentinel; the real refresh token lives on the broker. Delegating
-	 * to {@link AuthStorage.forceRefreshCredentialById} makes the broker run the
-	 * `refresh_token` grant and return a fresh access token, which the client
-	 * uses while keeping {@link REMOTE_REFRESH_SENTINEL} in the refresh slot.
-	 */
-	async #refreshBrokeredMcpCredential(credentialId: string, signal?: AbortSignal): Promise<OAuthCredentials> {
-		const storage = this.#authStorage;
-		if (!storage) throw new Error("MCP OAuth broker refresh requires an auth storage");
-		const row = storage.listStoredCredentials(credentialId).find(entry => entry.credential.type === "oauth");
-		if (!row) throw new Error(`No broker credential row for ${credentialId}`);
-		const entry = await storage.forceRefreshCredentialById(row.id, signal);
-		if (entry.credential.type !== "oauth") {
-			throw new Error(`Broker returned non-OAuth credential for ${credentialId}`);
-		}
-		const refreshed = entry.credential;
-		return {
-			access: refreshed.access,
-			refresh: REMOTE_REFRESH_SENTINEL,
-			expires: refreshed.expires,
-			accountId: refreshed.accountId,
-			email: refreshed.email,
-			projectId: refreshed.projectId,
-			enterpriseUrl: refreshed.enterpriseUrl,
-		};
-	}
-
-	/**
 	 * Resolve OAuth credentials and shell commands in config.
 	 * `oauth: false` skips credential injection (reauth's unauthenticated probe);
 	 * `forceRefresh` bypasses the expiry buffer (401/403 auth-error hook).
@@ -1635,64 +1615,18 @@ export class MCPManager {
 			const { credentialId } = lookup;
 			try {
 				let credential: MCPStoredOAuthCredential | undefined = lookup.credential;
-				const REFRESH_BUFFER_MS = 5 * 60_000;
-				const refreshResult = await this.#authStorage.refreshStoredOAuthCredential<MCPStoredOAuthCredential>(
-					credentialId,
-					{
-						observedCredential: credential,
-						credentialFromRow: row => row,
-						forceRefresh: opts?.forceRefresh,
-						refreshSkewMs: REFRESH_BUFFER_MS,
-						canRefresh: current => {
-							const material = selectMcpOAuthRefreshMaterial(current, auth);
-							return Boolean(current.refresh && material?.tokenUrl);
-						},
-						refresh: (current, signal) => {
-							// Broker-backed credentials redact the refresh token
-							// (REMOTE_REFRESH_SENTINEL); the broker holds the real one, so
-							// route the refresh through it instead of failing locally.
-							if (current.refresh === REMOTE_REFRESH_SENTINEL) {
-								return this.#refreshBrokeredMcpCredential(credentialId, signal);
-							}
-							return refreshManagedMcpOAuthCredential(current, {
-								serverUrl: config.type === "http" || config.type === "sse" ? config.url : undefined,
-								auth,
-								signal,
-							});
-						},
-						mergeRefreshedCredential: (current, refreshed) => {
-							const material = selectMcpOAuthRefreshMaterial(current, auth);
-							const tokenUrl = material?.tokenUrl;
-							const clientId = material?.clientId;
-							const clientSecret = material?.clientSecret;
-							const authorizationUrl =
-								material && "authorizationUrl" in material ? material.authorizationUrl : undefined;
-							const resourceIsFallback =
-								!material?.resource && (config.type === "http" || config.type === "sse") && Boolean(config.url);
-							const resource = material?.resource ?? (resourceIsFallback ? config.url : undefined);
-							return {
-								...current,
-								...refreshed,
-								tokenUrl,
-								clientId,
-								clientSecret,
-								resource: resourceIsFallback ? undefined : resource,
-								authorizationUrl,
-							};
-						},
-						isDefinitiveFailure: error =>
-							isDefinitiveOAuthFailure(error instanceof Error ? error.message : String(error)),
-						disabledCause: error =>
-							`oauth refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-						keepCredentialOnRefreshFailure: true,
-						onRefreshFailure: refreshError => {
-							logger.warn("MCP OAuth refresh failed, using existing token", {
-								credentialId,
-								error: refreshError,
-							});
-						},
+				const refreshResult = await refreshStoredManagedMcpOAuthCredential(this.#authStorage, credentialId, {
+					serverUrl: config.type === "http" || config.type === "sse" ? config.url : undefined,
+					auth,
+					forceRefresh: opts?.forceRefresh,
+					keepCredentialOnRefreshFailure: true,
+					onRefreshFailure: refreshError => {
+						logger.warn("MCP OAuth refresh failed, using existing token", {
+							credentialId,
+							error: refreshError,
+						});
 					},
-				);
+				});
 				if (refreshResult.removed) {
 					logger.warn("MCP OAuth refresh failed definitively; cleared credential", { credentialId });
 				}
