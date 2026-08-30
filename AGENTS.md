@@ -320,3 +320,47 @@ Location: `packages/*/CHANGELOG.md` (per package).
 2. Run `bun run release`.
 
 The script handles version bump, CHANGELOG finalization, commit, tag, publish, and adding new `[Unreleased]` sections.
+
+## Cursor Cloud specific instructions
+
+### Product focus
+
+Primary dev target is **`packages/coding-agent`** (`omp` CLI). It is a single Bun process — no separate backend server for core agent work. Optional products: `omp stats` (embedded dashboard on port 3847), `python/robomp` (Docker stack).
+
+### Toolchain
+
+- **Bun ≥ 1.3.14** (enforced at CLI startup; repo pins `bun@1.3.14` in root `package.json`).
+- **Rust toolchain** for `pi-natives` (grep, shell, AST, etc.). The `.node` addon is gitignored — run `bun run build:native` after clone or when Rust sources change.
+- **System packages** (match CI `test` job): `libcairo2-dev`, `libpango1.0-dev`, `libjpeg-dev`, `libgif-dev`, `librsvg2-dev`, `fd-find` (symlink `fdfind` → `fd`), `ripgrep`, `imagemagick` (symlink `convert` → `magick` if needed).
+
+### Standard commands
+
+See root `package.json` scripts. Quick reference:
+
+| Task | Command |
+|------|---------|
+| Install deps | `bun install --frozen-lockfile` |
+| Build natives | `bun run build:native` |
+| Dev launcher | `bun run dev` or `bun run install:dev` (links global `omp`) |
+| Lint (Biome) | `bun run lint:tools` |
+| Typecheck | `bun run check:ts` |
+| Package tests | `bun run test:ts` |
+| CLI smoke | `bun run ci:test:smoke` |
+| Coding-agent tests only | `bun --cwd=packages/coding-agent test` |
+
+### Running without LLM API keys
+
+Smoke and tool subcommands work offline:
+
+- `bun packages/coding-agent/src/cli.ts --smoke-test` — spawns bundled workers
+- `omp grep <pattern> <path>` — exercises native ripgrep
+- `omp read <path>` — exercises read pipeline
+- RPC bash (no model call): start `RpcClient` with `--no-session`, call `.bash("echo hello")`
+
+Interactive TUI (`bun run dev`) and print-mode prompts require a configured provider (API key or OAuth via `/login`).
+
+### Test caveats
+
+- Full `bun --cwd=packages/coding-agent test` runs ~5k tests in parallel; a few git-worktree tests (`log_experiment`) may time out under load — they pass in isolation.
+- `bun run test:rs` skips locally unless `CI` is set or Rust files changed; CI always runs Rust checks via `native_linux` matrix.
+- LLM E2E tests auto-skip without provider keys (`e2eApiKey(...)` guards).
